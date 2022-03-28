@@ -1,7 +1,7 @@
 ---
 layout: post
-title: "Zach Bednarke, Good With His Tongue Launches Site"
+title: "Zach Bednarke Launches Site"
 date: 2022-03-27
 ---
 
-Get ready kt
+this is a test post
