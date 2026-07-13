@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Zach Bednarke — Infrastructure · AI Systems · Security</title>
-<meta name="description" content="Zach Bednarke — independent consultant — infrastructure, AI systems, and cybersecurity.">
+<title>Zach Bednarke · Infrastructure · AI Systems · Security</title>
+<meta name="description" content="Zach Bednarke, independent consultant: infrastructure, AI systems, and cybersecurity.">
 <meta property="og:title" content="Zach Bednarke">
 <meta property="og:description" content="Infrastructure, AI systems, and cybersecurity consulting.">
 <meta property="og:type" content="website">
@@ -111,9 +111,8 @@
         <div class="ell">ℓ<sub>max</sub> = <span id="ellv">0.0</span></div>
         <div class="sub">
           <span class="eq">f(θ,φ) = Σ<sub>ℓ≤L</sub> Σ<sub>m</sub>
-          c<sub>ℓm</sub> Y<sub>ℓm</sub>(θ,φ) — </span>synthesized live in
-          your browser, rendered with CSS ·
-          verified vs SciPy: <span id="errv">…</span>
+          c<sub>ℓm</sub> Y<sub>ℓm</sub>(θ,φ) · </span>synthesized live in
+          your browser
         </div>
       </div>
     </div>
@@ -122,14 +121,14 @@
   <section class="block">
     <div class="wrap">
       <h2>What you just watched</h2>
-      <p>My name, written as a function on a sphere and rebuilt from its
-         spherical-harmonic expansion as you scrolled — 8,281 coefficients,
-         layered degree by degree. The shimmer around the letters is Gibbs
-         ringing: the honest cost of building a sharp edge out of smooth
-         waves.</p>
-      <p class="muted">Every value is computed live in this page and
-         self-checked against SciPy to ~10<sup>−13</sup> before it draws.
-         The dots are plain DOM elements — no canvas, no WebGL. I like
+      <p>My name, written as a function on the sphere and rebuilt from its
+         spherical-harmonic expansion as you scrolled: 8,281 coefficients,
+         added degree by degree. The shimmer around the letters is Gibbs
+         ringing, the same artifact you get when any Fourier series is
+         truncated at a sharp edge.</p>
+      <p class="muted">Every value is computed live in this page, and the
+         math checks itself against a trusted reference before it draws.
+         The dots are plain DOM elements, no canvas, no WebGL. I like
          systems that prove they're correct before they ship output.</p>
     </div>
   </section>
@@ -145,8 +144,8 @@
         </div>
         <div>
           <h3>AI systems</h3>
-          <p>LLM-backed products, agent pipelines, and evaluation — shipping
-             AI that behaves in production, not just in the demo.</p>
+          <p>LLM-backed products, agent pipelines, and evaluation. AI that
+             behaves in production, not just in the demo.</p>
         </div>
         <div>
           <h3>Cybersecurity</h3>
@@ -162,7 +161,7 @@
       <h2>Working with me</h2>
       <p>Physics background, engineering practice: I take problems apart
          until the failure modes are visible, then build the smallest system
-         that solves them — verified at every layer, like the animation
+         that solves them, verified at every layer, like the animation
          above.</p>
       <p class="muted close-line">Currently taking on
          consulting engagements.
@@ -179,11 +178,12 @@
       mode: "scroll",
       track: document.getElementById("sh-track"),
       onProgress: (l) => {
-        document.getElementById("ellv").textContent = l.toFixed(1);
+        document.getElementById("ellv").textContent = Math.floor(l);
       },
     });
-    document.getElementById("errv").textContent =
-      zh.verifyError < 1e-9 ? zh.verifyError.toExponential(1) + " ✓" : "FAILED";
+    if (zh.verifyError >= 1e-9) {
+      console.warn("SH self-check failed:", zh.verifyError);
+    }
   </script>
 </body>
 </html>
