@@ -33,6 +33,10 @@
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  a:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px;
+  }
+  .close-line { margin-top: 22px; }
   ::selection { background: #b39ddb44; }
 
   .wrap { max-width: 620px; margin: 0 auto; padding: 0 24px; }
@@ -160,7 +164,7 @@
          until the failure modes are visible, then build the smallest system
          that solves them — verified at every layer, like the animation
          above.</p>
-      <p class="muted" style="margin-top:22px;">Currently taking on
+      <p class="muted close-line">Currently taking on
          consulting engagements.
          <a href="mailto:zbednarke@gmail.com">Get in touch</a> ·
          <a href="https://github.com/zbednarke">GitHub</a></p>
