@@ -33,6 +33,10 @@
     smooth: 0.14,       // per-frame lerp toward the target degree
   };
 
+  const REDUCED_MOTION =
+    typeof matchMedia === "function" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   function mount(container, opts = {}) {
     const o = { ...DEFAULTS, ...opts };
     const data = o.data || globalThis.ZACH_DATA;
@@ -189,7 +193,7 @@
       }
 
       const yawDrift = o.yawRange[0] + (o.yawRange[1] - o.yawRange[0]) * progress;
-      const sway = dragging ? 0 : Math.sin(ts / 4200) * 3;
+      const sway = dragging || REDUCED_MOTION ? 0 : Math.sin(ts / 4200) * 3;
       globe.style.transform =
         `rotateX(${(o.tilt + camX).toFixed(2)}deg) ` +
         `rotateY(${(camY + yawDrift + sway).toFixed(2)}deg)`;
