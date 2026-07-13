@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zach Bednarke</title>
+<meta name="description" content="Zach Bednarke — trader, engineer, recovering physicist.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23fca636'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #06040d;
+    --panel: #0d0a1c;
+    --fg: #cfc7e8;
+    --bright: #efeafd;
+    --dim: #8f86b3;
+    --faint: #574f78;
+    --accent: #b39ddb;
+    --line: #211b38;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.7 -apple-system, "Helvetica Neue", Helvetica, sans-serif;
+    text-rendering: optimizeLegibility;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ::selection { background: #b39ddb44; }
+
+  .wrap { max-width: 660px; margin: 0 auto; padding: 0 24px; }
+
+  /* hero */
+  header.hero { min-height: 92vh; display: flex; align-items: center; }
+  .hero h1 {
+    font-size: clamp(40px, 7vw, 60px); color: var(--bright);
+    letter-spacing: -0.02em; line-height: 1.1;
+  }
+  .hero .tag { margin-top: 20px; color: var(--dim); font-size: 19px; }
+  .hero .hint {
+    margin-top: 56px; color: var(--faint); font-size: 13px;
+    font-family: ui-monospace, Menlo, monospace; letter-spacing: 0.06em;
+  }
+
+  /* scroll-scrubbed spherical harmonics */
+  #sh-track { height: 480vh; position: relative; }
+  #sh-stage { position: sticky; top: 0; height: 100vh; overflow: hidden; }
+  #sh-caption {
+    position: absolute; bottom: 5vh; left: 0; right: 0;
+    text-align: center; z-index: 2; pointer-events: none;
+  }
+  #sh-caption .ell { font: italic 22px Georgia, serif; color: var(--bright); }
+  #sh-caption .sub {
+    font-size: 12px; color: var(--faint); margin-top: 6px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
+  /* sections */
+  section.block { padding: 16vh 0; border-top: 1px solid var(--line); }
+  section.block:first-of-type { border-top: none; }
+  h2 {
+    font-size: 13px; font-weight: 600; color: var(--faint);
+    font-family: ui-monospace, Menlo, monospace;
+    letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 28px;
+  }
+  .block p + p { margin-top: 16px; }
+  .block .muted { color: var(--dim); }
+
+  ul.links { list-style: none; }
+  ul.links li { padding: 14px 0; border-bottom: 1px solid var(--line); }
+  ul.links .what { color: var(--dim); font-size: 15px; margin-top: 2px; }
+
+  footer {
+    padding: 10vh 0 12vh; color: var(--faint); font-size: 14px;
+  }
+  footer .wrap { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+  <header class="hero">
+    <div class="wrap">
+      <h1>Zach Bednarke</h1>
+      <p class="tag">Trader &middot; engineer &middot; recovering physicist.</p>
+      <p class="hint">SCROLL — AND WATCH A NAME GET RESOLVED, ONE DEGREE AT A TIME ↓</p>
+    </div>
+  </header>
+
+  <section id="sh-track" aria-label="Spherical harmonic animation">
+    <div id="sh-stage">
+      <div id="sh-caption">
+        <div class="ell">ℓ<sub>max</sub> = <span id="ellv">0.0</span></div>
+        <div class="sub">
+          f(θ,φ) = Σ<sub>ℓ≤L</sub> Σ<sub>m</sub> c<sub>ℓm</sub> Y<sub>ℓm</sub>(θ,φ)
+          — synthesized live in your browser, rendered with CSS ·
+          math check vs SciPy: <span id="errv">…</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <h2>What you just watched</h2>
+      <p>My name, written as a function on a sphere — zero everywhere except
+         inside the letters — and reconstructed from its spherical-harmonic
+         expansion. As you scrolled, the partial sum
+         swept from ℓ&nbsp;=&nbsp;0 to ℓ&nbsp;=&nbsp;90: first the monopole
+         blob, then the low-order modes that only know “something is near the
+         equator,” and finally enough bandwidth to spell. The shimmer around
+         the letters is Gibbs ringing — the honest cost of building a
+         discontinuity out of smooth waves.</p>
+      <p class="muted">Every value is computed in the page: 8,281 coefficients
+         projected with Gauss–Legendre quadrature in Python, re-synthesized in
+         JavaScript with a stable Legendre recurrence, and self-checked
+         against SciPy to ~10<sup>−13</sup> on load. The dots are plain DOM
+         elements on a CSS-3D sphere. No canvas, no WebGL.</p>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <h2>About</h2>
+      <p>I trade, I build the systems I trade with, and I still think in
+         eigenfunctions. Physics background; these days mostly Go and Python
+         around Interactive Brokers, plus whatever a side project demands.</p>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <h2>Selected work</h2>
+      <ul class="links">
+        <li>
+          <a href="https://github.com/zbednarke/geomag">geomag</a>
+          <div class="what">Go implementation of the NOAA World Magnetic Model.</div>
+        </li>
+        <li>
+          <a href="https://github.com/zbednarke/rustlebrot">rustlebrot</a>
+          <div class="what">Mandelbrot zoom renders, raced across languages.</div>
+        </li>
+        <li>
+          <a href="https://github.com/zbednarke/zrm">zrm</a>
+          <div class="what">Personal CRM over iMessage on macOS.</div>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <a href="https://github.com/zbednarke">GitHub</a>
+      <a href="mailto:zbednarke@gmail.com">Email</a>
+    </div>
+  </footer>
+
+  <script src="assets/zach/data.js"></script>
+  <script src="assets/zach/sh.js"></script>
+  <script src="assets/zach/widget.js"></script>
+  <script>
+    const zh = ZachHarmonics.mount(document.getElementById("sh-stage"), {
+      mode: "scroll",
+      track: document.getElementById("sh-track"),
+      onProgress: (l) => {
+        document.getElementById("ellv").textContent = l.toFixed(1);
+      },
+    });
+    document.getElementById("errv").textContent =
+      zh.verifyError < 1e-9 ? zh.verifyError.toExponential(1) + " ✓" : "FAILED";
+  </script>
+</body>
+</html>
