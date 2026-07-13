@@ -43,7 +43,7 @@
     font-size: clamp(40px, 7vw, 58px); color: var(--bright);
     letter-spacing: -0.02em; line-height: 1.08;
   }
-  .hero .tag { margin-top: 22px; color: var(--dim); font-size: 19px; max-width: 34ch; }
+  .hero .tag { margin-top: 22px; color: var(--dim); font-size: 19px; max-width: 42ch; }
   .hero .cta { margin-top: 34px; font-size: 16px; }
   .hero .hint {
     margin-top: 64px; color: var(--faint); font-size: 12px;
@@ -51,7 +51,7 @@
   }
 
   /* scroll-scrubbed spherical harmonics */
-  #sh-track { height: 440vh; position: relative; }
+  #sh-track { height: 400vh; position: relative; }
   #sh-stage { position: sticky; top: 0; height: 100vh; overflow: hidden; }
   #sh-caption {
     position: absolute; bottom: 5vh; left: 0; right: 0;
@@ -71,7 +71,7 @@
 </style></noscript>
 <style>
 
-  section.block { padding: 15vh 0; }
+  section.block { padding: 13vh 0; }
   section.block + section.block { border-top: 1px solid var(--line); }
   h2 {
     font-size: 12px; font-weight: 600; color: var(--faint);
@@ -86,9 +86,7 @@
   .focus h3 { font-size: 17px; color: var(--bright); font-weight: 600; }
   .focus p { color: var(--dim); font-size: 16px; margin-top: 4px; }
 
-  footer { padding: 12vh 0 14vh; border-top: 1px solid var(--line); }
-  footer .row { display: flex; gap: 26px; flex-wrap: wrap; font-size: 15px; }
-  footer .note { margin-top: 18px; color: var(--faint); font-size: 13px; }
+  section.block:last-of-type { padding-bottom: 20vh; }
 </style>
 </head>
 <body>
@@ -96,8 +94,8 @@
   <header class="hero">
     <div class="wrap">
       <h1>Zach Bednarke</h1>
-      <p class="tag">Independent consultant. Infrastructure, AI systems,
-         and cybersecurity — built with a physicist's rigor.</p>
+      <p class="tag">Independent consultant. Infrastructure, AI&nbsp;systems,
+         and cybersecurity — built with a physicist's&nbsp;rigor.</p>
       <p class="cta"><a href="mailto:zbednarke@gmail.com">zbednarke@gmail.com</a></p>
       <p class="hint">scroll ↓</p>
     </div>
@@ -162,19 +160,12 @@
          until the failure modes are visible, then build the smallest system
          that solves them — verified at every layer, like the animation
          above.</p>
-      <p class="muted">Currently taking on consulting engagements.
-         <a href="mailto:zbednarke@gmail.com">Get in touch</a>.</p>
+      <p class="muted" style="margin-top:22px;">Currently taking on
+         consulting engagements.
+         <a href="mailto:zbednarke@gmail.com">Get in touch</a> ·
+         <a href="https://github.com/zbednarke">GitHub</a></p>
     </div>
   </section>
-
-  <footer>
-    <div class="wrap">
-      <div class="row">
-        <a href="mailto:zbednarke@gmail.com">Email</a>
-        <a href="https://github.com/zbednarke">GitHub</a>
-      </div>
-    </div>
-  </footer>
 
   <script src="assets/zach/data.js"></script>
   <script src="assets/zach/sh.js"></script>
