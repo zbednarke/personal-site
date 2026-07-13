@@ -53,10 +53,22 @@
       `position:absolute;inset:0;display:flex;align-items:center;` +
       `justify-content:center;perspective:${o.perspective}px;` +
       `overflow:hidden;touch-action:pan-y;`;
+    // scaler wraps the globe so the whole lattice fits small viewports
+    const scaler = document.createElement("div");
+    scaler.style.cssText =
+      "position:relative;width:0;height:0;transform-style:preserve-3d;";
     const globe = document.createElement("div");
     globe.style.cssText =
       "position:relative;width:0;height:0;transform-style:preserve-3d;";
-    scene.appendChild(globe);
+    scaler.appendChild(globe);
+    scene.appendChild(scaler);
+    function fit() {
+      const w = container.clientWidth || window.innerWidth;
+      const f = Math.max(0.42, Math.min(1.1, w / 860));
+      scaler.style.transform = `scale(${f.toFixed(3)})`;
+    }
+    fit();
+    window.addEventListener("resize", fit, { passive: true });
     if (getComputedStyle(container).position === "static") {
       container.style.position = "relative";
     }
@@ -207,6 +219,7 @@
         alive = false;
         window.removeEventListener("scroll", readScroll);
         window.removeEventListener("resize", readScroll);
+        window.removeEventListener("resize", fit);
         scene.remove();
       },
     };
