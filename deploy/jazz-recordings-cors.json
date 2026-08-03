@@ -1,6 +1,6 @@
 [
   {
-    "origin": ["https://zachbednarke.com"],
+    "origin": ["https://zachbednarke.com", "http://localhost:4173", "http://127.0.0.1:4173"],
     "method": ["PUT"],
     "responseHeader": ["Content-Type", "Content-Range", "Range", "X-Goog-Upload-Status"],
     "maxAgeSeconds": 3600

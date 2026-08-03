@@ -33,3 +33,13 @@ The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
 the live configuration reuses the existing Portal credential hash and forwards
 authenticated API requests through a private gateway secret. Passwords, hashes,
 and gateway credentials do not belong in this repository.
+
+## Local Jazz development
+
+Run `./dev.ps1` from PowerShell, then open
+`http://localhost:4173/jazz/`. Localhost deliberately has no login prompt. The
+development server reads the Jazz gateway credential from Google Secret Manager
+at startup and proxies API calls to the production Jazz service as user `zach`.
+This means local edits use the same PostgreSQL records and private GCS recording
+bucket as the live page without exposing a database URL, cloud credential, or
+gateway secret to browser JavaScript or saving one in the repository.
