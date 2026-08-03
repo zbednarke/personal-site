@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Jazz Project · Zach Bednarke</title>
+  <meta name="description" content="A one-year campaign to become a trusted jazz and Latin trumpet player in Los Angeles.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="referrer" content="no-referrer">
+  <meta property="og:title" content="The Jazz Project">
+  <meta property="og:description" content="From the practice room to first call: a public jazz trumpet skill tree and campaign log.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://zachbednarke.com/jazz/">
+  <meta property="og:image" content="https://zachbednarke.com/assets/jazz/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#08060f">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23f2ad5c'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/jazz/jazz.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to campaign</a>
+
+  <header class="site-header">
+      <a class="brand" href="../" aria-label="Zach Bednarke home" rel="noreferrer">
+      <span class="brand-mark" aria-hidden="true">ZB</span>
+      <span class="brand-slash" aria-hidden="true">/</span>
+      <span>Jazz Project</span>
+    </a>
+    <div class="header-status">
+      <span class="live-dot" aria-hidden="true"></span>
+      Year one campaign
+    </div>
+  </header>
+
+  <noscript><p class="noscript-note">Enable JavaScript to load the campaign roadmap and save practice progression.</p></noscript>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Mission 001 · Pasadena, California</p>
+        <h1 id="hero-title">Become the trumpet player they call back.</h1>
+        <p class="mission-statement">Build the sound, language, repertoire, and relationships to walk into a jazz or Latin gig in Los Angeles, contribute musically, and leave people saying, “Hope to see you next time.”</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#today">Start today’s practice</a>
+          <a class="button button-quiet" href="#skill-tree">Explore the skill tree</a>
+        </div>
+      </div>
+
+      <aside class="campaign-card" aria-label="Campaign status">
+        <div class="campaign-card-top">
+          <span class="label">Current chapter</span>
+          <span class="campaign-number" id="campaign-level">LV 01</span>
+        </div>
+        <h2>Rebuild &amp; reconnect</h2>
+        <p>Return the instrument to daily life. Learn one tune deeply. Start speaking jazz immediately.</p>
+        <div class="meter" aria-label="Campaign progress">
+          <span id="campaign-meter"></span>
+        </div>
+        <div class="campaign-meta">
+          <span><strong id="campaign-xp">0</strong> XP</span>
+          <span><strong id="campaign-progress">0%</strong> complete</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="stat-ribbon" aria-label="Campaign statistics">
+      <div><span class="stat-value" id="stat-hours">0.0</span><span class="stat-label">Practice hours</span></div>
+      <div><span class="stat-value" id="stat-streak">0</span><span class="stat-label">Day streak</span></div>
+      <div><span class="stat-value" id="stat-tunes">0</span><span class="stat-label">Tunes started</span></div>
+      <div><span class="stat-value" id="stat-bosses">0</span><span class="stat-label">Bosses cleared</span></div>
+      <div><span class="stat-value" id="stat-people">0</span><button class="stat-label stat-edit" id="edit-people" type="button">People who can call me +</button></div>
+    </section>
+
+    <section class="section" id="today" aria-labelledby="today-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">The daily engine</p>
+          <h2 id="today-title">Today’s practice</h2>
+          <p class="section-intro">Frequency beats marathons. Three focused sessions fit around a work-from-home day.</p>
+        </div>
+        <button class="button button-quiet" id="open-log" type="button">+ Log extra time</button>
+      </div>
+
+      <div class="today-layout">
+        <div class="session-list" id="session-list" aria-live="polite"></div>
+
+        <aside class="week-card">
+          <div class="week-card-header">
+            <div>
+              <span class="label">This week</span>
+              <h3><span id="week-hours">0.0</span> / 6 hours</h3>
+            </div>
+            <span class="week-percent" id="week-percent">0%</span>
+          </div>
+          <div class="meter meter-warm" aria-label="Weekly practice progress"><span id="week-meter"></span></div>
+          <div class="week-chart" id="week-chart" aria-label="Practice minutes for the last seven days"></div>
+          <p class="week-note" id="week-note">Start with one small session. Momentum is the first unlock.</p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section mission-section" aria-labelledby="mission-title">
+      <div class="section-heading compact">
+        <div>
+          <p class="eyebrow">Current mission</p>
+          <h2 id="mission-title">Blue Bossa</h2>
+        </div>
+        <div class="mission-progress"><strong id="mission-count">0 / 7</strong><span>objectives</span></div>
+      </div>
+
+      <div class="mission-grid">
+        <div class="record-sleeve" aria-hidden="true">
+          <div class="record-ring"><span>BLUE<br>BOSSA</span></div>
+        </div>
+        <div>
+          <p class="mission-lede">One tune, six concepts: minor ii–V, guide tones, form, Latin feel, phrasing, and the courage to keep playing.</p>
+          <div class="objective-list" id="objective-list"></div>
+          <div class="unlock-note" id="mission-unlock">Complete the mission to unlock Boss 3: play Blue Bossa from memory.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="skill-tree" aria-labelledby="skills-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Capability map</p>
+          <h2 id="skills-title">The skill tree</h2>
+          <p class="section-intro">Every node unlocks something you can do with other musicians. Select a node to inspect or level it up.</p>
+        </div>
+        <div class="tree-summary"><span id="skills-earned">0</span> levels earned</div>
+      </div>
+
+      <div class="track-tabs" id="track-tabs" role="tablist" aria-label="Skill tracks"></div>
+      <div class="skill-tree" id="skill-tree-grid"></div>
+    </section>
+
+    <section class="section" id="repertoire" aria-labelledby="repertoire-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">The book</p>
+          <h2 id="repertoire-title">Repertoire roadmap</h2>
+          <p class="section-intro">Tunes are promoted through six stages. A star is not theory learned; it is a capability earned.</p>
+        </div>
+        <div class="legend" aria-label="Repertoire stage legend"><span>1 melody</span><span>3 changes</span><span>6 gig ready</span></div>
+      </div>
+      <div class="repertoire-grid" id="repertoire-grid"></div>
+    </section>
+
+    <section class="section" id="roadmap" aria-labelledby="roadmap-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Twelve-month campaign</p>
+          <h2 id="roadmap-title">Practice room → first call</h2>
+          <p class="section-intro">Four chapters run in parallel: playing, language, bandcraft, and becoming part of the scene.</p>
+        </div>
+      </div>
+      <div class="roadmap" id="roadmap-grid"></div>
+    </section>
+
+    <section class="section scene-section" id="scene" aria-labelledby="scene-title">
+      <div class="section-heading compact">
+        <div>
+          <p class="eyebrow">Pasadena / LA field map</p>
+          <h2 id="scene-title">Become known while becoming ready</h2>
+        </div>
+        <p class="scene-counter"><strong id="scene-count">0</strong> field steps complete</p>
+      </div>
+      <div class="scene-route" id="scene-route"></div>
+      <p class="scene-footnote">Venues, jams, teachers, and rehearsal spaces will be added as verified field intel—not guessed into the roadmap.</p>
+    </section>
+
+    <section class="section" id="bosses" aria-labelledby="bosses-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Real-world checkpoints</p>
+          <h2 id="bosses-title">Boss fights</h2>
+          <p class="section-intro">The campaign only advances when the skill survives contact with an actual room.</p>
+        </div>
+      </div>
+      <div class="boss-list" id="boss-list"></div>
+    </section>
+
+    <section class="closing-section" aria-labelledby="closing-title">
+      <p class="eyebrow">North star</p>
+      <h2 id="closing-title">Solid. Prepared. Musical.<br>Easy to call again.</h2>
+      <p>The goal is not to know everything. The goal is to make the next room better because you are in it.</p>
+      <a class="button button-primary" href="#today">What should I practice?</a>
+    </section>
+  </main>
+
+  <footer>
+    <div>
+      <strong>The Jazz Project</strong>
+      <p>Progress is saved in this browser.</p>
+    </div>
+    <div class="data-actions">
+      <button type="button" id="export-data">Export progress</button>
+      <label for="import-data" class="file-label">Import progress</label>
+      <input type="file" id="import-data" accept="application/json" hidden>
+      <button type="button" id="reset-data">Reset</button>
+    </div>
+  </footer>
+
+  <dialog class="dialog" id="skill-dialog" aria-labelledby="skill-dialog-title">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close skill details">×</button>
+    <p class="eyebrow" id="skill-dialog-track"></p>
+    <h2 id="skill-dialog-title"></h2>
+    <p class="dialog-copy" id="skill-dialog-copy"></p>
+    <div class="real-world-unlock"><span>Real-world unlock</span><strong id="skill-dialog-unlock"></strong></div>
+    <div class="level-road" id="skill-level-road"></div>
+    <div class="dialog-actions">
+      <button class="button button-quiet" id="level-down" type="button">− Level</button>
+      <button class="button button-primary" id="level-up" type="button">Complete next level</button>
+    </div>
+  </dialog>
+
+  <dialog class="dialog log-dialog" id="log-dialog" aria-labelledby="log-dialog-title">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close practice log">×</button>
+    <p class="eyebrow">Practice log</p>
+    <h2 id="log-dialog-title">Add a session</h2>
+    <form id="log-form">
+      <label>Track
+        <select name="track" required>
+          <option value="trumpet">Trumpet</option>
+          <option value="language">Jazz language</option>
+          <option value="musician">Musician</option>
+          <option value="scene">Scene / listening</option>
+        </select>
+      </label>
+      <label>Minutes
+        <input name="minutes" type="number" inputmode="numeric" min="1" max="360" value="30" required>
+      </label>
+      <label>Note <span>(optional)</span>
+        <input name="note" type="text" maxlength="100" placeholder="Guide tones through Blue Bossa">
+      </label>
+      <button class="button button-primary" type="submit">Save session</button>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="../assets/jazz/data.js"></script>
+  <script src="../assets/jazz/app.js"></script>
+</body>
+</html>
