@@ -17,4 +17,17 @@ header @jazz_private {
     X-Robots-Tag "noindex, nofollow, noarchive"
     Cache-Control "private, no-store"
     Referrer-Policy "no-referrer"
+    Permissions-Policy "camera=(), microphone=(self), geolocation=()"
+}
+
+# Keep this block before the site's file_server. Caddy strips /jazz/api,
+# forwards the authenticated username, and adds a gateway secret that is never
+# exposed to browser JavaScript. Set JAZZ_API_URL and JAZZ_GATEWAY_KEY in the
+# Caddy service environment, not in this repository.
+handle_path /jazz/api/* {
+    reverse_proxy {$JAZZ_API_URL} {
+        header_up Host {upstream_hostport}
+        header_up X-Jazz-User {http.auth.user.id}
+        header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+    }
 }

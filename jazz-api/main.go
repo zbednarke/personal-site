@@ -1,0 +1,722 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/subtle"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
+	credentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
+	"cloud.google.com/go/storage"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+)
+
+const (
+	maxRequestBytes   = 2 << 20
+	maxRecordingBytes = 250 << 20
+	maxDurationMS     = 30 * 60 * 1000
+)
+
+var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+type config struct {
+	Port                string
+	DatabaseURL         string
+	GatewayKey          string
+	Bucket              string
+	ServiceAccountEmail string
+	AllowInsecureLocal  bool
+}
+
+type application struct {
+	cfg         config
+	db          *pgxpool.Pool
+	storage     *storage.Client
+	tokenSource oauth2.TokenSource
+	iamSigner   *iamcredentials.IamCredentialsClient
+	httpClient  *http.Client
+	logger      *slog.Logger
+}
+
+type contextKey string
+
+const userSubjectKey contextKey = "user-subject"
+
+type practiceEntry struct {
+	ID      string `json:"id"`
+	Date    string `json:"date"`
+	Minutes int    `json:"minutes"`
+	Track   string `json:"track"`
+	Note    string `json:"note"`
+	Preset  bool   `json:"preset,omitempty"`
+}
+
+type campaignState struct {
+	Version       int             `json:"version"`
+	SkillLevels   map[string]int  `json:"skillLevels"`
+	Objectives    map[string]bool `json:"objectives"`
+	Repertoire    map[string]int  `json:"repertoire"`
+	Bosses        map[string]bool `json:"bosses"`
+	Scene         map[string]bool `json:"scene"`
+	Practice      []practiceEntry `json:"practice"`
+	PeopleCanCall int             `json:"peopleCanCall"`
+}
+
+type syncRequest struct {
+	ClientMutationID string          `json:"clientMutationId"`
+	EventType        string          `json:"eventType"`
+	BaseRevision     int64           `json:"baseRevision"`
+	State            json.RawMessage `json:"state"`
+}
+
+type stateResponse struct {
+	HasState bool            `json:"hasState"`
+	Revision int64           `json:"revision"`
+	State    json.RawMessage `json:"state,omitempty"`
+}
+
+type recordingInitRequest struct {
+	ContentType       string   `json:"contentType"`
+	Codec             string   `json:"codec"`
+	SizeBytes         int64    `json:"sizeBytes"`
+	DurationMS        int      `json:"durationMs"`
+	SampleRate        int      `json:"sampleRate"`
+	Channels          int      `json:"channels"`
+	RecordedAt        string   `json:"recordedAt"`
+	PracticeSessionID string   `json:"practiceSessionId"`
+	TuneID            string   `json:"tuneId"`
+	MissionID         string   `json:"missionId"`
+	SkillIDs          []string `json:"skillIds"`
+	TakeNumber        int      `json:"takeNumber"`
+	Notes             string   `json:"notes"`
+}
+
+type recordingRow struct {
+	ID          uuid.UUID `json:"id"`
+	ContentType string    `json:"contentType"`
+	Codec       string    `json:"codec,omitempty"`
+	SizeBytes   int64     `json:"sizeBytes,omitempty"`
+	DurationMS  int       `json:"durationMs,omitempty"`
+	RecordedAt  time.Time `json:"recordedAt"`
+	Status      string    `json:"status"`
+	TuneID      string    `json:"tuneId,omitempty"`
+	MissionID   string    `json:"missionId,omitempty"`
+	SkillIDs    []string  `json:"skillIds"`
+	TakeNumber  int       `json:"takeNumber,omitempty"`
+	Notes       string    `json:"notes,omitempty"`
+	ObjectName  string    `json:"-"`
+}
+
+func main() {
+	cfg, err := loadConfig()
+	if err != nil {
+		slog.Error("configuration error", "error", err)
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("database configuration failed", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	if err := db.Ping(ctx); err != nil {
+		slog.Error("database connection failed", "error", err)
+		os.Exit(1)
+	}
+	if err := migrate(ctx, db); err != nil {
+		slog.Error("database migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	storageClient, err := storage.NewClient(ctx)
+	if err != nil {
+		slog.Error("storage client failed", "error", err)
+		os.Exit(1)
+	}
+	defer storageClient.Close()
+	tokenSource, err := google.DefaultTokenSource(ctx, storage.ScopeReadWrite)
+	if err != nil {
+		slog.Error("google credentials failed", "error", err)
+		os.Exit(1)
+	}
+	iamSigner, err := iamcredentials.NewIamCredentialsClient(ctx)
+	if err != nil {
+		slog.Error("signing client failed", "error", err)
+		os.Exit(1)
+	}
+	defer iamSigner.Close()
+
+	app := &application{
+		cfg: cfg, db: db, storage: storageClient, tokenSource: tokenSource,
+		iamSigner: iamSigner, httpClient: &http.Client{Timeout: 15 * time.Second}, logger: slog.Default(),
+	}
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           app.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
+	slog.Info("jazz API listening", "port", cfg.Port)
+	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("server stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func loadConfig() (config, error) {
+	cfg := config{
+		Port:                envOr("PORT", "8080"),
+		DatabaseURL:         strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		GatewayKey:          strings.TrimSpace(os.Getenv("GATEWAY_KEY")),
+		Bucket:              strings.TrimSpace(os.Getenv("GCS_BUCKET")),
+		ServiceAccountEmail: strings.TrimSpace(os.Getenv("GCP_SERVICE_ACCOUNT")),
+		AllowInsecureLocal:  os.Getenv("JAZZ_ALLOW_INSECURE_LOCAL") == "1",
+	}
+	if cfg.DatabaseURL == "" || cfg.Bucket == "" || cfg.ServiceAccountEmail == "" {
+		return cfg, errors.New("DATABASE_URL, GCS_BUCKET, and GCP_SERVICE_ACCOUNT are required")
+	}
+	if cfg.GatewayKey == "" && !cfg.AllowInsecureLocal {
+		return cfg, errors.New("GATEWAY_KEY is required outside local development")
+	}
+	return cfg, nil
+}
+
+func envOr(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func migrate(ctx context.Context, db *pgxpool.Pool) error {
+	contents, err := migrationFiles.ReadFile("migrations/001_init.sql")
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(ctx, string(contents))
+	return err
+}
+
+func (app *application) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", app.health)
+	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
+	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
+	mux.Handle("GET /v1/recordings", app.authenticate(http.HandlerFunc(app.listRecordings)))
+	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
+	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
+	mux.Handle("POST /v1/recordings/{id}/playback-url", app.authenticate(http.HandlerFunc(app.recordingPlaybackURL)))
+	mux.Handle("DELETE /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.deleteRecording)))
+	return app.recoverPanic(app.logRequests(mux))
+}
+
+func (app *application) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providedKey := r.Header.Get("X-Jazz-Gateway-Key")
+		if !app.cfg.AllowInsecureLocal && subtle.ConstantTimeCompare([]byte(providedKey), []byte(app.cfg.GatewayKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		subject := strings.TrimSpace(r.Header.Get("X-Jazz-User"))
+		if subject == "" && app.cfg.AllowInsecureLocal {
+			subject = "local"
+		}
+		if subject == "" || len(subject) > 128 {
+			writeError(w, http.StatusUnauthorized, "missing authenticated user")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userSubjectKey, subject)))
+	})
+}
+
+func (app *application) health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := app.db.Ping(ctx); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (app *application) userID(ctx context.Context) (uuid.UUID, error) {
+	subject, _ := ctx.Value(userSubjectKey).(string)
+	newID := uuid.New()
+	var id uuid.UUID
+	err := app.db.QueryRow(ctx, `
+		INSERT INTO app_users (id, auth_subject) VALUES ($1, $2)
+		ON CONFLICT (auth_subject) DO UPDATE SET auth_subject = EXCLUDED.auth_subject
+		RETURNING id`, newID, subject).Scan(&id)
+	return id, err
+}
+
+func (app *application) getState(w http.ResponseWriter, r *http.Request) {
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var response stateResponse
+	err = app.db.QueryRow(r.Context(), `SELECT revision, data FROM campaign_state WHERE user_id = $1`, userID).
+		Scan(&response.Revision, &response.State)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, stateResponse{HasState: false, Revision: 0})
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	response.HasState = true
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (app *application) syncState(w http.ResponseWriter, r *http.Request) {
+	var input syncRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	mutationID, err := uuid.Parse(input.ClientMutationID)
+	if err != nil || len(input.EventType) == 0 || len(input.EventType) > 80 {
+		writeError(w, http.StatusBadRequest, "invalid mutation")
+		return
+	}
+	if err := validateCampaignState(input.State); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+
+	tx, err := app.db.Begin(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var duplicate bool
+	err = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM progress_events WHERE user_id=$1 AND client_mutation_id=$2)`, userID, mutationID).Scan(&duplicate)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+
+	var revision int64
+	var current json.RawMessage
+	err = tx.QueryRow(r.Context(), `SELECT revision, data FROM campaign_state WHERE user_id=$1 FOR UPDATE`, userID).Scan(&revision, &current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		revision = 0
+		current = nil
+	} else if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if duplicate {
+		if err := tx.Commit(r.Context()); err != nil {
+			app.serverError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, stateResponse{HasState: current != nil, Revision: revision, State: current})
+		return
+	}
+	if input.BaseRevision != revision {
+		writeJSON(w, http.StatusConflict, stateResponse{HasState: current != nil, Revision: revision, State: current})
+		return
+	}
+
+	nextRevision := revision + 1
+	_, err = tx.Exec(r.Context(), `
+		INSERT INTO campaign_state (user_id, data, revision) VALUES ($1, $2, $3)
+		ON CONFLICT (user_id) DO UPDATE SET data=EXCLUDED.data, revision=EXCLUDED.revision, updated_at=now()`,
+		userID, input.State, nextRevision)
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO progress_events (user_id, client_mutation_id, event_type, payload) VALUES ($1,$2,$3,$4)`,
+			userID, mutationID, input.EventType, input.State)
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stateResponse{HasState: true, Revision: nextRevision, State: input.State})
+}
+
+func validateCampaignState(raw json.RawMessage) error {
+	if len(raw) == 0 || len(raw) > maxRequestBytes {
+		return errors.New("campaign state is missing or too large")
+	}
+	var state campaignState
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&state); err != nil {
+		return errors.New("campaign state is invalid")
+	}
+	if state.Version < 1 || state.Version > 100 || state.PeopleCanCall < 0 || state.PeopleCanCall > 999 {
+		return errors.New("campaign state values are out of range")
+	}
+	if len(state.SkillLevels) > 200 || len(state.Objectives) > 500 || len(state.Repertoire) > 500 || len(state.Bosses) > 500 || len(state.Scene) > 500 || len(state.Practice) > 50000 {
+		return errors.New("campaign state contains too many entries")
+	}
+	for _, level := range state.SkillLevels {
+		if level < 0 || level > 4 {
+			return errors.New("skill level is out of range")
+		}
+	}
+	for _, stage := range state.Repertoire {
+		if stage < 0 || stage > 6 {
+			return errors.New("repertoire stage is out of range")
+		}
+	}
+	for _, entry := range state.Practice {
+		if len(entry.ID) == 0 || len(entry.ID) > 160 || !datePattern.MatchString(entry.Date) || entry.Minutes < 1 || entry.Minutes > 360 || len(entry.Track) > 30 || len(entry.Note) > 100 {
+			return errors.New("practice entry is invalid")
+		}
+	}
+	return nil
+}
+
+func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
+	var input recordingInitRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	baseType := strings.ToLower(strings.TrimSpace(strings.Split(input.ContentType, ";")[0]))
+	if !allowedAudioType(baseType) || input.SizeBytes < 1 || input.SizeBytes > maxRecordingBytes || input.DurationMS < 0 || input.DurationMS > maxDurationMS {
+		writeError(w, http.StatusUnprocessableEntity, "recording type, size, or duration is not allowed")
+		return
+	}
+	recordedAt, err := time.Parse(time.RFC3339, input.RecordedAt)
+	if err != nil || len(input.Notes) > 500 || len(input.SkillIDs) > 20 || input.TakeNumber < 0 || input.TakeNumber > 99 {
+		writeError(w, http.StatusUnprocessableEntity, "recording metadata is invalid")
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	recordingID := uuid.New()
+	objectName := fmt.Sprintf("users/%s/%s/%s/source.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
+	skillJSON, _ := json.Marshal(input.SkillIDs)
+	_, err = app.db.Exec(r.Context(), `
+		INSERT INTO recordings
+		(id,user_id,practice_session_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,0),NULLIF($10,0),NULLIF($11,0),$12,'uploading',NULLIF($13,''),NULLIF($14,''),$15,NULLIF($16,0),NULLIF($17,''))`,
+		recordingID, userID, clean(input.PracticeSessionID, 160), app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
+		input.DurationMS, input.SampleRate, input.Channels, recordedAt, clean(input.TuneID, 100), clean(input.MissionID, 100), skillJSON,
+		input.TakeNumber, clean(input.Notes, 500))
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes)
+	if err != nil {
+		_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName,
+	})
+}
+
+func (app *application) createResumableUpload(ctx context.Context, recordingID, userID uuid.UUID, objectName, contentType string, size int64) (string, error) {
+	token, err := app.tokenSource.Token()
+	if err != nil {
+		return "", err
+	}
+	metadata := map[string]any{
+		"name": objectName, "contentType": contentType,
+		"metadata": map[string]string{"recordingId": recordingID.String(), "userId": userID.String()},
+	}
+	body, _ := json.Marshal(metadata)
+	endpoint := "https://storage.googleapis.com/upload/storage/v1/b/" + url.PathEscape(app.cfg.Bucket) + "/o?uploadType=resumable&name=" + url.QueryEscape(objectName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("X-Upload-Content-Type", contentType)
+	req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+	response, err := app.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return "", fmt.Errorf("storage upload initialization failed: %s: %s", response.Status, strings.TrimSpace(string(message)))
+	}
+	location := response.Header.Get("Location")
+	if location == "" {
+		return "", errors.New("storage did not return an upload session")
+	}
+	return location, nil
+}
+
+func (app *application) completeRecording(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var objectName string
+	var expectedSize int64
+	err = app.db.QueryRow(r.Context(), `SELECT object_name, expected_size_bytes FROM recordings WHERE id=$1 AND user_id=$2 AND status='uploading'`, recordingID, userID).
+		Scan(&objectName, &expectedSize)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	attrs, err := app.storage.Bucket(app.cfg.Bucket).Object(objectName).Attrs(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if attrs.Size != expectedSize || attrs.Metadata["recordingId"] != recordingID.String() || attrs.Metadata["userId"] != userID.String() {
+		writeError(w, http.StatusConflict, "uploaded object did not pass verification")
+		return
+	}
+	_, err = app.db.Exec(r.Context(), `UPDATE recordings SET status='ready', size_bytes=$1, object_generation=$2, checksum=$3, uploaded_at=now(), updated_at=now() WHERE id=$4 AND user_id=$5`,
+		attrs.Size, attrs.Generation, fmt.Sprintf("crc32c:%08x", attrs.CRC32C), recordingID, userID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "status": "ready"})
+}
+
+func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	rows, err := app.db.Query(r.Context(), `
+		SELECT id,content_type,COALESCE(codec,''),COALESCE(size_bytes,expected_size_bytes),COALESCE(duration_ms,0),recorded_at,status,
+		COALESCE(tune_id,''),COALESCE(mission_id,''),skill_ids,COALESCE(take_number,0),COALESCE(notes,''),object_name
+		FROM recordings WHERE user_id=$1 AND status <> 'deleted' ORDER BY recorded_at DESC LIMIT 100`, userID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer rows.Close()
+	result := make([]recordingRow, 0)
+	for rows.Next() {
+		var item recordingRow
+		var skills []byte
+		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.RecordedAt, &item.Status,
+			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.ObjectName); err != nil {
+			app.serverError(w, err)
+			return
+		}
+		_ = json.Unmarshal(skills, &item.SkillIDs)
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"recordings": result})
+}
+
+func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var objectName string
+	err = app.db.QueryRow(r.Context(), `SELECT object_name FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).Scan(&objectName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	expires := time.Now().Add(10 * time.Minute)
+	signedURL, err := storage.SignedURL(app.cfg.Bucket, objectName, &storage.SignedURLOptions{
+		GoogleAccessID: app.cfg.ServiceAccountEmail,
+		Method:         http.MethodGet,
+		Expires:        expires,
+		Scheme:         storage.SigningSchemeV4,
+		SignBytes: func(payload []byte) ([]byte, error) {
+			response, err := app.iamSigner.SignBlob(r.Context(), &credentialspb.SignBlobRequest{
+				Name: "projects/-/serviceAccounts/" + app.cfg.ServiceAccountEmail, Payload: payload,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return response.SignedBlob, nil
+		},
+	})
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires})
+}
+
+func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var objectName string
+	err = app.db.QueryRow(r.Context(), `SELECT object_name FROM recordings WHERE id=$1 AND user_id=$2 AND status <> 'deleted'`, recordingID, userID).Scan(&objectName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if err := app.storage.Bucket(app.cfg.Bucket).Object(objectName).Delete(r.Context()); err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
+		app.serverError(w, err)
+		return
+	}
+	_, err = app.db.Exec(r.Context(), `UPDATE recordings SET status='deleted', updated_at=now() WHERE id=$1 AND user_id=$2`, recordingID, userID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func allowedAudioType(contentType string) bool {
+	switch contentType {
+	case "audio/webm", "audio/mp4", "audio/ogg", "audio/wav", "audio/x-wav", "audio/mpeg":
+		return true
+	default:
+		return false
+	}
+}
+
+func extensionFor(contentType string) string {
+	switch contentType {
+	case "audio/mp4":
+		return "m4a"
+	case "audio/ogg":
+		return "ogg"
+	case "audio/wav", "audio/x-wav":
+		return "wav"
+	case "audio/mpeg":
+		return "mp3"
+	default:
+		return "webm"
+	}
+}
+
+func clean(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > limit {
+		return value[:limit]
+	}
+	return value
+}
+
+func readJSON(w http.ResponseWriter, r *http.Request, destination any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return errors.New("invalid JSON request")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("request must contain one JSON object")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func (app *application) serverError(w http.ResponseWriter, err error) {
+	app.logger.Error("request failed", "error", err)
+	writeError(w, http.StatusInternalServerError, "internal server error")
+}
+
+func (app *application) recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				app.logger.Error("panic", "value", recovered)
+				writeError(w, http.StatusInternalServerError, "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (app *application) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		next.ServeHTTP(w, r)
+		app.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
+	})
+}

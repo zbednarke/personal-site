@@ -99,6 +99,67 @@
       </div>
     </section>
 
+    <section class="section recording-section" id="recordings" aria-labelledby="recordings-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Practice tape</p>
+          <h2 id="recordings-title">Record the evidence.</h2>
+          <p class="section-intro">Capture a take while the work is fresh. It uploads privately with the tune, focus, and take number attached.</p>
+        </div>
+        <span class="cloud-status" id="recording-service-status">Checking private storage...</span>
+      </div>
+
+      <div class="recording-layout">
+        <article class="recorder-card">
+          <div class="recorder-display">
+            <span class="recording-light" id="recording-light" aria-hidden="true"></span>
+            <span class="recording-timer" id="recording-timer">00:00</span>
+            <span class="recording-state" id="recording-state">Ready for a take</span>
+          </div>
+          <div class="input-meter" aria-label="Microphone input level"><span id="input-meter-fill"></span></div>
+
+          <div class="recorder-controls">
+            <button class="button button-primary" id="start-recording" type="button">Start recording</button>
+            <button class="button button-quiet" id="stop-recording" type="button" disabled>Stop</button>
+          </div>
+
+          <audio id="recording-preview" controls hidden></audio>
+          <p class="recorder-privacy">Your microphone is active only between Start and Stop. Recordings stay private.</p>
+        </article>
+
+        <form class="recording-metadata" id="recording-metadata">
+          <label>Tune
+            <select name="tuneId" id="recording-tune"></select>
+          </label>
+          <label>Focus
+            <select name="skillId" id="recording-skill"></select>
+          </label>
+          <label>Take number
+            <input name="takeNumber" type="number" min="1" max="99" value="1" inputmode="numeric">
+          </label>
+          <label>Notes <span>(optional)</span>
+            <textarea name="notes" maxlength="500" rows="3" placeholder="What did you hear? What changes on the next take?"></textarea>
+          </label>
+          <label>Microphone
+            <select name="microphone" id="microphone-select">
+              <option value="">Default microphone</option>
+            </select>
+          </label>
+        </form>
+      </div>
+
+      <div class="recording-library-heading">
+        <div>
+          <span class="label">Private archive</span>
+          <h3>Recent takes</h3>
+        </div>
+        <button class="button button-quiet" id="refresh-recordings" type="button">Refresh</button>
+      </div>
+      <div class="recording-library" id="recording-library" aria-live="polite">
+        <p class="empty-recordings">No recordings yet. Your first honest take is the baseline.</p>
+      </div>
+    </section>
+
     <section class="section mission-section" aria-labelledby="mission-title">
       <div class="section-heading compact">
         <div>
@@ -191,7 +252,7 @@
   <footer>
     <div>
       <strong>The Jazz Project</strong>
-      <p>Progress is saved in this browser.</p>
+      <p id="sync-status">Progress is saved on this device while cloud storage connects.</p>
     </div>
     <div class="data-actions">
       <button type="button" id="export-data">Export progress</button>
@@ -241,5 +302,6 @@
 
   <script src="../assets/jazz/data.js"></script>
   <script src="../assets/jazz/app.js"></script>
+  <script src="../assets/jazz/recording.js"></script>
 </body>
 </html>

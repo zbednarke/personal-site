@@ -3,6 +3,10 @@
 
   const DATA = globalThis.JAZZ_DATA;
   const STORAGE_KEY = "zach-jazz-project-v1";
+  const SYNC_META_KEY = "zach-jazz-project-sync-v1";
+  const OUTBOX_KEY = "zach-jazz-project-outbox-v1";
+  const CLOUD_BOUND_KEY = "zach-jazz-project-cloud-bound-v1";
+  const API_BASE = "./api/v1";
   const MAX_SKILL_LEVEL = 4;
   const stateDefaults = {
     version: DATA.version,
@@ -19,6 +23,10 @@
   let activeTrack = "all";
   let activeSkillId = null;
   let toastTimer = null;
+  let syncRevision = loadSyncRevision();
+  let syncOutbox = loadOutbox();
+  let syncInFlight = false;
+  let syncPaused = false;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -63,8 +71,161 @@
     }
   }
 
-  function saveState() {
+  function persistState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function saveState(eventType = "campaign.changed") {
+    persistState();
+    syncOutbox.push({
+      clientMutationId: crypto.randomUUID(),
+      eventType,
+      state: structuredClone(state),
+    });
+    if (syncOutbox.length > 200) syncOutbox = syncOutbox.slice(-200);
+    saveOutbox();
+    flushOutbox();
+  }
+
+  function loadSyncRevision() {
+    try {
+      return Math.max(0, Number(JSON.parse(localStorage.getItem(SYNC_META_KEY) || "{}").revision || 0));
+    } catch {
+      return 0;
+    }
+  }
+
+  function saveSyncRevision() {
+    localStorage.setItem(SYNC_META_KEY, JSON.stringify({ revision: syncRevision, updatedAt: new Date().toISOString() }));
+  }
+
+  function loadOutbox() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]");
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveOutbox() {
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(syncOutbox));
+  }
+
+  function hasMeaningfulProgress(candidate) {
+    return candidate.practice.length > 0
+      || Number(candidate.peopleCanCall) > 0
+      || [candidate.skillLevels, candidate.objectives, candidate.repertoire, candidate.bosses, candidate.scene]
+        .some((group) => Object.values(group).some(Boolean));
+  }
+
+  function setSyncStatus(message, tone = "") {
+    const element = document.getElementById("sync-status");
+    if (!element) return;
+    element.textContent = message;
+    element.dataset.tone = tone;
+  }
+
+  async function apiRequest(path, options = {}) {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(body.error || `Cloud request failed (${response.status})`);
+      error.status = response.status;
+      error.body = body;
+      throw error;
+    }
+    return body;
+  }
+
+  async function initializeCloudSync() {
+    setSyncStatus("Connecting private cloud progress...");
+    try {
+      const remote = await apiRequest("/state");
+      syncRevision = Number(remote.revision || 0);
+      saveSyncRevision();
+      const cloudBound = localStorage.getItem(CLOUD_BOUND_KEY) === "1";
+
+      if (syncOutbox.length) {
+        localStorage.setItem(CLOUD_BOUND_KEY, "1");
+        await flushOutbox();
+        return;
+      }
+
+      if (remote.hasState) {
+        if (hasMeaningfulProgress(state) && !cloudBound) {
+          const useCloud = confirm("Cloud progress already exists. Load it here? Cancel keeps this browser copy unchanged so you can export it first.");
+          if (!useCloud) {
+            syncPaused = true;
+            setSyncStatus("Browser copy preserved; cloud sync paused.", "offline");
+            return;
+          }
+        }
+        state = normalizeState(remote.state);
+        persistState();
+        localStorage.setItem(CLOUD_BOUND_KEY, "1");
+        renderAll();
+        setSyncStatus("Progress saved privately in the cloud.", "online");
+        return;
+      }
+
+      if (hasMeaningfulProgress(state) && !cloudBound) {
+        const migrate = confirm("Move this browser's Jazz Project progress into your private cloud account now?");
+        if (!migrate) {
+          syncPaused = true;
+          setSyncStatus("Progress remains in this browser; cloud sync paused.", "offline");
+          return;
+        }
+        localStorage.setItem(CLOUD_BOUND_KEY, "1");
+        saveState("campaign.browser_imported");
+        return;
+      }
+
+      localStorage.setItem(CLOUD_BOUND_KEY, "1");
+      setSyncStatus("Private cloud progress is ready.", "online");
+    } catch {
+      setSyncStatus("Cloud unavailable; changes are queued safely on this device.", "offline");
+    }
+  }
+
+  async function flushOutbox() {
+    if (syncPaused || syncInFlight || !syncOutbox.length) return;
+    syncInFlight = true;
+    setSyncStatus(`Syncing ${syncOutbox.length} queued change${syncOutbox.length === 1 ? "" : "s"}...`);
+    try {
+      while (syncOutbox.length) {
+        const mutation = syncOutbox[0];
+        try {
+          const response = await apiRequest("/sync", {
+            method: "POST",
+            body: JSON.stringify({ ...mutation, baseRevision: syncRevision }),
+          });
+          syncRevision = Number(response.revision || syncRevision + 1);
+          saveSyncRevision();
+          syncOutbox.shift();
+          saveOutbox();
+        } catch (error) {
+          if (error.status === 409 && Number.isFinite(Number(error.body?.revision))) {
+            syncRevision = Number(error.body.revision);
+            saveSyncRevision();
+            continue;
+          }
+          throw error;
+        }
+      }
+      localStorage.setItem(CLOUD_BOUND_KEY, "1");
+      setSyncStatus("Progress saved privately in the cloud.", "online");
+    } catch {
+      setSyncStatus("Cloud unavailable; changes are queued safely on this device.", "offline");
+    } finally {
+      syncInFlight = false;
+    }
   }
 
   function localDateKey(date = new Date()) {
@@ -178,7 +339,7 @@
           state.practice.push({ id: logId, date: today, minutes: session.minutes, track: session.track, note: session.title, preset: true });
           showToast(`+${session.minutes} minutes logged`);
         }
-        saveState();
+        saveState(existing >= 0 ? "practice.session_reopened" : "practice.session_completed");
         renderAll();
       });
       list.appendChild(card);
@@ -228,7 +389,7 @@
       button.textContent = objective;
       button.addEventListener("click", () => {
         state.objectives[index] = !complete;
-        saveState();
+        saveState("mission.objective_toggled");
         renderAll();
       });
       list.appendChild(button);
@@ -356,7 +517,7 @@
       $$("button", card).forEach((button) => button.addEventListener("click", () => {
         const direction = button.dataset.direction === "up" ? 1 : -1;
         state.repertoire[tune.id] = Math.max(0, Math.min(6, stage + direction));
-        saveState();
+        saveState("repertoire.stage_changed");
         renderAll();
       }));
       grid.appendChild(card);
@@ -388,7 +549,7 @@
         const newValue = !complete;
         state.scene[step.id] = newValue;
         if (!newValue) DATA.sceneSteps.slice(index + 1).forEach((future) => { state.scene[future.id] = false; });
-        saveState();
+        saveState("scene.step_toggled");
         renderAll();
       });
       route.appendChild(stop);
@@ -410,7 +571,7 @@
         const newValue = !complete;
         state.bosses[index] = newValue;
         if (!newValue) DATA.bosses.slice(index + 1).forEach((_, futureIndex) => { state.bosses[index + futureIndex + 1] = false; });
-        saveState();
+        saveState("boss.status_changed");
         renderAll();
         showToast(newValue ? `Boss ${index + 1} cleared · +250 XP` : `Boss ${index + 1} reopened`);
       });
@@ -449,7 +610,7 @@
     const current = skillLevel(skill.id);
     const next = Math.max(0, Math.min(MAX_SKILL_LEVEL, current + direction));
     state.skillLevels[skill.id] = next;
-    saveState();
+    saveState("skill.level_changed");
     renderAll();
     showToast(direction > 0 ? `${skill.name} · level ${next}` : `${skill.name} adjusted`);
   }
@@ -466,7 +627,7 @@
         track: String(form.get("track")),
         note: String(form.get("note") || "").slice(0, 100),
       });
-      saveState();
+      saveState("practice.session_logged");
       event.currentTarget.reset();
       $("#log-dialog").close();
       renderAll();
@@ -484,7 +645,7 @@
         return;
       }
       state.peopleCanCall = value;
-      saveState();
+      saveState("network.people_count_changed");
       renderStats();
     });
 
@@ -505,7 +666,7 @@
         const imported = JSON.parse(await file.text());
         if (!imported || typeof imported !== "object" || !Array.isArray(imported.practice)) throw new Error("Invalid file");
         state = normalizeState(imported);
-        saveState();
+        saveState("campaign.file_imported");
         renderAll();
         showToast("Progress imported");
       } catch {
@@ -518,7 +679,7 @@
     $("#reset-data").addEventListener("click", () => {
       if (!confirm("Reset every skill, practice log, tune, and boss fight? Export first if you may want it back.")) return;
       state = structuredClone(stateDefaults);
-      saveState();
+      saveState("campaign.reset");
       renderAll();
       showToast("Campaign reset");
     });
@@ -529,4 +690,6 @@
   setupPracticeLog();
   setupDataActions();
   renderAll();
+  addEventListener("online", flushOutbox);
+  initializeCloudSync();
 })();
