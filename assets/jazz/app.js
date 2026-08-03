@@ -689,6 +689,22 @@
   setupDialogs();
   setupPracticeLog();
   setupDataActions();
+  addEventListener("jazz:activity-logged", (event) => {
+    const activity = event.detail;
+    if (!activity?.id || state.practice.some((entry) => entry.id === `activity-${activity.id}`)) return;
+    const occurredAt = new Date(activity.occurredAt || Date.now());
+    const languageCategories = new Set(["scales", "ear-training", "improvisation"]);
+    state.practice.push({
+      id: `activity-${activity.id}`,
+      date: localDateKey(occurredAt),
+      minutes: Number(activity.durationMinutes),
+      track: languageCategories.has(activity.category) ? "language" : "trumpet",
+      note: String(activity.title || "Practice activity").slice(0, 100),
+    });
+    saveState("practice.activity_logged");
+    renderAll();
+    showToast(`+${activity.durationMinutes} minutes logged`);
+  });
   renderAll();
   addEventListener("online", flushOutbox);
   initializeCloudSync();

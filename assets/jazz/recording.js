@@ -3,17 +3,19 @@
 
   const DATA = globalThis.JAZZ_DATA;
   const API_BASE = "./api/v1";
+  const MAX_LOSSLESS_TAKE_MS = 10 * 60 * 1000;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
-  let mediaRecorder = null;
-  let chunks = [];
+  let losslessRecorder = null;
   let startedAt = 0;
   let recordedAt = "";
   let timerID = null;
   let levelFrame = null;
   let audioContext = null;
   let recordedSampleRate = 0;
+  let currentPracticeSessionID = "";
+  let finishing = false;
   let previewURL = null;
 
   function setServiceStatus(message, tone = "") {
@@ -40,23 +42,15 @@
     return body;
   }
 
-  function preferredMimeType() {
-    const choices = [
-      "audio/webm;codecs=opus",
-      "audio/mp4",
-      "audio/ogg;codecs=opus",
-      "audio/webm",
-    ];
-    return choices.find((type) => globalThis.MediaRecorder?.isTypeSupported(type)) || "";
-  }
-
   function formatTimer(milliseconds) {
     const seconds = Math.floor(milliseconds / 1000);
     return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
   }
 
   function updateTimer() {
-    $("#recording-timer").textContent = formatTimer(performance.now() - startedAt);
+    const elapsed = performance.now() - startedAt;
+    $("#recording-timer").textContent = formatTimer(elapsed);
+    if (elapsed >= MAX_LOSSLESS_TAKE_MS) stopRecording();
   }
 
   async function updateMicrophones() {
@@ -110,11 +104,14 @@
   }
 
   async function startRecording() {
-    if (!navigator.mediaDevices?.getUserMedia || !globalThis.MediaRecorder) {
-      setRecorderState("Recording is not supported in this browser");
+    if (!navigator.mediaDevices?.getUserMedia || !globalThis.JazzLosslessRecorder) {
+      setRecorderState("Lossless recording is not supported in this browser");
       return;
     }
     try {
+      const practiceSession = await globalThis.JazzPracticeSession.ensureActive();
+      currentPracticeSessionID = practiceSession.id;
+      finishing = false;
       const deviceID = $("#microphone-select").value;
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -126,23 +123,17 @@
         },
       });
       await updateMicrophones();
-      const mimeType = preferredMimeType();
-      mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-      chunks = [];
-      mediaRecorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size) chunks.push(event.data);
-      });
-      mediaRecorder.addEventListener("stop", finishRecording, { once: true });
+      losslessRecorder = new globalThis.JazzLosslessRecorder();
+      await losslessRecorder.start(stream);
       recordedAt = new Date().toISOString();
       startedAt = performance.now();
-      mediaRecorder.start(1000);
       updateTimer();
       timerID = setInterval(updateTimer, 250);
       startLevelMeter(stream);
       $("#recording-light").classList.add("active");
       $("#start-recording").disabled = true;
       $("#stop-recording").disabled = false;
-      setRecorderState("Recording - play the take");
+      setRecorderState("Recording lossless 24-bit audio - play the take");
     } catch (error) {
       stopCapture();
       setRecorderState(error.name === "NotAllowedError" ? "Microphone permission was not granted" : "Could not start the microphone");
@@ -150,21 +141,30 @@
   }
 
   function stopRecording() {
-    if (mediaRecorder?.state === "recording") {
-      mediaRecorder.stop();
-      setRecorderState("Preparing the take...");
-    }
+    if (!losslessRecorder || finishing) return;
+    finishing = true;
+    $("#stop-recording").disabled = true;
+    setRecorderState("Building the lossless take...");
+    finishRecording();
   }
 
   async function finishRecording() {
-    const durationMS = Math.max(1, Math.round(performance.now() - startedAt));
-    const contentType = mediaRecorder.mimeType || chunks[0]?.type || "audio/webm";
-    const blob = new Blob(chunks, { type: contentType });
-    stopCapture();
-    if (!blob.size) {
-      setRecorderState("The take was empty - try again");
+    let result;
+    try {
+      result = await losslessRecorder.stop();
+    } catch (error) {
+      stopCapture();
+      losslessRecorder = null;
+      finishing = false;
+      setRecorderState(`Could not finish the lossless take: ${error.message}`);
       return;
     }
+    losslessRecorder = null;
+    finishing = false;
+    recordedSampleRate = result.sampleRate;
+    const { blob, durationMS } = result;
+    const contentType = "audio/wav";
+    stopCapture();
     if (previewURL) URL.revokeObjectURL(previewURL);
     previewURL = URL.createObjectURL(blob);
     const preview = $("#recording-preview");
@@ -178,6 +178,7 @@
       const takeInput = $('#recording-metadata input[name="takeNumber"]');
       takeInput.value = String(Math.min(99, Number(takeInput.value || 1) + 1));
       await loadRecordings();
+      await globalThis.JazzPracticeSession.refresh();
     } catch (error) {
       setRecorderState(`Saved for preview, but upload failed: ${error.message}`);
       setServiceStatus("Upload needs attention", "offline");
@@ -192,13 +193,13 @@
       method: "POST",
       body: JSON.stringify({
         contentType: baseType,
-        codec: codecMatch?.[1] || "",
+        codec: contentType === "audio/wav" ? "pcm_s24le" : (codecMatch?.[1] || ""),
         sizeBytes: blob.size,
         durationMs: durationMS,
         sampleRate: recordedSampleRate,
         channels: 1,
         recordedAt,
-        practiceSessionId: "",
+        practiceSessionId: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
         tuneId: String(metadata.get("tuneId") || ""),
         missionId: DATA.mission.id,
         skillIds: metadata.get("skillId") ? [String(metadata.get("skillId"))] : [],
@@ -245,12 +246,16 @@
       }
       result.recordings.forEach((recording) => {
         const tune = DATA.repertoire.find((item) => item.id === recording.tuneId)?.title || "Open practice";
+        const skill = DATA.skills.find((item) => item.id === recording.skillIds?.[0])?.name || "General musicianship";
+        const sessionTitle = recording.practiceSessionTitle || "Unassigned session";
+        const format = recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType.replace("audio/", "").toUpperCase();
         const card = document.createElement("article");
         card.className = "recording-item";
         card.innerHTML = `
-          <div class="recording-item-top"><span>${new Date(recording.recordedAt).toLocaleDateString()}</span><span>${formatDuration(recording.durationMs)}</span></div>
+          <div class="recording-item-top"><span>${new Date(recording.recordedAt).toLocaleDateString()}</span><span>${formatDuration(recording.durationMs)} · ${format}</span></div>
           <h4>${escapeHTML(tune)}${recording.takeNumber ? ` - Take ${recording.takeNumber}` : ""}</h4>
           <p>${escapeHTML(recording.notes || "No listening note yet.")}</p>
+          <span class="recording-context">${escapeHTML(sessionTitle)} · ${escapeHTML(skill)}</span>
           <div class="recording-item-actions">
             <button type="button" class="play-recording">Play</button>
             <button type="button" class="delete-recording">Delete</button>
@@ -291,6 +296,7 @@
     try {
       await api(`/recordings/${id}`, { method: "DELETE" });
       await loadRecordings();
+      await globalThis.JazzPracticeSession.refresh();
     } catch (error) {
       setRecorderState(`Delete failed: ${error.message}`);
     }

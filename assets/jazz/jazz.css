@@ -280,6 +280,29 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .cloud-status { margin-top: 8px; color: var(--faint); font: 10px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
 .cloud-status.online { color: var(--green); }
 .cloud-status.offline { color: var(--red); }
+.practice-session-panel { margin-bottom: 28px; padding: 26px; border: 1px solid var(--line-strong); border-radius: 16px; background: linear-gradient(145deg, rgba(28, 22, 41, 0.88), rgba(13, 10, 22, 0.92)); }
+.practice-session-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.practice-session-head h3, .session-history-heading h3 { margin: 8px 0 5px; color: var(--ink); font-size: 24px; }
+.practice-session-head p { max-width: 680px; margin: 0; color: var(--muted); font-size: 12px; }
+.practice-session-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+.practice-session-editor { margin-top: 24px; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(210px, 0.55fr); gap: 13px; }
+.practice-session-editor label, .activity-form label { display: grid; gap: 6px; color: var(--text); font-size: 11px; }
+.practice-session-editor input, .practice-session-editor textarea, .activity-form input, .activity-form select {
+  width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 8px; background: #0a0810; color: var(--ink); padding: 8px 11px; resize: vertical;
+}
+.session-notes-field { grid-column: 1 / -1; }
+.practice-session-editor > .button { justify-self: start; }
+.activity-workspace { margin-top: 26px; padding-top: 24px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr); gap: 22px; }
+.activity-form { display: grid; grid-template-columns: minmax(140px, 0.55fr) 100px minmax(220px, 1fr); gap: 13px; align-items: end; }
+.activity-form-heading, .activity-notes-field, .activity-form > .button { grid-column: 1 / -1; }
+.activity-form-heading p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+.activity-form > .button { justify-self: start; }
+.activity-timeline { display: grid; align-content: start; gap: 8px; }
+.activity-entry { padding: 13px 15px; border: 1px solid var(--line); border-radius: 10px; background: rgba(8, 6, 15, 0.34); }
+.activity-entry-top { display: flex; justify-content: space-between; gap: 14px; color: var(--faint); font: 9px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.activity-entry h4 { margin: 7px 0 2px; color: var(--ink); font-size: 13px; }
+.activity-entry p { margin: 0; color: var(--muted); font-size: 10px; }
+.empty-activities { margin: 0; padding: 22px; border: 1px dashed var(--line); border-radius: 10px; color: var(--faint); font-size: 11px; text-align: center; }
 .recording-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr); gap: 18px; }
 .recorder-card, .recording-metadata {
   min-height: 320px;
@@ -313,11 +336,20 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .recording-item-top { display: flex; justify-content: space-between; gap: 12px; color: var(--faint); font: 9px var(--mono); letter-spacing: 0.07em; text-transform: uppercase; }
 .recording-item h4 { margin: 19px 0 4px; color: var(--ink); font-size: 16px; }
 .recording-item p { min-height: 35px; margin: 0; color: var(--muted); font-size: 11px; }
+.recording-context { display: block; margin-top: 9px; color: var(--brass); font: 9px/1.5 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
 .recording-item-actions { display: flex; gap: 15px; margin-top: 18px; }
 .recording-item-actions button { border: 0; padding: 0; background: none; color: var(--violet); cursor: pointer; font: 10px var(--mono); text-decoration: underline; text-underline-offset: 4px; }
 .recording-item-actions .delete-recording { color: var(--faint); }
 .recording-item audio { width: 100%; height: 38px; margin-top: 14px; }
 .empty-recordings { grid-column: 1 / -1; margin: 0; padding: 28px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--faint); font-size: 12px; text-align: center; }
+.session-history-heading { margin: 48px 0 15px; }
+.session-history { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.session-history-card { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: rgba(18,16,28,0.65); }
+.session-history-card.active { border-color: rgba(123,200,164,0.45); }
+.session-history-card-top { display: flex; justify-content: space-between; gap: 10px; color: var(--faint); font: 9px var(--mono); text-transform: uppercase; }
+.session-history-card h4 { margin: 17px 0 5px; color: var(--ink); font-size: 15px; }
+.session-history-card p { margin: 0; color: var(--muted); font-size: 10px; min-height: 31px; }
+.session-history-card-meta { display: flex; gap: 14px; margin-top: 15px; color: var(--violet); font: 9px var(--mono); text-transform: uppercase; }
 
 @keyframes recording-pulse { 50% { box-shadow: 0 0 0 11px rgba(220, 127, 127, 0.03); } }
 
@@ -534,6 +566,8 @@ footer p[data-tone="offline"] { color: var(--red); }
   .today-layout { grid-template-columns: 1fr; }
   .recording-layout { grid-template-columns: 1fr; }
   .recording-library { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .activity-workspace { grid-template-columns: 1fr; }
+  .session-history { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .skill-tier-grid, .repertoire-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .roadmap { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .roadmap-phase, .roadmap-phase:first-child, .roadmap-phase:last-child { border: 1px solid var(--line); border-radius: 12px; }
@@ -560,6 +594,11 @@ footer p[data-tone="offline"] { color: var(--red); }
   .session-copy p { display: none; }
   .mission-grid { grid-template-columns: 1fr; }
   .recording-library { grid-template-columns: 1fr; }
+  .practice-session-panel { padding: 20px; }
+  .practice-session-head { display: block; }
+  .practice-session-actions { justify-content: flex-start; margin-top: 20px; }
+  .practice-session-editor, .activity-form, .session-history { grid-template-columns: 1fr; }
+  .session-notes-field, .activity-form-heading, .activity-title-field, .activity-notes-field, .activity-form > .button { grid-column: auto; }
   .recorder-card, .recording-metadata { min-height: 0; padding: 20px; }
   .recorder-controls { flex-direction: column; }
   .recorder-controls .button { width: 100%; }

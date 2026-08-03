@@ -109,6 +109,66 @@
         <span class="cloud-status" id="recording-service-status">Checking private storage...</span>
       </div>
 
+      <div class="practice-session-panel">
+        <div class="practice-session-head">
+          <div>
+            <span class="label">Practice session</span>
+            <h3 id="practice-session-heading">No active session</h3>
+            <p id="practice-session-summary">Start a session to group work, notes, and recordings into one reviewable timeline.</p>
+          </div>
+          <div class="practice-session-actions">
+            <button class="button button-primary" id="begin-practice-session" type="button">Begin today's session</button>
+            <button class="button button-quiet" id="finish-practice-session" type="button" hidden>Finish session</button>
+          </div>
+        </div>
+
+        <div class="practice-session-editor" id="practice-session-editor">
+          <label>Session title
+            <input id="practice-session-title" type="text" maxlength="120" placeholder="Fundamentals + scale work">
+          </label>
+          <label>Started
+            <input id="practice-session-started" type="datetime-local">
+          </label>
+          <label class="session-notes-field">Session notes
+            <textarea id="practice-session-notes" maxlength="2000" rows="3" placeholder="How did the horn feel? What needs attention next time?"></textarea>
+          </label>
+          <button class="button button-quiet" id="save-practice-session" type="button" hidden>Save session notes</button>
+        </div>
+
+        <div class="activity-workspace">
+          <form class="activity-form" id="practice-activity-form">
+            <div class="activity-form-heading">
+              <span class="label">Work done off-mic</span>
+              <p>Log something you practiced before recording, between takes, or without the microphone running.</p>
+            </div>
+            <label>Category
+              <select name="category">
+                <option value="fundamentals">Fundamentals</option>
+                <option value="scales">Scales</option>
+                <option value="repertoire">Repertoire</option>
+                <option value="improvisation">Improvisation</option>
+                <option value="ear-training">Ear training</option>
+                <option value="listening">Listening</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Minutes
+              <input name="minutes" type="number" min="1" max="360" value="15" inputmode="numeric" required>
+            </label>
+            <label class="activity-title-field">What did you work on?
+              <input name="title" type="text" maxlength="160" placeholder="Long tones, flexibility, and major scales" required>
+            </label>
+            <label class="activity-notes-field">Notes <span>(optional)</span>
+              <input name="notes" type="text" maxlength="1000" placeholder="Sound opened up after five minutes; G major still uneven">
+            </label>
+            <button class="button button-primary" type="submit">Add work already done</button>
+          </form>
+          <div class="activity-timeline" id="practice-activity-timeline">
+            <p class="empty-activities">No work logged in this session yet.</p>
+          </div>
+        </div>
+      </div>
+
       <div class="recording-layout">
         <article class="recorder-card">
           <div class="recorder-display">
@@ -124,7 +184,7 @@
           </div>
 
           <audio id="recording-preview" controls hidden></audio>
-          <p class="recorder-privacy">Your microphone is active only between Start and Stop. Recordings stay private.</p>
+          <p class="recorder-privacy">48 kHz / 24-bit mono WAV. Your microphone is active only between Start and Stop. Lossless takes are currently limited to 10 minutes each.</p>
         </article>
 
         <form class="recording-metadata" id="recording-metadata">
@@ -158,6 +218,12 @@
       <div class="recording-library" id="recording-library" aria-live="polite">
         <p class="empty-recordings">No recordings yet. Your first honest take is the baseline.</p>
       </div>
+
+      <div class="session-history-heading">
+        <span class="label">Practice history</span>
+        <h3>Recent sessions</h3>
+      </div>
+      <div class="session-history" id="practice-session-history" aria-live="polite"></div>
     </section>
 
     <section class="section mission-section" aria-labelledby="mission-title">
@@ -302,6 +368,8 @@
 
   <script src="../assets/jazz/data.js"></script>
   <script src="../assets/jazz/app.js"></script>
+  <script src="../assets/jazz/practice-session.js"></script>
+  <script src="../assets/jazz/lossless-recorder.js"></script>
   <script src="../assets/jazz/recording.js"></script>
 </body>
 </html>

@@ -30,8 +30,8 @@ import (
 
 const (
 	maxRequestBytes   = 2 << 20
-	maxRecordingBytes = 250 << 20
-	maxDurationMS     = 30 * 60 * 1000
+	maxRecordingBytes = 1 << 30
+	maxDurationMS     = 60 * 60 * 1000
 )
 
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -112,19 +112,21 @@ type recordingInitRequest struct {
 }
 
 type recordingRow struct {
-	ID          uuid.UUID `json:"id"`
-	ContentType string    `json:"contentType"`
-	Codec       string    `json:"codec,omitempty"`
-	SizeBytes   int64     `json:"sizeBytes,omitempty"`
-	DurationMS  int       `json:"durationMs,omitempty"`
-	RecordedAt  time.Time `json:"recordedAt"`
-	Status      string    `json:"status"`
-	TuneID      string    `json:"tuneId,omitempty"`
-	MissionID   string    `json:"missionId,omitempty"`
-	SkillIDs    []string  `json:"skillIds"`
-	TakeNumber  int       `json:"takeNumber,omitempty"`
-	Notes       string    `json:"notes,omitempty"`
-	ObjectName  string    `json:"-"`
+	ID           uuid.UUID `json:"id"`
+	ContentType  string    `json:"contentType"`
+	Codec        string    `json:"codec,omitempty"`
+	SizeBytes    int64     `json:"sizeBytes,omitempty"`
+	DurationMS   int       `json:"durationMs,omitempty"`
+	RecordedAt   time.Time `json:"recordedAt"`
+	Status       string    `json:"status"`
+	TuneID       string    `json:"tuneId,omitempty"`
+	MissionID    string    `json:"missionId,omitempty"`
+	SkillIDs     []string  `json:"skillIds"`
+	TakeNumber   int       `json:"takeNumber,omitempty"`
+	Notes        string    `json:"notes,omitempty"`
+	SessionID    string    `json:"practiceSessionId,omitempty"`
+	SessionTitle string    `json:"practiceSessionTitle,omitempty"`
+	ObjectName   string    `json:"-"`
 }
 
 func main() {
@@ -213,12 +215,23 @@ func envOr(name, fallback string) string {
 }
 
 func migrate(ctx context.Context, db *pgxpool.Pool) error {
-	contents, err := migrationFiles.ReadFile("migrations/001_init.sql")
+	entries, err := migrationFiles.ReadDir("migrations")
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(ctx, string(contents))
-	return err
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		contents, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(ctx, string(contents)); err != nil {
+			return fmt.Errorf("%s: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (app *application) routes() http.Handler {
@@ -226,6 +239,11 @@ func (app *application) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", app.health)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
+	mux.Handle("GET /v1/practice-sessions", app.authenticate(http.HandlerFunc(app.listPracticeSessions)))
+	mux.Handle("POST /v1/practice-sessions", app.authenticate(http.HandlerFunc(app.createPracticeSession)))
+	mux.Handle("GET /v1/practice-sessions/{id}", app.authenticate(http.HandlerFunc(app.getPracticeSession)))
+	mux.Handle("PATCH /v1/practice-sessions/{id}", app.authenticate(http.HandlerFunc(app.updatePracticeSession)))
+	mux.Handle("POST /v1/practice-sessions/{id}/activities", app.authenticate(http.HandlerFunc(app.createPracticeActivity)))
 	mux.Handle("GET /v1/recordings", app.authenticate(http.HandlerFunc(app.listRecordings)))
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
@@ -429,6 +447,13 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recordingID := uuid.New()
+	if input.PracticeSessionID != "" {
+		sessionID, parseErr := uuid.Parse(input.PracticeSessionID)
+		if parseErr != nil || !app.practiceSessionBelongs(r.Context(), userID, sessionID) {
+			writeError(w, http.StatusUnprocessableEntity, "practice session is invalid")
+			return
+		}
+	}
 	objectName := fmt.Sprintf("users/%s/%s/%s/source.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
 	skillJSON, _ := json.Marshal(input.SkillIDs)
 	_, err = app.db.Exec(r.Context(), `
@@ -536,9 +561,12 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := app.db.Query(r.Context(), `
-		SELECT id,content_type,COALESCE(codec,''),COALESCE(size_bytes,expected_size_bytes),COALESCE(duration_ms,0),recorded_at,status,
-		COALESCE(tune_id,''),COALESCE(mission_id,''),skill_ids,COALESCE(take_number,0),COALESCE(notes,''),object_name
-		FROM recordings WHERE user_id=$1 AND status <> 'deleted' ORDER BY recorded_at DESC LIMIT 100`, userID)
+		SELECT r.id,r.content_type,COALESCE(r.codec,''),COALESCE(r.size_bytes,r.expected_size_bytes),COALESCE(r.duration_ms,0),r.recorded_at,r.status,
+		COALESCE(r.tune_id,''),COALESCE(r.mission_id,''),r.skill_ids,COALESCE(r.take_number,0),COALESCE(r.notes,''),
+		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),r.object_name
+		FROM recordings r
+		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
+		WHERE r.user_id=$1 AND r.status <> 'deleted' ORDER BY r.recorded_at DESC LIMIT 100`, userID)
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -549,7 +577,7 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		var item recordingRow
 		var skills []byte
 		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.RecordedAt, &item.Status,
-			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.ObjectName); err != nil {
+			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.ObjectName); err != nil {
 			app.serverError(w, err)
 			return
 		}

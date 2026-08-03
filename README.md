@@ -24,7 +24,9 @@ scene milestones, and real-world boss fights.
 `jazz-api/` contains the independent Cloud Run service, database migration, and
 tests. It also brokers browser audio recordings into a dedicated private GCS
 bucket. Recording metadata stays in PostgreSQL; audio bytes stay in object
-storage.
+storage. Practice sessions group session-wide notes, structured off-mic
+activities, and their associated recordings. New browser takes are captured as
+48 kHz / 24-bit mono lossless WAV files.
 
 The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
 `deploy/Caddyfile.jazz.example` documents the path matcher and privacy headers;
