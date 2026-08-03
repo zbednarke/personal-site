@@ -6,6 +6,7 @@
   const SYNC_META_KEY = "zach-jazz-project-sync-v1";
   const OUTBOX_KEY = "zach-jazz-project-outbox-v1";
   const CLOUD_BOUND_KEY = "zach-jazz-project-cloud-bound-v1";
+  const TIMER_STORAGE_KEY = "zach-jazz-practice-timers-v2";
   const API_BASE = "./api/v1";
   const MAX_SKILL_LEVEL = 4;
   const stateDefaults = {
@@ -27,6 +28,8 @@
   let syncOutbox = loadOutbox();
   let syncInFlight = false;
   let syncPaused = false;
+  let timerState = loadTimerState();
+  const cloudLoggingTimers = new Set();
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -317,31 +320,207 @@
     return streak;
   }
 
+  function freshTimerState() {
+    return { date: localDateKey(), timers: {} };
+  }
+
+  function loadTimerState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(TIMER_STORAGE_KEY) || "null");
+      if (!saved || saved.date !== localDateKey() || typeof saved.timers !== "object") return freshTimerState();
+      return saved;
+    } catch {
+      return freshTimerState();
+    }
+  }
+
+  function persistTimerState() {
+    localStorage.setItem(TIMER_STORAGE_KEY, JSON.stringify(timerState));
+  }
+
+  function guidedLogId(session) {
+    return `guide-${timerState.date}-${session.id}`;
+  }
+
+  function timerFor(session) {
+    if (timerState.date !== localDateKey()) timerState = freshTimerState();
+    let timer = timerState.timers[session.id];
+    if (!timer || typeof timer !== "object") {
+      timer = { elapsedMs: 0, running: false, startedAt: 0, completed: false, cloudLogged: false, completedAt: "" };
+      timerState.timers[session.id] = timer;
+    }
+    timer.elapsedMs = Math.max(0, Number(timer.elapsedMs || 0));
+    timer.running = Boolean(timer.running);
+    timer.startedAt = Number(timer.startedAt || 0);
+    timer.completed = Boolean(timer.completed);
+    timer.cloudLogged = Boolean(timer.cloudLogged);
+    timer.completedAt = String(timer.completedAt || "");
+    return timer;
+  }
+
+  function elapsedFor(timer) {
+    return timer.elapsedMs + (timer.running && timer.startedAt ? Math.max(0, Date.now() - timer.startedAt) : 0);
+  }
+
+  function formatTimer(milliseconds) {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function pauseOtherTimers(activeID) {
+    DATA.sessions.forEach((session) => {
+      if (session.id === activeID) return;
+      const timer = timerFor(session);
+      if (!timer.running) return;
+      timer.elapsedMs = elapsedFor(timer);
+      timer.running = false;
+      timer.startedAt = 0;
+    });
+  }
+
+  function toggleGuidedTimer(session) {
+    const timer = timerFor(session);
+    if (timer.completed) return;
+    if (timer.running) {
+      timer.elapsedMs = elapsedFor(timer);
+      timer.running = false;
+      timer.startedAt = 0;
+    } else {
+      pauseOtherTimers(session.id);
+      timer.running = true;
+      timer.startedAt = Date.now();
+    }
+    persistTimerState();
+    renderSessions();
+  }
+
+  function completeGuidedBlock(session) {
+    const timer = timerFor(session);
+    if (timer.completed) return;
+    const targetMs = session.minutes * 60 * 1000;
+    timer.elapsedMs = targetMs;
+    timer.running = false;
+    timer.startedAt = 0;
+    timer.completed = true;
+    timer.completedAt = new Date().toISOString();
+    persistTimerState();
+
+    const logId = guidedLogId(session);
+    if (!state.practice.some((entry) => entry.id === logId)) {
+      state.practice.push({
+        id: logId,
+        date: timerState.date,
+        minutes: session.minutes,
+        track: session.track,
+        note: session.title,
+        preset: true,
+      });
+      saveState("practice.guide_completed");
+    }
+    renderAll();
+    showToast(`${session.title} complete - ${session.minutes} minutes logged`);
+    logGuidedBlockToCloud(session);
+  }
+
+  async function logGuidedBlockToCloud(session) {
+    const timer = timerFor(session);
+    if (!timer.completed || timer.cloudLogged || cloudLoggingTimers.has(session.id)) return;
+    if (typeof globalThis.JazzPracticeSession?.logGuidedActivity !== "function") return;
+    cloudLoggingTimers.add(session.id);
+    try {
+      await globalThis.JazzPracticeSession.logGuidedActivity({
+        sourceId: guidedLogId(session),
+        category: session.category,
+        title: session.title,
+        durationMinutes: session.minutes,
+        notes: session.detail,
+        occurredAt: timer.completedAt || new Date().toISOString(),
+      });
+      timer.cloudLogged = true;
+      persistTimerState();
+    } catch {
+      // Keep the completed block pending; online/load retries make this resilient.
+    } finally {
+      cloudLoggingTimers.delete(session.id);
+    }
+  }
+
+  function syncCompletedGuidedBlocks() {
+    let restoredPracticeLog = false;
+    DATA.sessions.forEach((session) => {
+      const timer = timerFor(session);
+      const logId = guidedLogId(session);
+      if (timer.completed && !state.practice.some((entry) => entry.id === logId)) {
+        state.practice.push({ id: logId, date: timerState.date, minutes: session.minutes, track: session.track, note: session.title, preset: true });
+        restoredPracticeLog = true;
+      }
+      logGuidedBlockToCloud(session);
+    });
+    if (restoredPracticeLog) {
+      saveState("practice.guide_reconciled");
+      renderStats();
+      renderWeek();
+    }
+  }
+
+  function tickGuidedTimers() {
+    let completedSession = null;
+    DATA.sessions.forEach((session) => {
+      const timer = timerFor(session);
+      if (!timer.running || completedSession) return;
+      if (elapsedFor(timer) >= session.minutes * 60 * 1000) completedSession = session;
+    });
+    if (completedSession) {
+      completeGuidedBlock(completedSession);
+      return;
+    }
+    updateTimerElements();
+  }
+
+  function updateTimerElements() {
+    DATA.sessions.forEach((session) => {
+      const timer = timerFor(session);
+      const targetMs = session.minutes * 60 * 1000;
+      const elapsedMs = timer.completed ? targetMs : Math.min(targetMs, elapsedFor(timer));
+      const card = document.querySelector(`[data-session-id="${session.id}"]`);
+      if (!card) return;
+      card.classList.toggle("running", timer.running);
+      const readout = $("[data-timer-readout]", card);
+      const progress = $("[data-timer-progress]", card);
+      const button = $("[data-timer-button]", card);
+      readout.textContent = timer.completed ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`;
+      progress.style.width = `${Math.min(100, (elapsedMs / targetMs) * 100)}%`;
+      progress.parentElement.setAttribute("aria-valuenow", String(Math.round((elapsedMs / targetMs) * 100)));
+      if (!timer.completed) button.textContent = timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start");
+    });
+  }
+
   function renderSessions() {
     const list = $("#session-list");
-    const today = localDateKey();
     list.replaceChildren();
-    DATA.sessions.forEach((session) => {
-      const logId = `daily-${today}-${session.id}`;
-      const complete = state.practice.some((entry) => entry.id === logId);
+    const firstIncomplete = DATA.sessions.findIndex((session) => !timerFor(session).completed);
+    DATA.sessions.forEach((session, index) => {
+      const timer = timerFor(session);
+      const complete = timer.completed;
       const card = document.createElement("article");
-      card.className = `session-card${complete ? " complete" : ""}`;
+      card.dataset.sessionId = session.id;
+      card.className = `session-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}`;
+      const targetMs = session.minutes * 60 * 1000;
+      const elapsedMs = complete ? targetMs : Math.min(targetMs, elapsedFor(timer));
       card.innerHTML = `
         <span class="session-time">${session.time}</span>
-        <div class="session-copy"><h3>${session.title}</h3><p>${session.detail}</p></div>
-        <button class="check-button" type="button" aria-label="${complete ? "Undo" : "Complete"} ${session.title}" aria-pressed="${complete}">✓</button>`;
-      $("button", card).addEventListener("click", () => {
-        const existing = state.practice.findIndex((entry) => entry.id === logId);
-        if (existing >= 0) {
-          state.practice.splice(existing, 1);
-          showToast("Session reopened");
-        } else {
-          state.practice.push({ id: logId, date: today, minutes: session.minutes, track: session.track, note: session.title, preset: true });
-          showToast(`+${session.minutes} minutes logged`);
-        }
-        saveState(existing >= 0 ? "practice.session_reopened" : "practice.session_completed");
-        renderAll();
-      });
+        <div class="session-copy">
+          <div class="session-heading-line"><span class="session-step">${String(index + 1).padStart(2, "0")}</span><h3>${session.title}</h3></div>
+          <p>${session.detail}</p>
+          <div class="session-timer-track" role="progressbar" aria-label="${session.title} timer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round((elapsedMs / targetMs) * 100)}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div>
+        </div>
+        <div class="timer-controls">
+          <span class="timer-readout" data-timer-readout aria-live="off">${complete ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`}</span>
+          <button class="timer-button" data-timer-button type="button" ${complete ? "disabled" : ""}>${complete ? "Completed" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start"))}</button>
+        </div>`;
+      $("[data-timer-button]", card).addEventListener("click", () => toggleGuidedTimer(session));
       list.appendChild(card);
     });
   }
@@ -707,5 +886,11 @@
   });
   renderAll();
   addEventListener("online", flushOutbox);
-  initializeCloudSync();
+  addEventListener("online", syncCompletedGuidedBlocks);
+  setInterval(tickGuidedTimers, 250);
+  setTimeout(() => {
+    tickGuidedTimers();
+    syncCompletedGuidedBlocks();
+  }, 1000);
+  initializeCloudSync().finally(syncCompletedGuidedBlocks);
 })();

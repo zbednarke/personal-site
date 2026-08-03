@@ -198,6 +198,26 @@
     }
   }
 
+  async function logGuidedActivity(block) {
+    const session = await ensureActive();
+    const activity = await api(`/practice-sessions/${session.id}/activities`, {
+      method: "POST",
+      body: JSON.stringify({
+        sourceId: String(block.sourceId || ""),
+        category: String(block.category || "fundamentals"),
+        title: String(block.title || "Guided practice"),
+        durationMinutes: Number(block.durationMinutes),
+        notes: String(block.notes || ""),
+        occurredAt: block.occurredAt || new Date().toISOString(),
+      }),
+    });
+    activeSession = await api(`/practice-sessions/${session.id}`);
+    await refreshSessionListOnly();
+    renderActiveSession();
+    renderHistory();
+    return activity;
+  }
+
   function escapeHTML(value) {
     const element = document.createElement("span");
     element.textContent = value;
@@ -206,6 +226,7 @@
 
   globalThis.JazzPracticeSession = {
     ensureActive,
+    logGuidedActivity,
     currentID: () => activeSession?.id || "",
     refresh: loadSessions,
   };

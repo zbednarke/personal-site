@@ -1,7 +1,7 @@
 // Curriculum and campaign content for The Jazz Project.
 // Progress lives separately in app.js so this file can evolve without erasing it.
 globalThis.JAZZ_DATA = {
-  version: 1,
+  version: 2,
   weeklyTargetMinutes: 360,
 
   tracks: [
@@ -14,28 +14,49 @@ globalThis.JAZZ_DATA = {
 
   sessions: [
     {
-      id: "morning",
-      time: "35 min",
-      minutes: 35,
+      id: "warm-up",
+      time: "10 min",
+      minutes: 10,
       track: "trumpet",
-      title: "Instrument maintenance",
-      detail: "Warm-up · tone · flexibility · articulation · endurance",
+      category: "fundamentals",
+      title: "Warm up",
+      detail: "Relaxed breathing, easy attacks, and comfortable middle-register long tones.",
     },
     {
-      id: "afternoon",
-      time: "25 min",
-      minutes: 25,
+      id: "articulation-flexibility",
+      time: "10 min",
+      minutes: 10,
+      track: "trumpet",
+      category: "fundamentals",
+      title: "Articulation & flexibility",
+      detail: "Easy lip slurs, light articulation, centered response, and no forcing.",
+    },
+    {
+      id: "scales",
+      time: "10 min",
+      minutes: 10,
       track: "language",
-      title: "Language acquisition",
-      detail: "Chord symbols · singing · guide tones · ear training",
+      category: "scales",
+      title: "Scales",
+      detail: "D natural minor, D harmonic minor, and F major - slurred, then lightly tongued.",
     },
     {
-      id: "evening",
-      time: "40 min",
-      minutes: 40,
+      id: "horn-down-listening",
+      time: "5 min",
+      minutes: 5,
+      track: "scene",
+      category: "listening",
+      title: "Horn-down break & listening",
+      detail: "Put the horn down. Listen to Blue Bossa and count the 16-bar form.",
+    },
+    {
+      id: "blue-bossa-play",
+      time: "15 min",
+      minutes: 15,
       track: "musician",
-      title: "Make music",
-      detail: "Blue Bossa · improvisation · play-along · record one chorus",
+      category: "repertoire",
+      title: "Blue Bossa play session",
+      detail: "Sing and play the melody, trace roots or guide tones, then keep one chorus moving.",
     },
   ],
 

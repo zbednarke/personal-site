@@ -47,6 +47,7 @@ type updateSessionRequest struct {
 }
 
 type createActivityRequest struct {
+	SourceID        string `json:"sourceId"`
 	Category        string `json:"category"`
 	Title           string `json:"title"`
 	DurationMinutes int    `json:"durationMinutes"`
@@ -278,9 +279,10 @@ func (app *application) createPracticeActivity(w http.ResponseWriter, r *http.Re
 		return
 	}
 	input.Category = strings.TrimSpace(input.Category)
+	input.SourceID = strings.TrimSpace(input.SourceID)
 	input.Title = strings.TrimSpace(input.Title)
 	input.Notes = strings.TrimSpace(input.Notes)
-	if len(input.Category) < 1 || len(input.Category) > 40 || len(input.Title) < 1 || len(input.Title) > 160 ||
+	if len(input.SourceID) > 160 || len(input.Category) < 1 || len(input.Category) > 40 || len(input.Title) < 1 || len(input.Title) > 160 ||
 		input.DurationMinutes < 1 || input.DurationMinutes > 360 || len(input.Notes) > 1000 {
 		writeError(w, http.StatusUnprocessableEntity, "practice activity is invalid")
 		return
@@ -311,10 +313,12 @@ func (app *application) createPracticeActivity(w http.ResponseWriter, r *http.Re
 	}
 	activity := practiceActivity{ID: uuid.New(), Category: input.Category, Title: input.Title, DurationMinutes: input.DurationMinutes, Notes: input.Notes, OccurredAt: occurredAt}
 	err = app.db.QueryRow(r.Context(), `
-		INSERT INTO practice_activities (id,session_id,user_id,category,title,duration_minutes,notes,occurred_at)
-		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8)
+		INSERT INTO practice_activities (id,session_id,user_id,source_id,category,title,duration_minutes,notes,occurred_at)
+		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,NULLIF($8,''),$9)
+		ON CONFLICT (user_id,source_id) WHERE source_id IS NOT NULL
+		DO UPDATE SET source_id=EXCLUDED.source_id
 		RETURNING id,category,title,duration_minutes,COALESCE(notes,''),occurred_at`,
-		activity.ID, sessionID, userID, activity.Category, activity.Title, activity.DurationMinutes, activity.Notes, activity.OccurredAt).
+		activity.ID, sessionID, userID, input.SourceID, activity.Category, activity.Title, activity.DurationMinutes, activity.Notes, activity.OccurredAt).
 		Scan(&activity.ID, &activity.Category, &activity.Title, &activity.DurationMinutes, &activity.Notes, &activity.OccurredAt)
 	if err != nil {
 		app.serverError(w, err)

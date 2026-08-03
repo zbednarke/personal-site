@@ -231,7 +231,7 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .session-list { display: grid; gap: 10px; }
 .session-card {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) auto;
+  grid-template-columns: 74px minmax(0, 1fr) 154px;
   align-items: center;
   min-height: 112px;
   padding: 18px 20px;
@@ -241,23 +241,34 @@ main, footer { max-width: 1440px; margin: 0 auto; }
   transition: border-color 180ms ease, background 180ms ease;
 }
 .session-card:hover { border-color: var(--line-strong); }
+.session-card.current { border-color: rgba(242, 173, 92, 0.34); }
+.session-card.running { border-color: var(--brass); background: rgba(242, 173, 92, 0.055); }
 .session-card.complete { border-color: rgba(123, 200, 164, 0.35); background: rgba(123, 200, 164, 0.045); }
 .session-time { color: var(--brass-light); font: 500 16px var(--mono); }
+.session-heading-line { display: flex; align-items: center; gap: 9px; }
+.session-step { color: var(--faint); font: 9px var(--mono); letter-spacing: 0.08em; }
 .session-copy h3 { margin: 0; color: var(--ink); font-size: 17px; }
 .session-copy p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-.check-button {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
+.session-timer-track { height: 3px; margin-top: 13px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.055); }
+.session-timer-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--brass); transition: width 240ms linear; }
+.complete .session-timer-track span { background: var(--green); }
+.timer-controls { display: grid; justify-items: stretch; gap: 9px; }
+.timer-readout { color: var(--muted); font: 10px var(--mono); text-align: center; white-space: nowrap; }
+.timer-button {
+  min-height: 39px;
   border: 1px solid var(--line-strong);
-  border-radius: 50%;
+  border-radius: 999px;
   background: transparent;
-  color: transparent;
+  color: var(--ink);
   cursor: pointer;
+  font: 10px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
-.check-button:hover { border-color: var(--brass); }
-.complete .check-button { border-color: var(--green); background: var(--green); color: #07130d; }
+.timer-button:hover { border-color: var(--brass); color: var(--brass-light); }
+.running .timer-button { border-color: var(--brass); background: var(--brass); color: #17100a; }
+.complete .timer-button { border-color: rgba(123, 200, 164, 0.48); background: rgba(123, 200, 164, 0.14); color: var(--green); cursor: default; }
+.complete .timer-readout { color: var(--green); }
 
 .week-card {
   min-height: 100%;
@@ -590,8 +601,9 @@ footer p[data-tone="offline"] { color: var(--red); }
   .section-heading { display: block; margin-bottom: 34px; }
   .section-heading > .button, .tree-summary, .legend { margin-top: 20px; }
   .section-heading h2 { font-size: 42px; }
-  .session-card { grid-template-columns: 58px minmax(0, 1fr) auto; padding: 15px; }
-  .session-copy p { display: none; }
+  .session-card { grid-template-columns: 58px minmax(0, 1fr); padding: 16px; }
+  .timer-controls { grid-column: 1 / -1; grid-template-columns: 1fr 130px; align-items: center; margin-top: 4px; }
+  .timer-readout { text-align: left; }
   .mission-grid { grid-template-columns: 1fr; }
   .recording-library { grid-template-columns: 1fr; }
   .practice-session-panel { padding: 20px; }
