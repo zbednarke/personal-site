@@ -49,3 +49,25 @@ func TestAuthenticationAcceptsGatewayAndUser(t *testing.T) {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
+
+func TestAllowedUploadOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+		want   string
+	}{
+		{name: "production", origin: "https://zachbednarke.com", want: "https://zachbednarke.com"},
+		{name: "local host", origin: "http://localhost:4173", want: "http://localhost:4173"},
+		{name: "local IP", origin: "http://127.0.0.1:4173", want: "http://127.0.0.1:4173"},
+		{name: "trims whitespace", origin: "  http://localhost:4173  ", want: "http://localhost:4173"},
+		{name: "rejects arbitrary origin", origin: "https://example.com", want: ""},
+		{name: "rejects lookalike origin", origin: "https://zachbednarke.com.example.com", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := allowedUploadOrigin(test.origin); got != test.want {
+				t.Fatalf("allowedUploadOrigin(%q) = %q, want %q", test.origin, got, test.want)
+			}
+		})
+	}
+}

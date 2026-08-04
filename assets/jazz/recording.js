@@ -3,7 +3,6 @@
 
   const DATA = globalThis.JAZZ_DATA;
   const API_BASE = "./api/v1";
-  const MAX_LOSSLESS_TAKE_MS = 10 * 60 * 1000;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
@@ -18,6 +17,7 @@
   let finishing = false;
   let previewURL = null;
   let activeBlockContext = null;
+  let pendingUpload = null;
 
   function setServiceStatus(message, tone = "") {
     const element = $("#recording-service-status");
@@ -25,10 +25,10 @@
     element.className = `cloud-status${tone ? ` ${tone}` : ""}`;
   }
 
-  function setRecorderState(message, phase = "status") {
+  function setRecorderState(message, phase = "status", canRetry = false) {
     $("#recording-state").textContent = message;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
-      detail: { blockId: activeBlockContext?.id || "", message, phase },
+      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
     }));
   }
 
@@ -54,7 +54,10 @@
   function updateTimer() {
     const elapsed = performance.now() - startedAt;
     $("#recording-timer").textContent = formatTimer(elapsed);
-    if (elapsed >= MAX_LOSSLESS_TAKE_MS) stopRecording();
+  }
+
+  function showRetryButton(show) {
+    $("#retry-recording").hidden = !show;
   }
 
   async function updateMicrophones() {
@@ -178,9 +181,12 @@
     const preview = $("#recording-preview");
     preview.src = previewURL;
     preview.hidden = false;
+    pendingUpload = captureUpload(blob, durationMS, contentType);
+    showRetryButton(false);
     setRecorderState("Take captured - starting private upload", "uploading");
     try {
-      await uploadRecording(blob, durationMS, contentType);
+      await uploadRecording(pendingUpload);
+      pendingUpload = null;
       setRecorderState("Uploaded privately", "complete");
       setServiceStatus("Private storage connected", "online");
       const takeInput = $('#recording-metadata input[name="takeNumber"]');
@@ -189,7 +195,8 @@
       await globalThis.JazzPracticeSession.refresh();
       dispatchEvent(new CustomEvent("jazz:recordings-changed"));
     } catch (error) {
-      setRecorderState(`Saved for preview, but upload failed: ${error.message}`, "error");
+      showRetryButton(true);
+      setRecorderState(`Take is safe in this tab. Upload failed: ${error.message}`, "error", true);
       setServiceStatus("Upload needs attention", "offline");
     } finally {
       finishing = false;
@@ -197,35 +204,78 @@
     }
   }
 
-  async function uploadRecording(blob, durationMS, contentType) {
+  function captureUpload(blob, durationMS, contentType) {
     const metadata = new FormData($("#recording-metadata"));
-    const baseType = contentType.split(";")[0];
-    const codecMatch = /codecs?=([^;]+)/i.exec(contentType);
+    const blockContext = activeBlockContext ? { ...activeBlockContext } : null;
+    return {
+      blob,
+      durationMS,
+      contentType,
+      recordedAt,
+      sampleRate: recordedSampleRate,
+      practiceSessionID: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
+      blockContext,
+      tuneId: blockContext?.tuneId || String(metadata.get("tuneId") || ""),
+      skillIds: metadata.get("skillId") ? [String(metadata.get("skillId"))] : [],
+      takeNumber: blockContext?.takeNumber || Number(metadata.get("takeNumber") || 1),
+      notes: blockContext ? `${blockContext.title} section take` : String(metadata.get("notes") || ""),
+    };
+  }
+
+  async function uploadRecording(capture) {
+    const baseType = capture.contentType.split(";")[0];
+    const codecMatch = /codecs?=([^;]+)/i.exec(capture.contentType);
     const initialized = await api("/recordings/init", {
       method: "POST",
       body: JSON.stringify({
         contentType: baseType,
-        codec: contentType === "audio/wav" ? "pcm_s24le" : (codecMatch?.[1] || ""),
-        sizeBytes: blob.size,
-        durationMs: durationMS,
-        sampleRate: recordedSampleRate,
+        codec: capture.contentType === "audio/wav" ? "pcm_s24le" : (codecMatch?.[1] || ""),
+        sizeBytes: capture.blob.size,
+        durationMs: capture.durationMS,
+        sampleRate: capture.sampleRate,
         channels: 1,
-        recordedAt,
-        practiceSessionId: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
-        practiceBlockId: activeBlockContext?.id || "",
-        tuneId: activeBlockContext?.tuneId || String(metadata.get("tuneId") || ""),
+        recordedAt: capture.recordedAt,
+        practiceSessionId: capture.practiceSessionID,
+        practiceBlockId: capture.blockContext?.id || "",
+        tuneId: capture.tuneId,
         missionId: DATA.mission.id,
-        skillIds: metadata.get("skillId") ? [String(metadata.get("skillId"))] : [],
-        takeNumber: activeBlockContext?.takeNumber || Number(metadata.get("takeNumber") || 1),
-        notes: activeBlockContext ? `${activeBlockContext.title} section take` : String(metadata.get("notes") || ""),
+        skillIds: capture.skillIds,
+        takeNumber: capture.takeNumber,
+        notes: capture.notes,
       }),
     });
     try {
-      await putBlob(initialized.uploadUrl, blob, baseType);
+      await putBlob(initialized.uploadUrl, capture.blob, baseType);
       await api(`/recordings/${initialized.id}/complete`, { method: "POST", body: "{}" });
     } catch (error) {
       await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
       throw error;
+    }
+  }
+
+  async function retryUpload() {
+    if (!pendingUpload || stream || finishing) return false;
+    finishing = true;
+    activeBlockContext = pendingUpload.blockContext;
+    showRetryButton(false);
+    setRecorderState("Retrying private upload...", "uploading");
+    try {
+      await uploadRecording(pendingUpload);
+      pendingUpload = null;
+      setRecorderState("Uploaded privately", "complete");
+      setServiceStatus("Private storage connected", "online");
+      await loadRecordings();
+      await globalThis.JazzPracticeSession.refresh();
+      dispatchEvent(new CustomEvent("jazz:recordings-changed"));
+      return true;
+    } catch (error) {
+      showRetryButton(true);
+      setRecorderState(`Take is safe in this tab. Upload failed: ${error.message}`, "error", true);
+      setServiceStatus("Upload needs attention", "offline");
+      return false;
+    } finally {
+      finishing = false;
+      activeBlockContext = null;
     }
   }
 
@@ -338,6 +388,13 @@
 
   function startForBlock(block) {
     if (stream || finishing) return false;
+    if (pendingUpload) {
+      activeBlockContext = pendingUpload.blockContext;
+      showRetryButton(true);
+      setRecorderState("Retry the saved take before starting another recording", "error", true);
+      activeBlockContext = null;
+      return false;
+    }
     activeBlockContext = block;
     startRecording();
     return true;
@@ -345,6 +402,13 @@
 
   function startGeneralRecording() {
     if (stream || finishing) return false;
+    if (pendingUpload) {
+      activeBlockContext = pendingUpload.blockContext;
+      showRetryButton(true);
+      setRecorderState("Retry the saved take before starting another recording", "error", true);
+      activeBlockContext = null;
+      return false;
+    }
     activeBlockContext = null;
     startRecording();
     return true;
@@ -353,6 +417,7 @@
   globalThis.JazzRecording = {
     startForBlock,
     stop: stopRecording,
+    retry: retryUpload,
     play: playRecording,
     delete: deleteRecording,
   };
@@ -360,6 +425,7 @@
   populateMetadata();
   $("#start-recording").addEventListener("click", startGeneralRecording);
   $("#stop-recording").addEventListener("click", stopRecording);
+  $("#retry-recording").addEventListener("click", retryUpload);
   $("#refresh-recordings").addEventListener("click", loadRecordings);
   navigator.mediaDevices?.addEventListener?.("devicechange", updateMicrophones);
   loadRecordings();

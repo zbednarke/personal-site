@@ -35,6 +35,9 @@
   const noteSaveDelays = new Map();
   let activeSectionRecordingID = "";
   let activeSectionRecordingMessage = "";
+  let activeSectionRecordingPhase = "";
+  let failedSectionRecordingID = "";
+  let failedSectionRecordingMessage = "";
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -450,6 +453,10 @@
     }
     const recordButton = $("[data-section-record]", card);
     if (recordButton) recordButton.addEventListener("click", () => {
+      if (failedSectionRecordingID === block?.id) {
+        globalThis.JazzRecording?.retry();
+        return;
+      }
       if (activeSectionRecordingID === block?.id) {
         globalThis.JazzRecording?.stop();
         return;
@@ -666,6 +673,8 @@
       const block = guidedBlockFor(session);
       const recordings = block?.recordings || [];
       const recordingHere = activeSectionRecordingID === block?.id;
+      const uploadingHere = recordingHere && activeSectionRecordingPhase === "uploading";
+      const failedHere = failedSectionRecordingID === block?.id;
       const card = document.createElement("article");
       card.dataset.sessionId = session.id;
       card.className = `session-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}`;
@@ -690,9 +699,9 @@
           <div class="section-recording-panel">
             <div class="section-recording-head">
               <span><strong>Section takes</strong><em>${recordings.length} / 5</em></span>
-              <button class="section-record-button${recordingHere ? " recording" : ""}" data-section-record type="button" ${!block || (activeSectionRecordingID && !recordingHere) || (recordings.length >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? "Stop recording" : "+ Record take"}</button>
+              <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || (activeSectionRecordingID && !recordingHere) || (recordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading..." : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
             </div>
-            ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
+            ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
             <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
           </div>
         </div>`;
@@ -1064,8 +1073,16 @@
   addEventListener("jazz:recording-state", (event) => {
     const detail = event.detail || {};
     if (!detail.blockId) return;
+    if (detail.phase === "error" && detail.canRetry) {
+      failedSectionRecordingID = detail.blockId;
+      failedSectionRecordingMessage = detail.message || "Upload failed. The take is safe in this tab.";
+    } else if ((detail.phase === "uploading" || detail.phase === "complete") && failedSectionRecordingID === detail.blockId) {
+      failedSectionRecordingID = "";
+      failedSectionRecordingMessage = "";
+    }
     activeSectionRecordingID = detail.phase === "idle" || detail.phase === "complete" || detail.phase === "error" ? "" : detail.blockId;
     activeSectionRecordingMessage = detail.message || "";
+    activeSectionRecordingPhase = detail.phase || "";
     renderSessions();
   });
   addEventListener("jazz:recordings-changed", () => hydrateGuidedBlocks());

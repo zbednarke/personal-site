@@ -498,7 +498,7 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
-	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes)
+	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes, allowedUploadOrigin(r.Header.Get("Origin")))
 	if err != nil {
 		_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
 		app.serverError(w, err)
@@ -509,7 +509,7 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (app *application) createResumableUpload(ctx context.Context, recordingID, userID uuid.UUID, objectName, contentType string, size int64) (string, error) {
+func (app *application) createResumableUpload(ctx context.Context, recordingID, userID uuid.UUID, objectName, contentType string, size int64, origin string) (string, error) {
 	token, err := app.tokenSource.Token()
 	if err != nil {
 		return "", err
@@ -528,6 +528,9 @@ func (app *application) createResumableUpload(ctx context.Context, recordingID, 
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("X-Upload-Content-Type", contentType)
 	req.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
 	response, err := app.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -542,6 +545,16 @@ func (app *application) createResumableUpload(ctx context.Context, recordingID, 
 		return "", errors.New("storage did not return an upload session")
 	}
 	return location, nil
+}
+
+func allowedUploadOrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	switch origin {
+	case "https://zachbednarke.com", "http://localhost:4173", "http://127.0.0.1:4173":
+		return origin
+	default:
+		return ""
+	}
 }
 
 func (app *application) completeRecording(w http.ResponseWriter, r *http.Request) {

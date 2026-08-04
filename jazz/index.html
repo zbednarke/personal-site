@@ -181,10 +181,11 @@
           <div class="recorder-controls">
             <button class="button button-primary" id="start-recording" type="button">Start recording</button>
             <button class="button button-quiet" id="stop-recording" type="button" disabled>Stop</button>
+            <button class="button button-quiet" id="retry-recording" type="button" hidden>Retry upload</button>
           </div>
 
           <audio id="recording-preview" controls hidden></audio>
-          <p class="recorder-privacy">48 kHz / 24-bit mono WAV. Your microphone is active only between Start and Stop. Lossless takes are currently limited to 10 minutes each.</p>
+          <p class="recorder-privacy">48 kHz / 24-bit mono WAV. Your microphone is active only between Start and Stop, and the take keeps recording until you press Stop. Keep individual takes under 60 minutes for upload.</p>
         </article>
 
         <form class="recording-metadata" id="recording-metadata">
