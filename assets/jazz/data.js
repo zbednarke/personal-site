@@ -55,6 +55,7 @@ globalThis.JAZZ_DATA = {
       minutes: 15,
       track: "musician",
       category: "repertoire",
+      tuneId: "blue-bossa",
       title: "Blue Bossa play session",
       detail: "Sing and play the melody, trace roots or guide tones, then keep one chorus moving.",
     },

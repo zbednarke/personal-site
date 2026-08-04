@@ -28,6 +28,11 @@ storage. Practice sessions group session-wide notes, structured off-mic
 activities, and their associated recordings. New browser takes are captured as
 48 kHz / 24-bit mono lossless WAV files.
 
+The daily guide is stored as dated practice blocks within an active practice
+session. Each block keeps its own instructions, autosaved notes, synchronized
+timer state, and up to five categorized recordings. The standalone recorder
+remains available for takes that do not belong to a guide block.
+
 The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
 `deploy/Caddyfile.jazz.example` documents the path matcher and privacy headers;
 the live configuration reuses the existing Portal credential hash and forwards

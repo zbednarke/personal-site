@@ -30,6 +30,11 @@
   let syncPaused = false;
   let timerState = loadTimerState();
   const cloudLoggingTimers = new Set();
+  let guidedBlocks = new Map();
+  let guidedBlocksReady = false;
+  const noteSaveDelays = new Map();
+  let activeSectionRecordingID = "";
+  let activeSectionRecordingMessage = "";
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -277,6 +282,12 @@
     toastTimer = setTimeout(() => toast.classList.remove("show"), 2400);
   }
 
+  function escapeHTML(value) {
+    const element = document.createElement("span");
+    element.textContent = String(value || "");
+    return element.innerHTML;
+  }
+
   function renderStats() {
     const totalMinutes = state.practice.reduce((sum, item) => sum + Number(item.minutes || 0), 0);
     const startedTunes = Object.values(state.repertoire).filter((stage) => Number(stage) > 0).length;
@@ -318,6 +329,151 @@
       cursor = addDays(cursor, -1);
     }
     return streak;
+  }
+
+  function guidedBlockFor(session) {
+    return guidedBlocks.get(session.id) || null;
+  }
+
+  async function hydrateGuidedBlocks() {
+    if (typeof globalThis.JazzPracticeSession?.ensureGuidedBlocks !== "function") {
+      setTimeout(hydrateGuidedBlocks, 350);
+      return;
+    }
+    try {
+      const definitions = DATA.sessions.map((session, position) => ({
+        blockKey: session.id,
+        position,
+        title: session.title,
+        instructions: session.detail,
+        category: session.category,
+        track: session.track,
+        targetMinutes: session.minutes,
+      }));
+      const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), definitions);
+      guidedBlocks = new Map((result.blocks || []).map((block) => [block.blockKey, block]));
+      DATA.sessions.forEach((session) => {
+        const block = guidedBlockFor(session);
+        if (!block) return;
+        const timer = timerFor(session);
+        const localElapsed = elapsedFor(timer);
+        const cloudHasProgress = block.status !== "pending" || Number(block.elapsedMs) > 0;
+        if (!cloudHasProgress && localElapsed > 0) {
+          saveTimerBlock(session, timer);
+          return;
+        }
+        timer.elapsedMs = Math.max(0, Number(block.elapsedMs || 0));
+        timer.running = block.status === "running";
+        timer.startedAt = timer.running ? (Date.parse(block.timerStartedAt || "") || Date.now()) : 0;
+        timer.completed = block.status === "completed";
+        timer.completedAt = block.completedAt || timer.completedAt || "";
+      });
+      guidedBlocksReady = true;
+      persistTimerState();
+      renderSessions();
+      tickGuidedTimers();
+    } catch {
+      guidedBlocksReady = true;
+      renderSessions();
+    }
+  }
+
+  async function saveTimerBlock(session, timer) {
+    const block = guidedBlockFor(session);
+    if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
+    const status = timer.completed ? "completed" : (timer.running ? "running" : (timer.elapsedMs > 0 ? "paused" : "pending"));
+    try {
+      const updated = await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, {
+        elapsedMs: Math.min(session.minutes * 60 * 1000, Math.round(timer.elapsedMs)),
+        status,
+        timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
+        completedAt: timer.completed ? (timer.completedAt || new Date().toISOString()) : "",
+      });
+      guidedBlocks.set(session.id, { ...block, ...updated });
+      updateSectionSyncStatus(session.id, "Saved", "saved");
+    } catch {
+      updateSectionSyncStatus(session.id, "Sync pending", "pending");
+    }
+  }
+
+  function queueBlockNoteSave(session, value) {
+    const block = guidedBlockFor(session);
+    if (!block) return;
+    block.notes = value;
+    updateSectionSyncStatus(session.id, "Saving...", "saving");
+    clearTimeout(noteSaveDelays.get(session.id));
+    noteSaveDelays.set(session.id, setTimeout(() => saveBlockNote(session), 650));
+  }
+
+  async function saveBlockNote(session) {
+    const block = guidedBlockFor(session);
+    if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
+    clearTimeout(noteSaveDelays.get(session.id));
+    noteSaveDelays.delete(session.id);
+    try {
+      const updated = await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, { notes: block.notes || "" });
+      guidedBlocks.set(session.id, { ...block, ...updated });
+      updateSectionSyncStatus(session.id, "Saved", "saved");
+    } catch {
+      updateSectionSyncStatus(session.id, "Sync pending", "pending");
+    }
+  }
+
+  function updateSectionSyncStatus(sessionID, message, tone = "") {
+    const status = document.querySelector(`[data-session-id="${sessionID}"] [data-section-sync]`);
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  }
+
+  function formatRecordingDuration(milliseconds) {
+    if (!milliseconds) return "00:00";
+    return formatTimer(milliseconds);
+  }
+
+  function sectionRecordingMarkup(block) {
+    if (!block) return '<p class="section-empty">Connect the practice session to add section takes.</p>';
+    const recordings = Array.isArray(block.recordings) ? block.recordings : [];
+    if (!recordings.length) return '<p class="section-empty">No takes yet.</p>';
+    return recordings.map((recording, index) => `
+      <article class="section-take" data-section-take="${recording.id}">
+        <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}</span>
+        <div><button type="button" data-section-play>Play</button><button type="button" data-section-delete>Delete</button></div>
+      </article>`).join("");
+  }
+
+  function wireSectionTools(card, session, block) {
+    const notes = $("[data-section-notes]", card);
+    if (notes) {
+      notes.addEventListener("input", () => queueBlockNoteSave(session, notes.value));
+      notes.addEventListener("blur", () => saveBlockNote(session));
+    }
+    const recordButton = $("[data-section-record]", card);
+    if (recordButton) recordButton.addEventListener("click", () => {
+      if (activeSectionRecordingID === block?.id) {
+        globalThis.JazzRecording?.stop();
+        return;
+      }
+      if (!block || !globalThis.JazzRecording?.startForBlock) {
+        showToast("Section recorder is still connecting");
+        return;
+      }
+      if ((block.recordings || []).length >= 5) {
+        showToast("This section already has five recordings");
+        return;
+      }
+      globalThis.JazzRecording.startForBlock({
+        id: block.id,
+        title: session.title,
+        tuneId: session.tuneId || "",
+        takeNumber: (block.recordings || []).length + 1,
+      });
+    });
+    $$('[data-section-take]', card).forEach((take) => {
+      const recordingID = take.dataset.sectionTake;
+      $("[data-section-play]", take).addEventListener("click", () => globalThis.JazzRecording?.play(recordingID, take));
+      $("[data-section-delete]", take).addEventListener("click", () => globalThis.JazzRecording?.delete(recordingID));
+    });
   }
 
   function freshTimerState() {
@@ -377,6 +533,7 @@
       timer.elapsedMs = elapsedFor(timer);
       timer.running = false;
       timer.startedAt = 0;
+      saveTimerBlock(session, timer);
     });
   }
 
@@ -394,6 +551,7 @@
     }
     persistTimerState();
     renderSessions();
+    saveTimerBlock(session, timer);
   }
 
   function completeGuidedBlock(session) {
@@ -406,6 +564,7 @@
     timer.completed = true;
     timer.completedAt = new Date().toISOString();
     persistTimerState();
+    saveTimerBlock(session, timer);
 
     const logId = guidedLogId(session);
     if (!state.practice.some((entry) => entry.id === logId)) {
@@ -435,7 +594,7 @@
         category: session.category,
         title: session.title,
         durationMinutes: session.minutes,
-        notes: session.detail,
+        notes: guidedBlockFor(session)?.notes || session.detail,
         occurredAt: timer.completedAt || new Date().toISOString(),
       });
       timer.cloudLogged = true;
@@ -504,6 +663,9 @@
     DATA.sessions.forEach((session, index) => {
       const timer = timerFor(session);
       const complete = timer.completed;
+      const block = guidedBlockFor(session);
+      const recordings = block?.recordings || [];
+      const recordingHere = activeSectionRecordingID === block?.id;
       const card = document.createElement("article");
       card.dataset.sessionId = session.id;
       card.className = `session-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}`;
@@ -518,9 +680,24 @@
         </div>
         <div class="timer-controls">
           <span class="timer-readout" data-timer-readout aria-live="off">${complete ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`}</span>
-          <button class="timer-button" data-timer-button type="button" ${complete ? "disabled" : ""}>${complete ? "Completed" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start"))}</button>
+          <button class="timer-button" data-timer-button type="button" ${complete || !block ? "disabled" : ""}>${!guidedBlocksReady ? "Connecting" : (!block ? "Unavailable" : (complete ? "Completed" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start"))))}</button>
+        </div>
+        <div class="session-cms">
+          <label class="section-notes-field">
+            <span><strong>Section notes</strong><em data-section-sync data-tone="saved">${block ? "Cloud synced" : "Waiting for cloud"}</em></span>
+            <textarea data-section-notes maxlength="4000" rows="3" ${block ? "" : "disabled"} placeholder="What did you work on during ${session.title.toLowerCase()}?">${escapeHTML(block?.notes || "")}</textarea>
+          </label>
+          <div class="section-recording-panel">
+            <div class="section-recording-head">
+              <span><strong>Section takes</strong><em>${recordings.length} / 5</em></span>
+              <button class="section-record-button${recordingHere ? " recording" : ""}" data-section-record type="button" ${!block || (activeSectionRecordingID && !recordingHere) || (recordings.length >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? "Stop recording" : "+ Record take"}</button>
+            </div>
+            ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
+            <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
+          </div>
         </div>`;
       $("[data-timer-button]", card).addEventListener("click", () => toggleGuidedTimer(session));
+      wireSectionTools(card, session, block);
       list.appendChild(card);
     });
   }
@@ -884,6 +1061,14 @@
     renderAll();
     showToast(`+${activity.durationMinutes} minutes logged`);
   });
+  addEventListener("jazz:recording-state", (event) => {
+    const detail = event.detail || {};
+    if (!detail.blockId) return;
+    activeSectionRecordingID = detail.phase === "idle" || detail.phase === "complete" || detail.phase === "error" ? "" : detail.blockId;
+    activeSectionRecordingMessage = detail.message || "";
+    renderSessions();
+  });
+  addEventListener("jazz:recordings-changed", () => hydrateGuidedBlocks());
   renderAll();
   addEventListener("online", flushOutbox);
   addEventListener("online", syncCompletedGuidedBlocks);
@@ -892,5 +1077,6 @@
     tickGuidedTimers();
     syncCompletedGuidedBlocks();
   }, 1000);
+  hydrateGuidedBlocks();
   initializeCloudSync().finally(syncCompletedGuidedBlocks);
 })();

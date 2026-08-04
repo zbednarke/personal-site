@@ -17,6 +17,7 @@
   let currentPracticeSessionID = "";
   let finishing = false;
   let previewURL = null;
+  let activeBlockContext = null;
 
   function setServiceStatus(message, tone = "") {
     const element = $("#recording-service-status");
@@ -24,8 +25,11 @@
     element.className = `cloud-status${tone ? ` ${tone}` : ""}`;
   }
 
-  function setRecorderState(message) {
+  function setRecorderState(message, phase = "status") {
     $("#recording-state").textContent = message;
+    dispatchEvent(new CustomEvent("jazz:recording-state", {
+      detail: { blockId: activeBlockContext?.id || "", message, phase },
+    }));
   }
 
   async function api(path, options = {}) {
@@ -104,11 +108,14 @@
   }
 
   async function startRecording() {
+    if (stream || finishing) return;
     if (!navigator.mediaDevices?.getUserMedia || !globalThis.JazzLosslessRecorder) {
-      setRecorderState("Lossless recording is not supported in this browser");
+      setRecorderState("Lossless recording is not supported in this browser", "error");
+      activeBlockContext = null;
       return;
     }
     try {
+      setRecorderState("Requesting microphone access...", "starting");
       const practiceSession = await globalThis.JazzPracticeSession.ensureActive();
       currentPracticeSessionID = practiceSession.id;
       finishing = false;
@@ -133,10 +140,11 @@
       $("#recording-light").classList.add("active");
       $("#start-recording").disabled = true;
       $("#stop-recording").disabled = false;
-      setRecorderState("Recording lossless 24-bit audio - play the take");
+      setRecorderState("Recording lossless 24-bit audio - play the take", "recording");
     } catch (error) {
       stopCapture();
-      setRecorderState(error.name === "NotAllowedError" ? "Microphone permission was not granted" : "Could not start the microphone");
+      setRecorderState(error.name === "NotAllowedError" ? "Microphone permission was not granted" : "Could not start the microphone", "error");
+      activeBlockContext = null;
     }
   }
 
@@ -144,7 +152,7 @@
     if (!losslessRecorder || finishing) return;
     finishing = true;
     $("#stop-recording").disabled = true;
-    setRecorderState("Building the lossless take...");
+    setRecorderState("Building the lossless take...", "processing");
     finishRecording();
   }
 
@@ -156,11 +164,11 @@
       stopCapture();
       losslessRecorder = null;
       finishing = false;
-      setRecorderState(`Could not finish the lossless take: ${error.message}`);
+      setRecorderState(`Could not finish the lossless take: ${error.message}`, "error");
+      activeBlockContext = null;
       return;
     }
     losslessRecorder = null;
-    finishing = false;
     recordedSampleRate = result.sampleRate;
     const { blob, durationMS } = result;
     const contentType = "audio/wav";
@@ -170,18 +178,22 @@
     const preview = $("#recording-preview");
     preview.src = previewURL;
     preview.hidden = false;
-    setRecorderState("Take captured - starting private upload");
+    setRecorderState("Take captured - starting private upload", "uploading");
     try {
       await uploadRecording(blob, durationMS, contentType);
-      setRecorderState("Uploaded privately");
+      setRecorderState("Uploaded privately", "complete");
       setServiceStatus("Private storage connected", "online");
       const takeInput = $('#recording-metadata input[name="takeNumber"]');
       takeInput.value = String(Math.min(99, Number(takeInput.value || 1) + 1));
       await loadRecordings();
       await globalThis.JazzPracticeSession.refresh();
+      dispatchEvent(new CustomEvent("jazz:recordings-changed"));
     } catch (error) {
-      setRecorderState(`Saved for preview, but upload failed: ${error.message}`);
+      setRecorderState(`Saved for preview, but upload failed: ${error.message}`, "error");
       setServiceStatus("Upload needs attention", "offline");
+    } finally {
+      finishing = false;
+      activeBlockContext = null;
     }
   }
 
@@ -200,15 +212,21 @@
         channels: 1,
         recordedAt,
         practiceSessionId: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
-        tuneId: String(metadata.get("tuneId") || ""),
+        practiceBlockId: activeBlockContext?.id || "",
+        tuneId: activeBlockContext?.tuneId || String(metadata.get("tuneId") || ""),
         missionId: DATA.mission.id,
         skillIds: metadata.get("skillId") ? [String(metadata.get("skillId"))] : [],
-        takeNumber: Number(metadata.get("takeNumber") || 1),
-        notes: String(metadata.get("notes") || ""),
+        takeNumber: activeBlockContext?.takeNumber || Number(metadata.get("takeNumber") || 1),
+        notes: activeBlockContext ? `${activeBlockContext.title} section take` : String(metadata.get("notes") || ""),
       }),
     });
-    await putBlob(initialized.uploadUrl, blob, baseType);
-    await api(`/recordings/${initialized.id}/complete`, { method: "POST", body: "{}" });
+    try {
+      await putBlob(initialized.uploadUrl, blob, baseType);
+      await api(`/recordings/${initialized.id}/complete`, { method: "POST", body: "{}" });
+    } catch (error) {
+      await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
+      throw error;
+    }
   }
 
   function putBlob(uploadURL, blob, contentType) {
@@ -218,7 +236,7 @@
       request.setRequestHeader("Content-Type", contentType);
       request.setRequestHeader("Content-Range", `bytes 0-${blob.size - 1}/${blob.size}`);
       request.upload.addEventListener("progress", (event) => {
-        if (event.lengthComputable) setRecorderState(`Uploading privately - ${Math.round((event.loaded / event.total) * 100)}%`);
+        if (event.lengthComputable) setRecorderState(`Uploading privately - ${Math.round((event.loaded / event.total) * 100)}%`, "uploading");
       });
       request.addEventListener("load", () => {
         if (request.status >= 200 && request.status < 300) resolve();
@@ -270,7 +288,7 @@
   }
 
   async function playRecording(id, card) {
-    const button = $(".play-recording", card);
+    const button = $(".play-recording", card) || $("[data-section-play]", card);
     button.disabled = true;
     button.textContent = "Loading...";
     try {
@@ -297,6 +315,7 @@
       await api(`/recordings/${id}`, { method: "DELETE" });
       await loadRecordings();
       await globalThis.JazzPracticeSession.refresh();
+      dispatchEvent(new CustomEvent("jazz:recordings-changed"));
     } catch (error) {
       setRecorderState(`Delete failed: ${error.message}`);
     }
@@ -317,8 +336,29 @@
     DATA.skills.forEach((skill) => skillSelect.add(new Option(`${skill.name} - ${skill.track}`, skill.id)));
   }
 
+  function startForBlock(block) {
+    if (stream || finishing) return false;
+    activeBlockContext = block;
+    startRecording();
+    return true;
+  }
+
+  function startGeneralRecording() {
+    if (stream || finishing) return false;
+    activeBlockContext = null;
+    startRecording();
+    return true;
+  }
+
+  globalThis.JazzRecording = {
+    startForBlock,
+    stop: stopRecording,
+    play: playRecording,
+    delete: deleteRecording,
+  };
+
   populateMetadata();
-  $("#start-recording").addEventListener("click", startRecording);
+  $("#start-recording").addEventListener("click", startGeneralRecording);
   $("#stop-recording").addEventListener("click", stopRecording);
   $("#refresh-recordings").addEventListener("click", loadRecordings);
   navigator.mediaDevices?.addEventListener?.("devicechange", updateMicrophones);

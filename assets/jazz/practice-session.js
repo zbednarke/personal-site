@@ -218,6 +218,22 @@
     return activity;
   }
 
+  async function ensureGuidedBlocks(practiceDate, definitions) {
+    const session = await ensureActive();
+    const result = await api(`/practice-sessions/${session.id}/blocks`, {
+      method: "POST",
+      body: JSON.stringify({ practiceDate, blocks: definitions }),
+    });
+    return { session, blocks: result.blocks || [] };
+  }
+
+  async function updateGuidedBlock(blockID, changes) {
+    return api(`/practice-blocks/${blockID}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    });
+  }
+
   function escapeHTML(value) {
     const element = document.createElement("span");
     element.textContent = value;
@@ -227,6 +243,8 @@
   globalThis.JazzPracticeSession = {
     ensureActive,
     logGuidedActivity,
+    ensureGuidedBlocks,
+    updateGuidedBlock,
     currentID: () => activeSession?.id || "",
     refresh: loadSessions,
   };

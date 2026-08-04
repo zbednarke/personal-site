@@ -104,6 +104,7 @@ type recordingInitRequest struct {
 	Channels          int      `json:"channels"`
 	RecordedAt        string   `json:"recordedAt"`
 	PracticeSessionID string   `json:"practiceSessionId"`
+	PracticeBlockID   string   `json:"practiceBlockId"`
 	TuneID            string   `json:"tuneId"`
 	MissionID         string   `json:"missionId"`
 	SkillIDs          []string `json:"skillIds"`
@@ -126,6 +127,7 @@ type recordingRow struct {
 	Notes        string    `json:"notes,omitempty"`
 	SessionID    string    `json:"practiceSessionId,omitempty"`
 	SessionTitle string    `json:"practiceSessionTitle,omitempty"`
+	BlockID      string    `json:"practiceBlockId,omitempty"`
 	ObjectName   string    `json:"-"`
 }
 
@@ -244,6 +246,9 @@ func (app *application) routes() http.Handler {
 	mux.Handle("GET /v1/practice-sessions/{id}", app.authenticate(http.HandlerFunc(app.getPracticeSession)))
 	mux.Handle("PATCH /v1/practice-sessions/{id}", app.authenticate(http.HandlerFunc(app.updatePracticeSession)))
 	mux.Handle("POST /v1/practice-sessions/{id}/activities", app.authenticate(http.HandlerFunc(app.createPracticeActivity)))
+	mux.Handle("GET /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.listPracticeBlocks)))
+	mux.Handle("POST /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.bootstrapPracticeBlocks)))
+	mux.Handle("PATCH /v1/practice-blocks/{id}", app.authenticate(http.HandlerFunc(app.updatePracticeBlock)))
 	mux.Handle("GET /v1/recordings", app.authenticate(http.HandlerFunc(app.listRecordings)))
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
@@ -454,13 +459,39 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var practiceBlockID *uuid.UUID
+	if input.PracticeBlockID != "" {
+		blockID, parseErr := uuid.Parse(input.PracticeBlockID)
+		if parseErr != nil {
+			writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
+			return
+		}
+		var blockSessionID uuid.UUID
+		var recordingCount int
+		queryErr := app.db.QueryRow(r.Context(), `
+			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready'))
+			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2`, blockID, userID).Scan(&blockSessionID, &recordingCount)
+		if errors.Is(queryErr, pgx.ErrNoRows) || (input.PracticeSessionID != "" && blockSessionID.String() != input.PracticeSessionID) {
+			writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
+			return
+		}
+		if queryErr != nil {
+			app.serverError(w, queryErr)
+			return
+		}
+		if recordingCount >= 5 {
+			writeError(w, http.StatusConflict, "this practice block already has five recordings")
+			return
+		}
+		practiceBlockID = &blockID
+	}
 	objectName := fmt.Sprintf("users/%s/%s/%s/source.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
 	skillJSON, _ := json.Marshal(input.SkillIDs)
 	_, err = app.db.Exec(r.Context(), `
 		INSERT INTO recordings
-		(id,user_id,practice_session_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes)
-		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,0),NULLIF($10,0),NULLIF($11,0),$12,'uploading',NULLIF($13,''),NULLIF($14,''),$15,NULLIF($16,0),NULLIF($17,''))`,
-		recordingID, userID, clean(input.PracticeSessionID, 160), app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
+		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''))`,
+		recordingID, userID, clean(input.PracticeSessionID, 160), practiceBlockID, app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
 		input.DurationMS, input.SampleRate, input.Channels, recordedAt, clean(input.TuneID, 100), clean(input.MissionID, 100), skillJSON,
 		input.TakeNumber, clean(input.Notes, 500))
 	if err != nil {
@@ -563,7 +594,7 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.db.Query(r.Context(), `
 		SELECT r.id,r.content_type,COALESCE(r.codec,''),COALESCE(r.size_bytes,r.expected_size_bytes),COALESCE(r.duration_ms,0),r.recorded_at,r.status,
 		COALESCE(r.tune_id,''),COALESCE(r.mission_id,''),r.skill_ids,COALESCE(r.take_number,0),COALESCE(r.notes,''),
-		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),r.object_name
+		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),r.object_name
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
 		WHERE r.user_id=$1 AND r.status <> 'deleted' ORDER BY r.recorded_at DESC LIMIT 100`, userID)
@@ -577,7 +608,7 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		var item recordingRow
 		var skills []byte
 		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.RecordedAt, &item.Status,
-			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.ObjectName); err != nil {
+			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID, &item.ObjectName); err != nil {
 			app.serverError(w, err)
 			return
 		}
