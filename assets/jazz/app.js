@@ -30,6 +30,7 @@
   let syncPaused = false;
   let timerState = loadTimerState();
   const cloudLoggingTimers = new Set();
+  const timerSaveChains = new Map();
   let guidedBlocks = new Map();
   let guidedBlocksReady = false;
   const noteSaveDelays = new Map();
@@ -38,6 +39,8 @@
   let activeSectionRecordingPhase = "";
   let failedSectionRecordingID = "";
   let failedSectionRecordingMessage = "";
+  let recordingTimerSessionID = "";
+  let recordingTimerWasAlreadyRunning = false;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -246,11 +249,6 @@
     return `${year}-${month}-${day}`;
   }
 
-  function dateFromKey(key) {
-    const [year, month, day] = key.split("-").map(Number);
-    return new Date(year, month - 1, day);
-  }
-
   function addDays(date, amount) {
     const next = new Date(date);
     next.setDate(next.getDate() + amount);
@@ -265,11 +263,20 @@
     return monday;
   }
 
-  function practiceMinutesBetween(start, end) {
-    return state.practice.reduce((sum, entry) => {
-      const date = dateFromKey(entry.date);
-      return date >= start && date < end ? sum + Number(entry.minutes || 0) : sum;
+  function liveGuidedMinutesForDate(dateKey) {
+    if (timerState.date !== dateKey) return 0;
+    return DATA.sessions.reduce((sum, session) => {
+      const timer = timerFor(session);
+      if (timer.completed) return sum;
+      return sum + (elapsedFor(timer) / 60000);
     }, 0);
+  }
+
+  function practiceMinutesForDate(dateKey) {
+    const logged = state.practice
+      .filter((entry) => entry.date === dateKey)
+      .reduce((sum, entry) => sum + Number(entry.minutes || 0), 0);
+    return logged + liveGuidedMinutesForDate(dateKey);
   }
 
   function setText(id, value) {
@@ -359,16 +366,34 @@
         const block = guidedBlockFor(session);
         if (!block) return;
         const timer = timerFor(session);
+        const targetMs = session.minutes * 60 * 1000;
         const localElapsed = elapsedFor(timer);
         const cloudHasProgress = block.status !== "pending" || Number(block.elapsedMs) > 0;
         if (!cloudHasProgress && localElapsed > 0) {
           saveTimerBlock(session, timer);
           return;
         }
-        timer.elapsedMs = Math.max(0, Number(block.elapsedMs || 0));
-        timer.running = block.status === "running";
-        timer.startedAt = timer.running ? (Date.parse(block.timerStartedAt || "") || Date.now()) : 0;
-        timer.completed = block.status === "completed";
+        const cloudElapsedMs = Math.max(0, Number(block.elapsedMs || 0));
+        const remoteStartedAt = Date.parse(block.timerStartedAt || "");
+        const remoteRunningMs = block.status === "running" && remoteStartedAt ? Math.max(0, Date.now() - remoteStartedAt) : 0;
+        const remoteElapsedMs = Math.min(targetMs, cloudElapsedMs + remoteRunningMs);
+        if (localElapsed > remoteElapsedMs && localElapsed > 0) {
+          timer.elapsedMs = Math.min(targetMs, localElapsed);
+          timer.running = timer.running && !timer.completed;
+          timer.completed = timer.elapsedMs >= targetMs;
+          if (timer.completed) {
+            timer.running = false;
+            timer.startedAt = 0;
+            timer.completedAt = timer.completedAt || new Date().toISOString();
+          }
+          timer.startedAt = timer.running ? (timer.startedAt || Date.now()) : 0;
+          saveTimerBlock(session, timer);
+          return;
+        }
+        timer.elapsedMs = remoteElapsedMs;
+        timer.completed = block.status === "completed" || remoteElapsedMs >= targetMs;
+        timer.running = block.status === "running" && !timer.completed;
+        timer.startedAt = timer.running ? (remoteStartedAt || Date.now()) : 0;
         timer.completedAt = block.completedAt || timer.completedAt || "";
       });
       guidedBlocksReady = true;
@@ -384,18 +409,26 @@
   async function saveTimerBlock(session, timer) {
     const block = guidedBlockFor(session);
     if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
-    const status = timer.completed ? "completed" : (timer.running ? "running" : (timer.elapsedMs > 0 ? "paused" : "pending"));
+    const snapshot = {
+      elapsedMs: Math.min(session.minutes * 60 * 1000, Math.round(timer.elapsedMs)),
+      status: timer.completed ? "completed" : (timer.running ? "running" : (timer.elapsedMs > 0 ? "paused" : "pending")),
+      timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
+      completedAt: timer.completed ? (timer.completedAt || new Date().toISOString()) : "",
+    };
+    const previous = timerSaveChains.get(session.id) || Promise.resolve();
+    const save = previous.catch(() => {}).then(async () => {
+      const currentBlock = guidedBlockFor(session) || block;
+      const updated = await globalThis.JazzPracticeSession.updateGuidedBlock(currentBlock.id, snapshot);
+      guidedBlocks.set(session.id, { ...currentBlock, ...updated });
+    });
+    timerSaveChains.set(session.id, save);
     try {
-      const updated = await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, {
-        elapsedMs: Math.min(session.minutes * 60 * 1000, Math.round(timer.elapsedMs)),
-        status,
-        timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
-        completedAt: timer.completed ? (timer.completedAt || new Date().toISOString()) : "",
-      });
-      guidedBlocks.set(session.id, { ...block, ...updated });
+      await save;
       updateSectionSyncStatus(session.id, "Saved", "saved");
     } catch {
       updateSectionSyncStatus(session.id, "Sync pending", "pending");
+    } finally {
+      if (timerSaveChains.get(session.id) === save) timerSaveChains.delete(session.id);
     }
   }
 
@@ -440,9 +473,13 @@
     if (!recordings.length) return '<p class="section-empty">No takes yet.</p>';
     return recordings.map((recording, index) => `
       <article class="section-take" data-section-take="${recording.id}">
-        <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}</span>
-        <div><button type="button" data-section-play>Play</button><button type="button" data-section-delete>Delete</button></div>
+        <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
+        <div><button type="button" data-section-play ${recording.status === "ready" ? "" : "disabled"}>Play</button><button type="button" data-section-delete>Delete</button></div>
       </article>`).join("");
+  }
+
+  function activeBlockRecordings(block) {
+    return (block?.recordings || []).filter((recording) => recording.status === "ready" || recording.status === "uploading");
   }
 
   function wireSectionTools(card, session, block) {
@@ -465,7 +502,8 @@
         showToast("Section recorder is still connecting");
         return;
       }
-      if ((block.recordings || []).length >= 5) {
+      const recordings = activeBlockRecordings(block);
+      if (recordings.length >= 5) {
         showToast("This section already has five recordings");
         return;
       }
@@ -473,7 +511,7 @@
         id: block.id,
         title: session.title,
         tuneId: session.tuneId || "",
-        takeNumber: (block.recordings || []).length + 1,
+        takeNumber: recordings.length + 1,
       });
     });
     $$('[data-section-take]', card).forEach((take) => {
@@ -544,9 +582,52 @@
     });
   }
 
+  function sessionForRecording(blockID) {
+    if (blockID) return DATA.sessions.find((session) => guidedBlockFor(session)?.id === blockID) || null;
+    return DATA.sessions.find((session) => timerFor(session).running && !timerFor(session).completed)
+      || DATA.sessions.find((session) => !timerFor(session).completed)
+      || null;
+  }
+
+  function beginRecordingPractice(blockID) {
+    const session = sessionForRecording(blockID);
+    if (!session) return;
+    const timer = timerFor(session);
+    recordingTimerSessionID = session.id;
+    recordingTimerWasAlreadyRunning = timer.running;
+    if (timer.completed) return;
+
+    pauseOtherTimers(session.id);
+    if (!timer.running) {
+      timer.running = true;
+      timer.startedAt = Date.now();
+    }
+    persistTimerState();
+    renderSessions();
+    updateWeekLive();
+    saveTimerBlock(session, timer);
+  }
+
+  function endRecordingPractice(blockID) {
+    const session = DATA.sessions.find((candidate) => candidate.id === recordingTimerSessionID);
+    if (!session || (blockID && guidedBlockFor(session)?.id !== blockID)) return;
+    const timer = timerFor(session);
+    if (!recordingTimerWasAlreadyRunning && timer.running && !timer.completed) {
+      timer.elapsedMs = elapsedFor(timer);
+      timer.running = false;
+      timer.startedAt = 0;
+      saveTimerBlock(session, timer);
+    }
+    recordingTimerSessionID = "";
+    recordingTimerWasAlreadyRunning = false;
+    persistTimerState();
+    renderSessions();
+    updateWeekLive();
+  }
+
   function toggleGuidedTimer(session) {
     const timer = timerFor(session);
-    if (timer.completed) return;
+    if (timer.completed || recordingTimerSessionID === session.id) return;
     if (timer.running) {
       timer.elapsedMs = elapsedFor(timer);
       timer.running = false;
@@ -558,6 +639,7 @@
     }
     persistTimerState();
     renderSessions();
+    updateWeekLive();
     saveTimerBlock(session, timer);
   }
 
@@ -659,7 +741,11 @@
       readout.textContent = timer.completed ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`;
       progress.style.width = `${Math.min(100, (elapsedMs / targetMs) * 100)}%`;
       progress.parentElement.setAttribute("aria-valuenow", String(Math.round((elapsedMs / targetMs) * 100)));
-      if (!timer.completed) button.textContent = timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start");
+      if (!timer.completed) {
+        const recordingHere = recordingTimerSessionID === session.id;
+        button.disabled = recordingHere;
+        button.textContent = recordingHere ? "Recording" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start"));
+      }
     });
   }
 
@@ -672,8 +758,11 @@
       const complete = timer.completed;
       const block = guidedBlockFor(session);
       const recordings = block?.recordings || [];
+      const activeRecordings = activeBlockRecordings(block);
       const recordingHere = activeSectionRecordingID === block?.id;
       const uploadingHere = recordingHere && activeSectionRecordingPhase === "uploading";
+      const recordingActionLocked = activeSectionRecordingID && activeSectionRecordingPhase && !recordingHere
+        && (activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing" || activeSectionRecordingPhase === "uploading");
       const failedHere = failedSectionRecordingID === block?.id;
       const card = document.createElement("article");
       card.dataset.sessionId = session.id;
@@ -689,7 +778,7 @@
         </div>
         <div class="timer-controls">
           <span class="timer-readout" data-timer-readout aria-live="off">${complete ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`}</span>
-          <button class="timer-button" data-timer-button type="button" ${complete || !block ? "disabled" : ""}>${!guidedBlocksReady ? "Connecting" : (!block ? "Unavailable" : (complete ? "Completed" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start"))))}</button>
+          <button class="timer-button" data-timer-button type="button" ${complete || !block || recordingTimerSessionID === session.id ? "disabled" : ""}>${!guidedBlocksReady ? "Connecting" : (!block ? "Unavailable" : (complete ? "Completed" : (recordingTimerSessionID === session.id ? "Recording" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start")))))}</button>
         </div>
         <div class="session-cms">
           <label class="section-notes-field">
@@ -698,8 +787,8 @@
           </label>
           <div class="section-recording-panel">
             <div class="section-recording-head">
-              <span><strong>Section takes</strong><em>${recordings.length} / 5</em></span>
-              <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || (activeSectionRecordingID && !recordingHere) || (recordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading..." : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
+              <span><strong>Section takes</strong><em>${activeRecordings.length} / 5</em></span>
+              <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading..." : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
             </div>
             ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
             <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
@@ -713,32 +802,44 @@
 
   function renderWeek() {
     const monday = startOfWeek();
-    const nextMonday = addDays(monday, 7);
-    const minutes = practiceMinutesBetween(monday, nextMonday);
-    const percent = Math.min(100, Math.round((minutes / DATA.weeklyTargetMinutes) * 100));
-    setText("week-hours", (minutes / 60).toFixed(1));
-    setText("week-percent", `${percent}%`);
-    $("#week-meter").style.width = `${percent}%`;
-    setText("week-note", minutes >= DATA.weeklyTargetMinutes
-      ? "Weekly target cleared. Protect the streak; do not manufacture fatigue."
-      : `${Math.max(0, DATA.weeklyTargetMinutes - minutes)} focused minutes remain in this week's campaign.`);
-
     const chart = $("#week-chart");
     chart.replaceChildren();
-    const dailyMinutes = [];
     for (let index = 0; index < 7; index += 1) {
       const date = addDays(monday, index);
       const key = localDateKey(date);
-      const value = state.practice.filter((entry) => entry.date === key).reduce((sum, entry) => sum + Number(entry.minutes || 0), 0);
-      dailyMinutes.push({ date, key, value });
+      const column = document.createElement("div");
+      column.dataset.practiceDate = key;
+      column.className = `day-column${key === localDateKey() ? " today" : ""}`;
+      column.innerHTML = `<div class="day-bar-track"><span class="day-bar"></span></div><span class="day-label">${date.toLocaleDateString(undefined, { weekday: "short" }).slice(0, 2)}</span>`;
+      chart.appendChild(column);
     }
+    updateWeekLive();
+  }
+
+  function updateWeekLive() {
+    const monday = startOfWeek();
+    const dailyMinutes = Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(monday, index);
+      const key = localDateKey(date);
+      return { key, value: practiceMinutesForDate(key) };
+    });
+    const minutes = dailyMinutes.reduce((sum, day) => sum + day.value, 0);
+    const rawPercent = (minutes / DATA.weeklyTargetMinutes) * 100;
+    const percent = Math.min(100, rawPercent);
+    setText("week-hours", (minutes / 60).toFixed(2));
+    setText("week-percent", `${percent.toFixed(1)}%`);
+    $("#week-meter").style.width = `${percent}%`;
+    setText("week-note", minutes >= DATA.weeklyTargetMinutes
+      ? "Weekly target cleared. Protect the streak; do not manufacture fatigue."
+      : `${Math.ceil(Math.max(0, DATA.weeklyTargetMinutes - minutes))} focused minutes remain in this week's campaign.`);
+
     const max = Math.max(100, ...dailyMinutes.map((day) => day.value));
     dailyMinutes.forEach((day) => {
-      const column = document.createElement("div");
-      column.className = `day-column${day.key === localDateKey() ? " today" : ""}`;
-      column.title = `${day.value} minutes`;
-      column.innerHTML = `<div class="day-bar-track"><span class="day-bar" style="height:${Math.max(2, (day.value / max) * 100)}%"></span></div><span class="day-label">${day.date.toLocaleDateString(undefined, { weekday: "short" }).slice(0, 2)}</span>`;
-      chart.appendChild(column);
+      const column = document.querySelector(`[data-practice-date="${day.key}"]`);
+      if (!column) return;
+      column.title = `${day.value.toFixed(1)} minutes`;
+      const bar = $(".day-bar", column);
+      if (bar) bar.style.height = `${Math.max(2, (day.value / max) * 100)}%`;
     });
   }
 
@@ -1072,7 +1173,16 @@
   });
   addEventListener("jazz:recording-state", (event) => {
     const detail = event.detail || {};
+    if (detail.phase === "recording" && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
+      beginRecordingPractice(detail.blockId);
+    } else if (detail.phase !== "recording" && recordingTimerSessionID) {
+      endRecordingPractice(detail.blockId);
+    }
     if (!detail.blockId) return;
+    if (detail.phase === "uploading" && detail.blockId === activeSectionRecordingID && activeSectionRecordingPhase === "uploading") {
+      activeSectionRecordingMessage = detail.message || "";
+      return;
+    }
     if (detail.phase === "error" && detail.canRetry) {
       failedSectionRecordingID = detail.blockId;
       failedSectionRecordingMessage = detail.message || "Upload failed. The take is safe in this tab.";
@@ -1089,7 +1199,13 @@
   renderAll();
   addEventListener("online", flushOutbox);
   addEventListener("online", syncCompletedGuidedBlocks);
-  setInterval(tickGuidedTimers, 250);
+  const animateGuidedTimers = () => {
+    tickGuidedTimers();
+    if (DATA.sessions.some((session) => timerFor(session).running)) updateWeekLive();
+    requestAnimationFrame(animateGuidedTimers);
+  };
+  requestAnimationFrame(animateGuidedTimers);
+  setInterval(updateWeekLive, 30000);
   setTimeout(() => {
     tickGuidedTimers();
     syncCompletedGuidedBlocks();

@@ -321,7 +321,7 @@ func (app *application) loadPracticeBlocks(ctx context.Context, userID, sessionI
 func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID uuid.UUID) ([]blockRecordingSummary, error) {
 	rows, err := app.db.Query(ctx, `
 		SELECT id,status,content_type,COALESCE(duration_ms,0),recorded_at,COALESCE(take_number,0),COALESCE(notes,''),practice_block_id
-		FROM recordings WHERE user_id=$1 AND practice_block_id=$2 AND status='ready' ORDER BY recorded_at,id`, userID, blockID)
+		FROM recordings WHERE user_id=$1 AND practice_block_id=$2 AND status <> 'deleted' ORDER BY recorded_at,id`, userID, blockID)
 	if err != nil {
 		return nil, err
 	}

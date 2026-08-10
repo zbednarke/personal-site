@@ -18,6 +18,8 @@
   let previewURL = null;
   let activeBlockContext = null;
   let pendingUpload = null;
+  let lastUploadProgressAt = 0;
+  let lastUploadProgressPercent = -1;
 
   function setServiceStatus(message, tone = "") {
     const element = $("#recording-service-status");
@@ -25,8 +27,9 @@
     element.className = `cloud-status${tone ? ` ${tone}` : ""}`;
   }
 
-  function setRecorderState(message, phase = "status", canRetry = false) {
+  function setRecorderState(message, phase = "status", canRetry = false, notify = true) {
     $("#recording-state").textContent = message;
+    if (!notify) return;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
       detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
     }));
@@ -183,6 +186,8 @@
     preview.hidden = false;
     pendingUpload = captureUpload(blob, durationMS, contentType);
     showRetryButton(false);
+    lastUploadProgressPercent = -1;
+    lastUploadProgressAt = 0;
     setRecorderState("Take captured - starting private upload", "uploading");
     try {
       await uploadRecording(pendingUpload);
@@ -258,6 +263,8 @@
     finishing = true;
     activeBlockContext = pendingUpload.blockContext;
     showRetryButton(false);
+    lastUploadProgressPercent = -1;
+    lastUploadProgressAt = 0;
     setRecorderState("Retrying private upload...", "uploading");
     try {
       await uploadRecording(pendingUpload);
@@ -280,13 +287,29 @@
   }
 
   function putBlob(uploadURL, blob, contentType) {
+    const shouldNotifyProgress = (percent) => {
+      const next = Math.round(performance.now());
+      if (percent === 100) return true;
+      if (percent !== lastUploadProgressPercent && (percent % 10 === 0)) return true;
+      if (percent !== lastUploadProgressPercent && next - lastUploadProgressAt > 800) return true;
+      return false;
+    };
+
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
       request.open("PUT", uploadURL);
       request.setRequestHeader("Content-Type", contentType);
       request.setRequestHeader("Content-Range", `bytes 0-${blob.size - 1}/${blob.size}`);
       request.upload.addEventListener("progress", (event) => {
-        if (event.lengthComputable) setRecorderState(`Uploading privately - ${Math.round((event.loaded / event.total) * 100)}%`, "uploading");
+        if (!event.lengthComputable) return;
+        const percent = Math.round((event.loaded / event.total) * 100);
+        const message = `Uploading privately - ${percent}%`;
+        const notify = shouldNotifyProgress(percent);
+        if (notify) {
+          lastUploadProgressPercent = percent;
+          lastUploadProgressAt = performance.now();
+        }
+        setRecorderState(message, "uploading", false, notify);
       });
       request.addEventListener("load", () => {
         if (request.status >= 200 && request.status < 300) resolve();
