@@ -320,8 +320,8 @@
       sampleRate: recordedSampleRate,
       practiceSessionID: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
       blockContext,
-      tuneId: blockContext?.tuneId || String(metadata.get("tuneId") || ""),
-      skillIds: metadata.get("skillId") ? [String(metadata.get("skillId"))] : [],
+      tuneId: blockContext ? String(blockContext.tuneId || "") : String(metadata.get("tuneId") || ""),
+      skillIds: blockContext?.skillIds || (metadata.get("skillId") ? [String(metadata.get("skillId"))] : []),
       takeNumber: blockContext?.takeNumber || Number(metadata.get("takeNumber") || 1),
       notes: blockContext ? `${blockContext.title} section take` : String(metadata.get("notes") || ""),
     };
@@ -440,14 +440,20 @@
         const tune = DATA.repertoire.find((item) => item.id === recording.tuneId)?.title || "Open practice";
         const skill = DATA.skills.find((item) => item.id === recording.skillIds?.[0])?.name || "General musicianship";
         const sessionTitle = recording.practiceSessionTitle || "Unassigned session";
+        const blockTitle = recording.practiceBlockTitle || "";
+        const track = DATA.tracks.find((item) => item.id === recording.practiceBlockTrack)?.name || recording.practiceBlockCategory || "";
+        const title = blockTitle || tune;
+        const context = blockTitle
+          ? [formatPracticeDate(recording.practiceDate), track].filter(Boolean).join(" · ")
+          : [sessionTitle, skill].filter(Boolean).join(" · ");
         const format = recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType.replace("audio/", "").toUpperCase();
         const card = document.createElement("article");
         card.className = "recording-item";
         card.innerHTML = `
           <div class="recording-item-top"><span>${new Date(recording.recordedAt).toLocaleDateString()}</span><span>${formatDuration(recording.durationMs)} · ${format}</span></div>
-          <h4>${escapeHTML(tune)}${recording.takeNumber ? ` - Take ${recording.takeNumber}` : ""}</h4>
+          <h4>${escapeHTML(title)}${recording.takeNumber ? ` · Take ${recording.takeNumber}` : ""}</h4>
           <p>${escapeHTML(recording.notes || "No listening note yet.")}</p>
-          <span class="recording-context">${escapeHTML(sessionTitle)} · ${escapeHTML(skill)}</span>
+          <span class="recording-context">${escapeHTML(context)}</span>
           <div class="recording-item-actions">
             <button type="button" class="play-recording">Play</button>
             <button type="button" class="delete-recording">Delete</button>
@@ -459,6 +465,13 @@
     } catch {
       setServiceStatus("Private storage offline", "offline");
     }
+  }
+
+  function formatPracticeDate(value) {
+    if (!value) return "";
+    const [year, month, day] = value.split("-").map(Number);
+    if (!year || !month || !day) return value;
+    return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
   async function playRecording(id, card) {
