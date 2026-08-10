@@ -40,7 +40,6 @@
   let failedSectionRecordingID = "";
   let failedSectionRecordingMessage = "";
   let recordingTimerSessionID = "";
-  let recordingTimerWasAlreadyRunning = false;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -56,7 +55,7 @@
           return [{
             id: String(entry.id || `imported-${crypto.randomUUID()}`),
             date: String(entry.date),
-            minutes: Math.min(360, Math.round(minutes)),
+            minutes: Math.min(360, Math.round(minutes * 10000) / 10000),
             track: String(entry.track || "trumpet").slice(0, 30),
             note: String(entry.note || "").slice(0, 100),
             preset: Boolean(entry.preset),
@@ -267,8 +266,8 @@
     if (timerState.date !== dateKey) return 0;
     return DATA.sessions.reduce((sum, session) => {
       const timer = timerFor(session);
-      if (timer.completed) return sum;
-      return sum + (elapsedFor(timer) / 60000);
+      const logged = state.practice.find((entry) => entry.id === guidedLogId(session));
+      return sum + Math.max(0, (elapsedFor(timer) / 60000) - Number(logged?.minutes || 0));
     }, 0);
   }
 
@@ -367,34 +366,30 @@
         if (!block) return;
         const timer = timerFor(session);
         const targetMs = session.minutes * 60 * 1000;
-        const localElapsed = elapsedFor(timer);
+        const localElapsed = Math.max(0, Number(timer.elapsedMs || 0));
         const cloudHasProgress = block.status !== "pending" || Number(block.elapsedMs) > 0;
         if (!cloudHasProgress && localElapsed > 0) {
+          timer.running = false;
+          timer.startedAt = 0;
           saveTimerBlock(session, timer);
           return;
         }
         const cloudElapsedMs = Math.max(0, Number(block.elapsedMs || 0));
-        const remoteStartedAt = Date.parse(block.timerStartedAt || "");
-        const remoteRunningMs = block.status === "running" && remoteStartedAt ? Math.max(0, Date.now() - remoteStartedAt) : 0;
-        const remoteElapsedMs = Math.min(targetMs, cloudElapsedMs + remoteRunningMs);
-        if (localElapsed > remoteElapsedMs && localElapsed > 0) {
-          timer.elapsedMs = Math.min(targetMs, localElapsed);
-          timer.running = timer.running && !timer.completed;
+        if (localElapsed > cloudElapsedMs && localElapsed > 0) {
+          timer.elapsedMs = Math.min(21600000, localElapsed);
+          timer.running = false;
           timer.completed = timer.elapsedMs >= targetMs;
-          if (timer.completed) {
-            timer.running = false;
-            timer.startedAt = 0;
-            timer.completedAt = timer.completedAt || new Date().toISOString();
-          }
-          timer.startedAt = timer.running ? (timer.startedAt || Date.now()) : 0;
+          timer.startedAt = 0;
+          if (timer.completed) timer.completedAt = timer.completedAt || block.completedAt || new Date().toISOString();
           saveTimerBlock(session, timer);
           return;
         }
-        timer.elapsedMs = remoteElapsedMs;
-        timer.completed = block.status === "completed" || remoteElapsedMs >= targetMs;
-        timer.running = block.status === "running" && !timer.completed;
-        timer.startedAt = timer.running ? (remoteStartedAt || Date.now()) : 0;
+        timer.elapsedMs = Math.min(21600000, cloudElapsedMs);
+        timer.completed = block.status === "completed" || cloudElapsedMs >= targetMs;
+        timer.running = false;
+        timer.startedAt = 0;
         timer.completedAt = block.completedAt || timer.completedAt || "";
+        if (block.status === "running") saveTimerBlock(session, timer);
       });
       guidedBlocksReady = true;
       persistTimerState();
@@ -410,10 +405,10 @@
     const block = guidedBlockFor(session);
     if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
     const snapshot = {
-      elapsedMs: Math.min(session.minutes * 60 * 1000, Math.round(timer.elapsedMs)),
-      status: timer.completed ? "completed" : (timer.running ? "running" : (timer.elapsedMs > 0 ? "paused" : "pending")),
+      elapsedMs: Math.min(21600000, Math.round(timer.elapsedMs)),
+      status: timer.running ? "running" : (timer.completed ? "completed" : (timer.elapsedMs > 0 ? "paused" : "pending")),
       timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
-      completedAt: timer.completed ? (timer.completedAt || new Date().toISOString()) : "",
+      completedAt: timer.completed && !timer.running ? (timer.completedAt || new Date().toISOString()) : "",
     };
     const previous = timerSaveChains.get(session.id) || Promise.resolve();
     const save = previous.catch(() => {}).then(async () => {
@@ -570,7 +565,7 @@
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   }
 
-  function pauseOtherTimers(activeID) {
+  function stopOtherRecordingTimers(activeID) {
     DATA.sessions.forEach((session) => {
       if (session.id === activeID) return;
       const timer = timerFor(session);
@@ -578,6 +573,7 @@
       timer.elapsedMs = elapsedFor(timer);
       timer.running = false;
       timer.startedAt = 0;
+      syncGuidedPracticeEntry(session);
       saveTimerBlock(session, timer);
     });
   }
@@ -594,10 +590,7 @@
     if (!session) return;
     const timer = timerFor(session);
     recordingTimerSessionID = session.id;
-    recordingTimerWasAlreadyRunning = timer.running;
-    if (timer.completed) return;
-
-    pauseOtherTimers(session.id);
+    stopOtherRecordingTimers(session.id);
     if (!timer.running) {
       timer.running = true;
       timer.startedAt = Date.now();
@@ -612,69 +605,66 @@
     const session = DATA.sessions.find((candidate) => candidate.id === recordingTimerSessionID);
     if (!session || (blockID && guidedBlockFor(session)?.id !== blockID)) return;
     const timer = timerFor(session);
-    if (!recordingTimerWasAlreadyRunning && timer.running && !timer.completed) {
-      timer.elapsedMs = elapsedFor(timer);
+    if (timer.running) {
+      timer.elapsedMs = Math.min(21600000, elapsedFor(timer));
       timer.running = false;
       timer.startedAt = 0;
-      saveTimerBlock(session, timer);
+    }
+    if (!timer.completed && timer.elapsedMs >= session.minutes * 60 * 1000) {
+      timer.completed = true;
+      timer.completedAt = new Date().toISOString();
     }
     recordingTimerSessionID = "";
-    recordingTimerWasAlreadyRunning = false;
     persistTimerState();
-    renderSessions();
-    updateWeekLive();
+    syncGuidedPracticeEntry(session);
+    saveTimerBlock(session, timer);
+    renderAll();
+    logGuidedBlockToCloud(session);
   }
 
-  function toggleGuidedTimer(session) {
+  function checkpointRecordingPractice() {
+    const session = DATA.sessions.find((candidate) => candidate.id === recordingTimerSessionID);
+    if (!session) return;
     const timer = timerFor(session);
-    if (timer.completed || recordingTimerSessionID === session.id) return;
-    if (timer.running) {
-      timer.elapsedMs = elapsedFor(timer);
-      timer.running = false;
-      timer.startedAt = 0;
-    } else {
-      pauseOtherTimers(session.id);
-      timer.running = true;
-      timer.startedAt = Date.now();
-    }
+    if (!timer.running) return;
+    timer.elapsedMs = Math.min(21600000, elapsedFor(timer));
+    timer.startedAt = Date.now();
     persistTimerState();
-    renderSessions();
-    updateWeekLive();
     saveTimerBlock(session, timer);
   }
 
-  function completeGuidedBlock(session) {
+  function markGuidedGoalMet(session) {
     const timer = timerFor(session);
     if (timer.completed) return;
-    const targetMs = session.minutes * 60 * 1000;
-    timer.elapsedMs = targetMs;
-    timer.running = false;
-    timer.startedAt = 0;
     timer.completed = true;
     timer.completedAt = new Date().toISOString();
     persistTimerState();
     saveTimerBlock(session, timer);
-
-    const logId = guidedLogId(session);
-    if (!state.practice.some((entry) => entry.id === logId)) {
-      state.practice.push({
-        id: logId,
-        date: timerState.date,
-        minutes: session.minutes,
-        track: session.track,
-        note: session.title,
-        preset: true,
-      });
-      saveState("practice.guide_completed");
-    }
+    syncGuidedPracticeEntry(session);
     renderAll();
-    showToast(`${session.title} complete - ${session.minutes} minutes logged`);
-    logGuidedBlockToCloud(session);
+    showToast(`${session.title} goal met - recording continues`);
+  }
+
+  function syncGuidedPracticeEntry(session) {
+    const timer = timerFor(session);
+    if (timer.elapsedMs <= 0) return false;
+    const logId = guidedLogId(session);
+    const minutes = Math.min(360, Math.round((timer.elapsedMs / 60000) * 10000) / 10000);
+    const existing = state.practice.find((entry) => entry.id === logId);
+    if (existing && Math.abs(Number(existing.minutes) - minutes) < 0.0001) return false;
+    if (existing) {
+      existing.minutes = minutes;
+      existing.note = session.title;
+    } else {
+      state.practice.push({ id: logId, date: timerState.date, minutes, track: session.track, note: session.title, preset: true });
+    }
+    saveState("practice.recording_time_updated");
+    return true;
   }
 
   async function logGuidedBlockToCloud(session) {
     const timer = timerFor(session);
-    if (!timer.completed || timer.cloudLogged || cloudLoggingTimers.has(session.id)) return;
+    if (timer.elapsedMs <= 0 || cloudLoggingTimers.has(session.id)) return;
     if (typeof globalThis.JazzPracticeSession?.logGuidedActivity !== "function") return;
     cloudLoggingTimers.add(session.id);
     try {
@@ -682,7 +672,7 @@
         sourceId: guidedLogId(session),
         category: session.category,
         title: session.title,
-        durationMinutes: session.minutes,
+        durationMinutes: Math.max(1, Math.min(360, Math.round(timer.elapsedMs / 60000))),
         notes: guidedBlockFor(session)?.notes || session.detail,
         occurredAt: timer.completedAt || new Date().toISOString(),
       });
@@ -699,31 +689,21 @@
     let restoredPracticeLog = false;
     DATA.sessions.forEach((session) => {
       const timer = timerFor(session);
-      const logId = guidedLogId(session);
-      if (timer.completed && !state.practice.some((entry) => entry.id === logId)) {
-        state.practice.push({ id: logId, date: timerState.date, minutes: session.minutes, track: session.track, note: session.title, preset: true });
-        restoredPracticeLog = true;
-      }
-      logGuidedBlockToCloud(session);
+      if (timer.elapsedMs > 0) restoredPracticeLog = syncGuidedPracticeEntry(session) || restoredPracticeLog;
+      if (timer.elapsedMs > 0) logGuidedBlockToCloud(session);
     });
     if (restoredPracticeLog) {
-      saveState("practice.guide_reconciled");
       renderStats();
       renderWeek();
     }
   }
 
   function tickGuidedTimers() {
-    let completedSession = null;
     DATA.sessions.forEach((session) => {
       const timer = timerFor(session);
-      if (!timer.running || completedSession) return;
-      if (elapsedFor(timer) >= session.minutes * 60 * 1000) completedSession = session;
+      if (!timer.running || timer.completed) return;
+      if (elapsedFor(timer) >= session.minutes * 60 * 1000) markGuidedGoalMet(session);
     });
-    if (completedSession) {
-      completeGuidedBlock(completedSession);
-      return;
-    }
     updateTimerElements();
   }
 
@@ -731,21 +711,15 @@
     DATA.sessions.forEach((session) => {
       const timer = timerFor(session);
       const targetMs = session.minutes * 60 * 1000;
-      const elapsedMs = timer.completed ? targetMs : Math.min(targetMs, elapsedFor(timer));
+      const elapsedMs = elapsedFor(timer);
       const card = document.querySelector(`[data-session-id="${session.id}"]`);
       if (!card) return;
       card.classList.toggle("running", timer.running);
       const readout = $("[data-timer-readout]", card);
       const progress = $("[data-timer-progress]", card);
-      const button = $("[data-timer-button]", card);
-      readout.textContent = timer.completed ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`;
+      readout.textContent = `${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal`;
       progress.style.width = `${Math.min(100, (elapsedMs / targetMs) * 100)}%`;
-      progress.parentElement.setAttribute("aria-valuenow", String(Math.round((elapsedMs / targetMs) * 100)));
-      if (!timer.completed) {
-        const recordingHere = recordingTimerSessionID === session.id;
-        button.disabled = recordingHere;
-        button.textContent = recordingHere ? "Recording" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start"));
-      }
+      progress.parentElement.setAttribute("aria-valuenow", String(Math.min(100, Math.round((elapsedMs / targetMs) * 100))));
     });
   }
 
@@ -768,17 +742,13 @@
       card.dataset.sessionId = session.id;
       card.className = `session-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}`;
       const targetMs = session.minutes * 60 * 1000;
-      const elapsedMs = complete ? targetMs : Math.min(targetMs, elapsedFor(timer));
+      const elapsedMs = elapsedFor(timer);
       card.innerHTML = `
         <span class="session-time">${session.time}</span>
         <div class="session-copy">
           <div class="session-heading-line"><span class="session-step">${String(index + 1).padStart(2, "0")}</span><h3>${session.title}</h3></div>
           <p>${session.detail}</p>
-          <div class="session-timer-track" role="progressbar" aria-label="${session.title} timer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round((elapsedMs / targetMs) * 100)}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div>
-        </div>
-        <div class="timer-controls">
-          <span class="timer-readout" data-timer-readout aria-live="off">${complete ? `${formatTimer(targetMs)} complete` : `${formatTimer(elapsedMs)} / ${formatTimer(targetMs)}`}</span>
-          <button class="timer-button" data-timer-button type="button" ${complete || !block || recordingTimerSessionID === session.id ? "disabled" : ""}>${!guidedBlocksReady ? "Connecting" : (!block ? "Unavailable" : (complete ? "Completed" : (recordingTimerSessionID === session.id ? "Recording" : (timer.running ? "Pause" : (elapsedMs > 0 ? "Resume" : "Start")))))}</button>
+          <div class="session-progress-meta"><div class="session-timer-track" role="progressbar" aria-label="${session.title} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div><span class="timer-readout" data-timer-readout aria-live="off">${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal</span></div>
         </div>
         <div class="session-cms">
           <label class="section-notes-field">
@@ -791,10 +761,10 @@
               <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading..." : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
             </div>
             ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
+            ${recordingHere && activeSectionRecordingPhase === "recording" ? `<div class="section-live-audio" data-live-audio><canvas class="recording-waveform" data-waveform aria-label="Live ${escapeHTML(session.title)} microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>` : ""}
             <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
           </div>
         </div>`;
-      $("[data-timer-button]", card).addEventListener("click", () => toggleGuidedTimer(session));
       wireSectionTools(card, session, block);
       list.appendChild(card);
     });
@@ -1184,6 +1154,7 @@
   };
   requestAnimationFrame(animateGuidedTimers);
   setInterval(updateWeekLive, 30000);
+  setInterval(checkpointRecordingPractice, 30000);
   setTimeout(() => {
     tickGuidedTimers();
     syncCompletedGuidedBlocks();

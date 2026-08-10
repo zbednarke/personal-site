@@ -76,7 +76,7 @@
         <div>
           <p class="eyebrow">The daily engine</p>
           <h2 id="today-title">Today’s practice</h2>
-          <p class="section-intro">Work one block at a time. Every section keeps its own timer, cloud-synced notes, and up to five private recordings.</p>
+          <p class="section-intro">Work one block at a time. Recording a take advances that section’s practice time, with cloud-synced notes and up to five private recordings.</p>
         </div>
       </div>
 
@@ -174,6 +174,14 @@
             <span class="recording-light" id="recording-light" aria-hidden="true"></span>
             <span class="recording-timer" id="recording-timer">00:00</span>
             <span class="recording-state" id="recording-state">Ready for a take</span>
+          </div>
+          <div class="live-audio-panel" data-live-audio>
+            <canvas class="recording-waveform" data-waveform aria-label="Live microphone waveform"></canvas>
+            <div class="tuner" data-tuner aria-live="polite">
+              <span class="tuner-note" data-tuner-note>—</span>
+              <div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div>
+              <div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div>
+            </div>
           </div>
           <div class="input-meter" aria-label="Microphone input level"><span id="input-meter-fill"></span></div>
 
@@ -347,6 +355,7 @@
   <script src="../assets/jazz/app.js"></script>
   <script src="../assets/jazz/practice-session.js"></script>
   <script src="../assets/jazz/lossless-recorder.js"></script>
+  <script src="../assets/jazz/audio-analysis.js"></script>
   <script src="../assets/jazz/recording.js"></script>
 </body>
 </html>
