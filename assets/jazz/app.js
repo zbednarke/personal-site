@@ -393,6 +393,7 @@
       });
       guidedBlocksReady = true;
       persistTimerState();
+      syncCompletedGuidedBlocks();
       renderSessions();
       tickGuidedTimers();
     } catch {
