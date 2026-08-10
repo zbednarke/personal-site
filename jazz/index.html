@@ -78,7 +78,6 @@
           <h2 id="today-title">Today’s practice</h2>
           <p class="section-intro">Work one block at a time. Every section keeps its own timer, cloud-synced notes, and up to five private recordings.</p>
         </div>
-        <button class="button button-quiet" id="open-log" type="button">+ Log extra time</button>
       </div>
 
       <div class="today-layout">
@@ -340,29 +339,6 @@
       <button class="button button-quiet" id="level-down" type="button">− Level</button>
       <button class="button button-primary" id="level-up" type="button">Complete next level</button>
     </div>
-  </dialog>
-
-  <dialog class="dialog log-dialog" id="log-dialog" aria-labelledby="log-dialog-title">
-    <button class="dialog-close" type="button" data-close-dialog aria-label="Close practice log">×</button>
-    <p class="eyebrow">Practice log</p>
-    <h2 id="log-dialog-title">Add a session</h2>
-    <form id="log-form">
-      <label>Track
-        <select name="track" required>
-          <option value="trumpet">Trumpet</option>
-          <option value="language">Jazz language</option>
-          <option value="musician">Musician</option>
-          <option value="scene">Scene / listening</option>
-        </select>
-      </label>
-      <label>Minutes
-        <input name="minutes" type="number" inputmode="numeric" min="1" max="360" value="30" required>
-      </label>
-      <label>Note <span>(optional)</span>
-        <input name="note" type="text" maxlength="100" placeholder="Guide tones through Blue Bossa">
-      </label>
-      <button class="button button-primary" type="submit">Save session</button>
-    </form>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

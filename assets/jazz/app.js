@@ -1065,7 +1065,6 @@
       const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
       if (outside) dialog.close();
     }));
-    $("#open-log").addEventListener("click", () => $("#log-dialog").showModal());
     $("#level-up").addEventListener("click", () => changeSkillLevel(1));
     $("#level-down").addEventListener("click", () => changeSkillLevel(-1));
   }
@@ -1079,26 +1078,6 @@
     saveState("skill.level_changed");
     renderAll();
     showToast(direction > 0 ? `${skill.name} · level ${next}` : `${skill.name} adjusted`);
-  }
-
-  function setupPracticeLog() {
-    $("#log-form").addEventListener("submit", (event) => {
-      event.preventDefault();
-      const form = new FormData(event.currentTarget);
-      const minutes = Math.max(1, Math.min(360, Number(form.get("minutes"))));
-      state.practice.push({
-        id: `manual-${Date.now()}`,
-        date: localDateKey(),
-        minutes,
-        track: String(form.get("track")),
-        note: String(form.get("note") || "").slice(0, 100),
-      });
-      saveState("practice.session_logged");
-      event.currentTarget.reset();
-      $("#log-dialog").close();
-      renderAll();
-      showToast(`+${minutes} minutes logged`);
-    });
   }
 
   function setupDataActions() {
@@ -1153,7 +1132,6 @@
 
   renderRoadmap();
   setupDialogs();
-  setupPracticeLog();
   setupDataActions();
   addEventListener("jazz:activity-logged", (event) => {
     const activity = event.detail;
