@@ -7,6 +7,7 @@
   let activeSession = null;
   let noteDirty = false;
   let noteSaveTimer = null;
+  let initialSessionLoad = null;
 
   async function api(path, options = {}) {
     const response = await fetch(`${API_BASE}${path}`, {
@@ -23,6 +24,13 @@
 
   function defaultTitle() {
     return `Practice - ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  }
+
+  function localDateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   function setNoteStatus(message, tone = "") {
@@ -56,6 +64,7 @@
   }
 
   async function ensureActive() {
+    if (initialSessionLoad) await initialSessionLoad;
     if (activeSession) return activeSession;
     const note = $("#practice-session-notes")?.value.trim() || "";
     const created = await api("/practice-sessions", {
@@ -166,6 +175,22 @@
     renderHistory();
   }
 
+  async function rollSessionForward(practiceDate) {
+    if (!activeSession || localDateKey(new Date(activeSession.startedAt)) === practiceDate) return;
+    if (noteDirty) await saveSessionNote();
+    await api(`/practice-sessions/${activeSession.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "completed", endedAt: new Date().toISOString() }),
+    });
+    activeSession = null;
+    noteDirty = false;
+    const notes = $("#practice-session-notes");
+    if (notes) notes.value = "";
+    await refreshSessionListOnly();
+    renderActiveSession();
+    renderHistory();
+  }
+
   async function logGuidedActivity(block) {
     const session = await ensureActive();
     const activity = await api(`/practice-sessions/${session.id}/activities`, {
@@ -187,6 +212,8 @@
   }
 
   async function ensureGuidedBlocks(practiceDate, definitions) {
+    if (initialSessionLoad) await initialSessionLoad;
+    await rollSessionForward(practiceDate);
     const session = await ensureActive();
     const result = await api(`/practice-sessions/${session.id}/blocks`, {
       method: "POST",
@@ -222,5 +249,5 @@
   $("#finish-practice-session")?.addEventListener("click", () => finishSession().catch((error) => {
     setNoteStatus(`Could not finish: ${error.message}`, "error");
   }));
-  loadSessions();
+  initialSessionLoad = loadSessions();
 })();

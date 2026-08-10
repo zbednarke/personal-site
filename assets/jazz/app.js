@@ -505,7 +505,12 @@
       globalThis.JazzRecording.startForBlock({
         id: block.id,
         title: session.title,
+        blockKey: session.id,
+        practiceDate: block.practiceDate,
+        category: session.category,
+        track: session.track,
         tuneId: session.tuneId || "",
+        skillIds: session.skillIds || [],
         takeNumber: recordings.length + 1,
       });
     });

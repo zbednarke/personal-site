@@ -113,22 +113,27 @@ type recordingInitRequest struct {
 }
 
 type recordingRow struct {
-	ID           uuid.UUID `json:"id"`
-	ContentType  string    `json:"contentType"`
-	Codec        string    `json:"codec,omitempty"`
-	SizeBytes    int64     `json:"sizeBytes,omitempty"`
-	DurationMS   int       `json:"durationMs,omitempty"`
-	RecordedAt   time.Time `json:"recordedAt"`
-	Status       string    `json:"status"`
-	TuneID       string    `json:"tuneId,omitempty"`
-	MissionID    string    `json:"missionId,omitempty"`
-	SkillIDs     []string  `json:"skillIds"`
-	TakeNumber   int       `json:"takeNumber,omitempty"`
-	Notes        string    `json:"notes,omitempty"`
-	SessionID    string    `json:"practiceSessionId,omitempty"`
-	SessionTitle string    `json:"practiceSessionTitle,omitempty"`
-	BlockID      string    `json:"practiceBlockId,omitempty"`
-	ObjectName   string    `json:"-"`
+	ID            uuid.UUID `json:"id"`
+	ContentType   string    `json:"contentType"`
+	Codec         string    `json:"codec,omitempty"`
+	SizeBytes     int64     `json:"sizeBytes,omitempty"`
+	DurationMS    int       `json:"durationMs,omitempty"`
+	RecordedAt    time.Time `json:"recordedAt"`
+	Status        string    `json:"status"`
+	TuneID        string    `json:"tuneId,omitempty"`
+	MissionID     string    `json:"missionId,omitempty"`
+	SkillIDs      []string  `json:"skillIds"`
+	TakeNumber    int       `json:"takeNumber,omitempty"`
+	Notes         string    `json:"notes,omitempty"`
+	SessionID     string    `json:"practiceSessionId,omitempty"`
+	SessionTitle  string    `json:"practiceSessionTitle,omitempty"`
+	BlockID       string    `json:"practiceBlockId,omitempty"`
+	BlockDate     string    `json:"practiceDate,omitempty"`
+	BlockKey      string    `json:"practiceBlockKey,omitempty"`
+	BlockTitle    string    `json:"practiceBlockTitle,omitempty"`
+	BlockCategory string    `json:"practiceBlockCategory,omitempty"`
+	BlockTrack    string    `json:"practiceBlockTrack,omitempty"`
+	ObjectName    string    `json:"-"`
 }
 
 func main() {
@@ -607,9 +612,11 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.db.Query(r.Context(), `
 		SELECT r.id,r.content_type,COALESCE(r.codec,''),COALESCE(r.size_bytes,r.expected_size_bytes),COALESCE(r.duration_ms,0),r.recorded_at,r.status,
 		COALESCE(r.tune_id,''),COALESCE(r.mission_id,''),r.skill_ids,COALESCE(r.take_number,0),COALESCE(r.notes,''),
-		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),r.object_name
+		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),
+		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
+		LEFT JOIN practice_blocks pb ON pb.id = r.practice_block_id AND pb.user_id = r.user_id
 		WHERE r.user_id=$1 AND r.status <> 'deleted' ORDER BY r.recorded_at DESC LIMIT 100`, userID)
 	if err != nil {
 		app.serverError(w, err)
@@ -621,7 +628,8 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		var item recordingRow
 		var skills []byte
 		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.RecordedAt, &item.Status,
-			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID, &item.ObjectName); err != nil {
+			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID,
+			&item.BlockDate, &item.BlockKey, &item.BlockTitle, &item.BlockCategory, &item.BlockTrack, &item.ObjectName); err != nil {
 			app.serverError(w, err)
 			return
 		}
