@@ -5,6 +5,15 @@
 # placeholders with the existing username and password hash from that site's
 # basic_auth block. Caddy accepts password hashes only, never plaintext.
 
+# If the parent site has a site-wide Permissions-Policy that disables the
+# microphone, scope that policy away from Jazz. Two header directives that set
+# the same field can leave the restrictive value on the Jazz response.
+@not_jazz {
+    not path /jazz /jazz/* /assets/jazz/*
+}
+
+header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
+
 @jazz_private {
     path /jazz /jazz/* /assets/jazz/*
 }
