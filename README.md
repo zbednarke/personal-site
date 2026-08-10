@@ -30,8 +30,10 @@ activities, and their associated recordings. New browser takes are captured as
 
 The daily guide is stored as dated practice blocks within an active practice
 session. Each block keeps its own instructions, autosaved notes, synchronized
-timer state, and up to five categorized recordings. The standalone recorder
-remains available for takes that do not belong to a guide block.
+recording-derived practice time, and up to five categorized recordings. Live
+takes include an on-page waveform and concert-pitch chromatic tuner. The
+standalone recorder remains available for takes that do not belong to a guide
+block.
 
 The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
 `deploy/Caddyfile.jazz.example` documents the path matcher and privacy headers;

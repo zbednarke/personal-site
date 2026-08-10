@@ -231,7 +231,7 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .session-list { display: grid; gap: 10px; }
 .session-card {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) 154px;
+  grid-template-columns: 74px minmax(0, 1fr);
   align-items: center;
   min-height: 112px;
   padding: 18px 20px;
@@ -249,25 +249,11 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .session-step { color: var(--faint); font: 9px var(--mono); letter-spacing: 0.08em; }
 .session-copy h3 { margin: 0; color: var(--ink); font-size: 17px; }
 .session-copy p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-.session-timer-track { height: 3px; margin-top: 13px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.055); }
+.session-progress-meta { margin-top: 13px; display: grid; grid-template-columns: minmax(120px, 1fr) auto; align-items: center; gap: 14px; }
+.session-timer-track { height: 3px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,0.055); }
 .session-timer-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--brass); }
 .complete .session-timer-track span { background: var(--green); }
-.timer-controls { display: grid; justify-items: stretch; gap: 9px; }
-.timer-readout { color: var(--muted); font: 10px var(--mono); text-align: center; white-space: nowrap; }
-.timer-button {
-  min-height: 39px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  font: 10px var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.timer-button:hover { border-color: var(--brass); color: var(--brass-light); }
-.running .timer-button { border-color: var(--brass); background: var(--brass); color: #17100a; }
-.complete .timer-button { border-color: rgba(123, 200, 164, 0.48); background: rgba(123, 200, 164, 0.14); color: var(--green); cursor: default; }
+.timer-readout { color: var(--muted); font: 9px var(--mono); white-space: nowrap; }
 .complete .timer-readout { color: var(--green); }
 .session-cms { grid-column: 2 / -1; margin-top: 18px; padding-top: 16px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(245px, 0.72fr); gap: 16px; border-top: 1px solid var(--line); }
 .section-notes-field { display: grid; gap: 7px; }
@@ -287,6 +273,7 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .section-record-button.recording { border-color: var(--red); background: rgba(231, 121, 126, 0.12); color: var(--red); }
 .section-record-button:disabled { cursor: default; opacity: 0.42; }
 .section-recording-state { margin: 8px 0 0; color: var(--brass-light); font: 10px var(--mono); }
+.section-live-audio { margin-top: 10px; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(170px, 0.8fr); gap: 9px; }
 .section-take-list { display: grid; gap: 5px; margin-top: 9px; }
 .section-empty { margin: 11px 0 0; color: var(--faint); font-size: 10px; }
 .section-take { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 6, 15, 0.48); }
@@ -353,6 +340,22 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .recording-light.active { border-color: var(--red); background: var(--red); box-shadow: 0 0 0 7px rgba(220, 127, 127, 0.1); animation: recording-pulse 1.5s ease-in-out infinite; }
 .recording-timer { color: var(--ink); font: 500 40px/1 var(--mono); letter-spacing: -0.05em; }
 .recording-state { margin-top: 8px; color: var(--muted); font: 10px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.live-audio-panel { margin: 5px 0 12px; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(220px, 0.7fr); gap: 12px; }
+.recording-waveform { display: block; width: 100%; height: 104px; border: 1px solid var(--line); border-radius: 10px; background: rgba(7, 5, 12, 0.72); }
+.tuner { min-width: 0; padding: 13px 14px; display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-items: center; column-gap: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(7, 5, 12, 0.72); }
+.tuner-note { grid-row: 1 / 3; min-width: 56px; color: var(--ink); font: 500 30px/1 var(--mono); letter-spacing: -0.06em; text-align: center; }
+.tuner-detail { min-width: 0; display: grid; gap: 3px; }
+.tuner-detail strong { color: var(--muted); font: 10px var(--mono); }
+.tuner-detail span { color: var(--faint); font: 9px var(--mono); }
+.tuner-track { position: relative; height: 12px; margin-top: 9px; border-top: 1px solid var(--line-strong); }
+.tuner-center { position: absolute; top: -4px; bottom: 2px; left: 50%; width: 1px; background: var(--green); opacity: 0.65; }
+.tuner-needle { position: absolute; top: -5px; left: 50%; width: 7px; height: 7px; border-radius: 50%; background: var(--brass); transform: translateX(-50%); transition: left 90ms linear, background 90ms linear; }
+.tuner[data-tone="tuned"] .tuner-note, .tuner[data-tone="tuned"] .tuner-detail strong { color: var(--green); }
+.tuner[data-tone="tuned"] .tuner-needle { background: var(--green); }
+.tuner[data-tone="flat"] .tuner-detail strong, .tuner[data-tone="sharp"] .tuner-detail strong { color: var(--brass-light); }
+.section-live-audio .recording-waveform { height: 76px; }
+.tuner-compact { min-height: 76px; padding: 9px 10px; }
+.tuner-compact .tuner-note { min-width: 43px; font-size: 23px; }
 .input-meter { height: 7px; margin: 8px 0 28px; overflow: hidden; border-radius: 999px; background: #272030; }
 .input-meter span { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--violet), var(--brass)); transition: width 80ms linear; }
 .recorder-controls { display: flex; gap: 10px; }
@@ -624,8 +627,8 @@ footer p[data-tone="offline"] { color: var(--red); }
   .section-heading > .button, .tree-summary, .legend { margin-top: 20px; }
   .section-heading h2 { font-size: 42px; }
   .session-card { grid-template-columns: 58px minmax(0, 1fr); padding: 16px; }
-  .timer-controls { grid-column: 1 / -1; grid-template-columns: 1fr 130px; align-items: center; margin-top: 4px; }
-  .timer-readout { text-align: left; }
+  .session-progress-meta, .section-live-audio, .live-audio-panel { grid-template-columns: 1fr; }
+  .timer-readout { white-space: normal; }
   .session-cms { grid-column: 1 / -1; grid-template-columns: 1fr; }
   .mission-grid { grid-template-columns: 1fr; }
   .recording-library { grid-template-columns: 1fr; }

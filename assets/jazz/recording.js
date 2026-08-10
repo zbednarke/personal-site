@@ -20,6 +20,8 @@
   let pendingUpload = null;
   let lastUploadProgressAt = 0;
   let lastUploadProgressPercent = -1;
+  let pitchHistory = [];
+  let lastPitchCheckAt = 0;
 
   function setServiceStatus(message, tone = "") {
     const element = $("#recording-service-status");
@@ -75,24 +77,106 @@
     if ([...select.options].some((option) => option.value === selected)) select.value = selected;
   }
 
+  function drawWaveforms(samples) {
+    document.querySelectorAll("[data-waveform]").forEach((canvas) => {
+      const bounds = canvas.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+      const scale = Math.min(2, globalThis.devicePixelRatio || 1);
+      const width = Math.max(1, Math.round(bounds.width * scale));
+      const height = Math.max(1, Math.round(bounds.height * scale));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const context = canvas.getContext("2d");
+      context.clearRect(0, 0, width, height);
+      context.strokeStyle = "rgba(255, 255, 255, 0.08)";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, height / 2);
+      context.lineTo(width, height / 2);
+      context.stroke();
+
+      context.strokeStyle = "#f2ad5c";
+      context.lineWidth = Math.max(1.5, scale);
+      context.beginPath();
+      const step = Math.max(1, Math.floor(samples.length / width));
+      for (let x = 0; x < width; x += 1) {
+        const sample = samples[Math.min(samples.length - 1, x * step)];
+        const y = (height / 2) + (sample * height * 0.43);
+        if (x === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.stroke();
+    });
+  }
+
+  function renderTuner(pitch, message = "Play a held note") {
+    document.querySelectorAll("[data-tuner]").forEach((tuner) => {
+      const note = $("[data-tuner-note]", tuner);
+      const cents = $("[data-tuner-cents]", tuner);
+      const frequency = $("[data-tuner-frequency]", tuner);
+      const needle = $("[data-tuner-needle]", tuner);
+      if (!pitch) {
+        note.textContent = "—";
+        cents.textContent = message;
+        frequency.textContent = "A4 = 440 Hz";
+        needle.style.left = "50%";
+        tuner.dataset.tone = "waiting";
+        return;
+      }
+      const roundedCents = Math.round(pitch.cents);
+      note.textContent = `${pitch.note}${pitch.octave}`;
+      cents.textContent = Math.abs(roundedCents) <= 4 ? "In tune" : `${roundedCents > 0 ? "+" : ""}${roundedCents} cents`;
+      frequency.textContent = `${pitch.frequency.toFixed(1)} Hz`;
+      needle.style.left = `${50 + Math.max(-50, Math.min(50, pitch.cents))}%`;
+      tuner.dataset.tone = Math.abs(roundedCents) <= 4 ? "tuned" : (roundedCents < 0 ? "flat" : "sharp");
+    });
+  }
+
+  function resetLiveAudio() {
+    pitchHistory = [];
+    lastPitchCheckAt = 0;
+    document.querySelectorAll("[data-waveform]").forEach((canvas) => {
+      const context = canvas.getContext("2d");
+      context?.clearRect(0, 0, canvas.width, canvas.height);
+    });
+    renderTuner(null);
+  }
+
   function startLevelMeter(activeStream) {
     const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (!AudioContext) return;
     audioContext = new AudioContext();
+    audioContext.resume().catch(() => {});
     recordedSampleRate = audioContext.sampleRate;
     const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0.18;
     audioContext.createMediaStreamSource(activeStream).connect(analyser);
-    const samples = new Uint8Array(analyser.fftSize);
+    const samples = new Float32Array(analyser.fftSize);
+    const analysis = globalThis.JazzAudioAnalysis;
+    pitchHistory = [];
+    lastPitchCheckAt = 0;
     const render = () => {
-      analyser.getByteTimeDomainData(samples);
-      let energy = 0;
-      samples.forEach((sample) => {
-        const normalized = (sample - 128) / 128;
-        energy += normalized * normalized;
-      });
-      const rms = Math.sqrt(energy / samples.length);
-      $("#input-meter-fill").style.width = `${Math.min(100, Math.max(1, rms * 320))}%`;
+      analyser.getFloatTimeDomainData(samples);
+      const level = analysis?.rms(samples) || 0;
+      $("#input-meter-fill").style.width = `${Math.min(100, Math.max(1, level * 320))}%`;
+      drawWaveforms(samples);
+      const now = performance.now();
+      if (analysis && now - lastPitchCheckAt >= 90) {
+        lastPitchCheckAt = now;
+        const detected = analysis.detectPitch(samples, audioContext.sampleRate);
+        if (!detected || detected.clarity < 0.82) {
+          pitchHistory = [];
+          renderTuner(null, level >= 0.012 ? "Hold the note" : "Play a held note");
+        } else {
+          pitchHistory.push(detected);
+          pitchHistory = pitchHistory.slice(-4);
+          const stable = analysis.stablePitch(pitchHistory);
+          renderTuner(stable, "Hold the note");
+        }
+      }
       levelFrame = requestAnimationFrame(render);
     };
     render();
@@ -108,6 +192,7 @@
     stream = null;
     audioContext?.close().catch(() => {});
     audioContext = null;
+    resetLiveAudio();
     $("#recording-light").classList.remove("active");
     $("#start-recording").disabled = false;
     $("#stop-recording").disabled = true;

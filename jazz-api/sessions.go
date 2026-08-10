@@ -316,7 +316,8 @@ func (app *application) createPracticeActivity(w http.ResponseWriter, r *http.Re
 		INSERT INTO practice_activities (id,session_id,user_id,source_id,category,title,duration_minutes,notes,occurred_at)
 		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,NULLIF($8,''),$9)
 		ON CONFLICT (user_id,source_id) WHERE source_id IS NOT NULL
-		DO UPDATE SET source_id=EXCLUDED.source_id
+		DO UPDATE SET category=EXCLUDED.category,title=EXCLUDED.title,duration_minutes=EXCLUDED.duration_minutes,
+		              notes=EXCLUDED.notes,occurred_at=EXCLUDED.occurred_at
 		RETURNING id,category,title,duration_minutes,COALESCE(notes,''),occurred_at`,
 		activity.ID, sessionID, userID, input.SourceID, activity.Category, activity.Title, activity.DurationMinutes, activity.Notes, activity.OccurredAt).
 		Scan(&activity.ID, &activity.Category, &activity.Title, &activity.DurationMinutes, &activity.Notes, &activity.OccurredAt)
