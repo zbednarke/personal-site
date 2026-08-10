@@ -25,12 +25,14 @@
 
   function setServiceStatus(message, tone = "") {
     const element = $("#recording-service-status");
+    if (!element) return;
     element.textContent = message;
     element.className = `cloud-status${tone ? ` ${tone}` : ""}`;
   }
 
   function setRecorderState(message, phase = "status", canRetry = false, notify = true) {
-    $("#recording-state").textContent = message;
+    const state = $("#recording-state");
+    if (state) state.textContent = message;
     if (!notify) return;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
       detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
@@ -58,17 +60,20 @@
 
   function updateTimer() {
     const elapsed = performance.now() - startedAt;
-    $("#recording-timer").textContent = formatTimer(elapsed);
+    const timer = $("#recording-timer");
+    if (timer) timer.textContent = formatTimer(elapsed);
   }
 
   function showRetryButton(show) {
-    $("#retry-recording").hidden = !show;
+    const button = $("#retry-recording");
+    if (button) button.hidden = !show;
   }
 
   async function updateMicrophones() {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const microphones = devices.filter((device) => device.kind === "audioinput");
     const select = $("#microphone-select");
+    if (!select) return;
     const selected = select.value;
     select.replaceChildren(new Option("Default microphone", ""));
     microphones.forEach((microphone, index) => {
@@ -161,7 +166,8 @@
     const render = () => {
       analyser.getFloatTimeDomainData(samples);
       const level = analysis?.rms(samples) || 0;
-      $("#input-meter-fill").style.width = `${Math.min(100, Math.max(1, level * 320))}%`;
+      const inputMeter = $("#input-meter-fill");
+      if (inputMeter) inputMeter.style.width = `${Math.min(100, Math.max(1, level * 320))}%`;
       drawWaveforms(samples);
       const now = performance.now();
       if (analysis && now - lastPitchCheckAt >= 90) {
@@ -187,15 +193,18 @@
     timerID = null;
     if (levelFrame) cancelAnimationFrame(levelFrame);
     levelFrame = null;
-    $("#input-meter-fill").style.width = "0";
+    const inputMeter = $("#input-meter-fill");
+    if (inputMeter) inputMeter.style.width = "0";
     stream?.getTracks().forEach((track) => track.stop());
     stream = null;
     audioContext?.close().catch(() => {});
     audioContext = null;
     resetLiveAudio();
-    $("#recording-light").classList.remove("active");
-    $("#start-recording").disabled = false;
-    $("#stop-recording").disabled = true;
+    $("#recording-light")?.classList.remove("active");
+    const startButton = $("#start-recording");
+    const stopButton = $("#stop-recording");
+    if (startButton) startButton.disabled = false;
+    if (stopButton) stopButton.disabled = true;
   }
 
   async function startRecording() {
@@ -210,7 +219,7 @@
       const practiceSession = await globalThis.JazzPracticeSession.ensureActive();
       currentPracticeSessionID = practiceSession.id;
       finishing = false;
-      const deviceID = $("#microphone-select").value;
+      const deviceID = $("#microphone-select")?.value || "";
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           ...(deviceID ? { deviceId: { exact: deviceID } } : {}),
@@ -228,9 +237,11 @@
       updateTimer();
       timerID = setInterval(updateTimer, 250);
       startLevelMeter(stream);
-      $("#recording-light").classList.add("active");
-      $("#start-recording").disabled = true;
-      $("#stop-recording").disabled = false;
+      $("#recording-light")?.classList.add("active");
+      const startButton = $("#start-recording");
+      const stopButton = $("#stop-recording");
+      if (startButton) startButton.disabled = true;
+      if (stopButton) stopButton.disabled = false;
       setRecorderState("Recording lossless 24-bit audio - play the take", "recording");
     } catch (error) {
       stopCapture();
@@ -242,7 +253,8 @@
   function stopRecording() {
     if (!losslessRecorder || finishing) return;
     finishing = true;
-    $("#stop-recording").disabled = true;
+    const stopButton = $("#stop-recording");
+    if (stopButton) stopButton.disabled = true;
     setRecorderState("Building the lossless take...", "processing");
     finishRecording();
   }
@@ -267,8 +279,10 @@
     if (previewURL) URL.revokeObjectURL(previewURL);
     previewURL = URL.createObjectURL(blob);
     const preview = $("#recording-preview");
-    preview.src = previewURL;
-    preview.hidden = false;
+    if (preview) {
+      preview.src = previewURL;
+      preview.hidden = false;
+    }
     pendingUpload = captureUpload(blob, durationMS, contentType);
     showRetryButton(false);
     lastUploadProgressPercent = -1;
@@ -280,7 +294,7 @@
       setRecorderState("Uploaded privately", "complete");
       setServiceStatus("Private storage connected", "online");
       const takeInput = $('#recording-metadata input[name="takeNumber"]');
-      takeInput.value = String(Math.min(99, Number(takeInput.value || 1) + 1));
+      if (takeInput) takeInput.value = String(Math.min(99, Number(takeInput.value || 1) + 1));
       await loadRecordings();
       await globalThis.JazzPracticeSession.refresh();
       dispatchEvent(new CustomEvent("jazz:recordings-changed"));
@@ -295,7 +309,8 @@
   }
 
   function captureUpload(blob, durationMS, contentType) {
-    const metadata = new FormData($("#recording-metadata"));
+    const metadataForm = $("#recording-metadata");
+    const metadata = metadataForm ? new FormData(metadataForm) : new FormData();
     const blockContext = activeBlockContext ? { ...activeBlockContext } : null;
     return {
       blob,
@@ -412,6 +427,7 @@
 
   async function loadRecordings() {
     const library = $("#recording-library");
+    if (!library) return;
     try {
       const result = await api("/recordings");
       setServiceStatus("Private storage connected", "online");
@@ -487,9 +503,10 @@
 
   function populateMetadata() {
     const tuneSelect = $("#recording-tune");
+    const skillSelect = $("#recording-skill");
+    if (!tuneSelect || !skillSelect) return;
     tuneSelect.add(new Option("Open practice", ""));
     DATA.repertoire.forEach((tune) => tuneSelect.add(new Option(tune.title, tune.id, tune.current, tune.current)));
-    const skillSelect = $("#recording-skill");
     skillSelect.add(new Option("General musicianship", ""));
     DATA.skills.forEach((skill) => skillSelect.add(new Option(`${skill.name} - ${skill.track}`, skill.id)));
   }
@@ -531,10 +548,10 @@
   };
 
   populateMetadata();
-  $("#start-recording").addEventListener("click", startGeneralRecording);
-  $("#stop-recording").addEventListener("click", stopRecording);
-  $("#retry-recording").addEventListener("click", retryUpload);
-  $("#refresh-recordings").addEventListener("click", loadRecordings);
+  $("#start-recording")?.addEventListener("click", startGeneralRecording);
+  $("#stop-recording")?.addEventListener("click", stopRecording);
+  $("#retry-recording")?.addEventListener("click", retryUpload);
+  $("#refresh-recordings")?.addEventListener("click", loadRecordings);
   navigator.mediaDevices?.addEventListener?.("devicechange", updateMicrophones);
   loadRecordings();
 })();

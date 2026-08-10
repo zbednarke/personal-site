@@ -5,6 +5,8 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   let sessions = [];
   let activeSession = null;
+  let noteDirty = false;
+  let noteSaveTimer = null;
 
   async function api(path, options = {}) {
     const response = await fetch(`${API_BASE}${path}`, {
@@ -19,20 +21,21 @@
     return body;
   }
 
-  function localDateTimeValue(date = new Date()) {
-    const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-    return shifted.toISOString().slice(0, 16);
-  }
-
   function defaultTitle() {
     return `Practice - ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
   }
 
-  function resetDraft() {
-    $("#practice-session-title").value = defaultTitle();
-    $("#practice-session-started").value = localDateTimeValue();
-    $("#practice-session-notes").value = "";
-    $("#practice-session-started").disabled = false;
+  function setNoteStatus(message, tone = "") {
+    const status = $("#practice-session-note-status");
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  }
+
+  function sessionSummary(session) {
+    const minutes = Number(session.totalMinutes || 0);
+    const recordings = Number(session.recordingCount || 0);
+    return `${minutes} minute${minutes === 1 ? "" : "s"} practiced · ${recordings} recording${recordings === 1 ? "" : "s"}`;
   }
 
   async function loadSessions() {
@@ -45,25 +48,26 @@
       renderHistory();
       return activeSession;
     } catch (error) {
-      $("#practice-session-summary").textContent = `Practice sessions are temporarily unavailable: ${error.message}`;
+      const summary = $("#practice-session-summary");
+      if (summary) summary.textContent = `Practice sessions are temporarily unavailable: ${error.message}`;
+      setNoteStatus("Could not sync", "error");
       return null;
     }
   }
 
   async function ensureActive() {
     if (activeSession) return activeSession;
-    const title = $("#practice-session-title").value.trim() || defaultTitle();
-    const startedValue = $("#practice-session-started").value;
-    const summary = $("#practice-session-notes").value.trim();
+    const note = $("#practice-session-notes")?.value.trim() || "";
     const created = await api("/practice-sessions", {
       method: "POST",
       body: JSON.stringify({
-        title,
-        summary,
-        startedAt: startedValue ? new Date(startedValue).toISOString() : new Date().toISOString(),
+        title: defaultTitle(),
+        summary: note,
+        startedAt: new Date().toISOString(),
       }),
     });
     activeSession = await api(`/practice-sessions/${created.id}`);
+    noteDirty = false;
     await refreshSessionListOnly();
     renderActiveSession();
     renderHistory();
@@ -76,126 +80,90 @@
   }
 
   function renderActiveSession() {
-    const begin = $("#begin-practice-session");
+    const heading = $("#practice-session-heading");
+    const summary = $("#practice-session-summary");
+    const notes = $("#practice-session-notes");
     const finish = $("#finish-practice-session");
-    const save = $("#save-practice-session");
-    const timeline = $("#practice-activity-timeline");
+    if (!heading || !summary || !notes) return;
+
     if (!activeSession) {
-      $("#practice-session-heading").textContent = "No active session";
-      $("#practice-session-summary").textContent = "Start a session to group work, notes, and recordings into one reviewable timeline.";
-      begin.hidden = false;
+      heading.textContent = "Today’s session";
+      summary.textContent = "Your note and recordings sync privately across devices.";
       finish.hidden = true;
-      save.hidden = true;
-      timeline.innerHTML = '<p class="empty-activities">No work logged in this session yet.</p>';
-      if (!$("#practice-session-title").value) resetDraft();
+      if (!noteDirty) notes.value = "";
+      setNoteStatus(noteDirty ? "Waiting to sync" : "Ready to sync", noteDirty ? "saving" : "");
       return;
     }
 
-    $("#practice-session-heading").textContent = activeSession.title;
-    $("#practice-session-summary").textContent = `${activeSession.totalMinutes} minutes logged - ${activeSession.activityCount} off-mic activit${activeSession.activityCount === 1 ? "y" : "ies"} - ${activeSession.recordingCount} recording${activeSession.recordingCount === 1 ? "" : "s"}`;
-    $("#practice-session-title").value = activeSession.title;
-    $("#practice-session-started").value = localDateTimeValue(new Date(activeSession.startedAt));
-    $("#practice-session-started").disabled = true;
-    $("#practice-session-notes").value = activeSession.summary || "";
-    begin.hidden = true;
+    heading.textContent = activeSession.title;
+    summary.textContent = sessionSummary(activeSession);
     finish.hidden = false;
-    save.hidden = false;
-    timeline.replaceChildren();
-    if (!activeSession.activities?.length) {
-      timeline.innerHTML = '<p class="empty-activities">No work logged in this session yet.</p>';
-      return;
-    }
-    activeSession.activities.forEach((activity) => {
-      const entry = document.createElement("article");
-      entry.className = "activity-entry";
-      entry.innerHTML = `
-        <div class="activity-entry-top"><span>${escapeHTML(activity.category)}</span><span>${activity.durationMinutes} min</span></div>
-        <h4>${escapeHTML(activity.title)}</h4>
-        <p>${escapeHTML(activity.notes || "No additional note.")}</p>`;
-      timeline.appendChild(entry);
-    });
+    if (!noteDirty && document.activeElement !== notes) notes.value = activeSession.summary || "";
+    if (!noteDirty) setNoteStatus("Synced", "saved");
   }
 
   function renderHistory() {
     const history = $("#practice-session-history");
+    if (!history) return;
     history.replaceChildren();
     if (!sessions.length) {
-      history.innerHTML = '<p class="empty-recordings">Your completed and active sessions will appear here.</p>';
+      history.innerHTML = '<p class="empty-recordings">Your sessions will appear here as you practice.</p>';
       return;
     }
-    sessions.forEach((session) => {
+    sessions.slice(0, 8).forEach((session) => {
       const card = document.createElement("article");
       card.className = `session-history-card${session.status === "active" ? " active" : ""}`;
       card.innerHTML = `
-        <div class="session-history-card-top"><span>${new Date(session.startedAt).toLocaleDateString()}</span><span>${session.status}</span></div>
+        <div class="session-history-card-top"><span>${new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span><span>${session.status === "active" ? "Today" : "Finished"}</span></div>
         <h4>${escapeHTML(session.title)}</h4>
         <p>${escapeHTML(session.summary || "No session note yet.")}</p>
-        <div class="session-history-card-meta"><span>${session.totalMinutes} min</span><span>${session.activityCount} activities</span><span>${session.recordingCount} takes</span></div>`;
+        <div class="session-history-card-meta"><span>${session.totalMinutes} min</span><span>${session.recordingCount} takes</span></div>`;
       history.appendChild(card);
     });
   }
 
-  async function saveSession() {
-    const session = await ensureActive();
-    activeSession = await api(`/practice-sessions/${session.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        title: $("#practice-session-title").value.trim() || session.title,
-        summary: $("#practice-session-notes").value.trim(),
-      }),
-    });
-    await refreshSessionListOnly();
-    renderActiveSession();
-    renderHistory();
-  }
-
-  async function finishSession() {
-    if (!activeSession || !confirm("Finish this practice session? You can still view all of its notes and recordings afterward.")) return;
-    activeSession = await api(`/practice-sessions/${activeSession.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        title: $("#practice-session-title").value.trim() || activeSession.title,
-        summary: $("#practice-session-notes").value.trim(),
-        status: "completed",
-        endedAt: new Date().toISOString(),
-      }),
-    });
-    activeSession = null;
-    await refreshSessionListOnly();
-    resetDraft();
-    renderActiveSession();
-    renderHistory();
-  }
-
-  async function addActivity(event) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const button = $('button[type="submit"]', event.currentTarget);
-    button.disabled = true;
+  async function saveSessionNote() {
+    clearTimeout(noteSaveTimer);
+    noteSaveTimer = null;
+    if (!noteDirty) return activeSession;
+    setNoteStatus("Saving…", "saving");
     try {
       const session = await ensureActive();
-      const activity = await api(`/practice-sessions/${session.id}/activities`, {
-        method: "POST",
-        body: JSON.stringify({
-          category: String(form.get("category")),
-          title: String(form.get("title") || "").trim(),
-          durationMinutes: Number(form.get("minutes")),
-          notes: String(form.get("notes") || "").trim(),
-          occurredAt: new Date().toISOString(),
-        }),
+      activeSession = await api(`/practice-sessions/${session.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ summary: $("#practice-session-notes").value.trim() }),
       });
-      dispatchEvent(new CustomEvent("jazz:activity-logged", { detail: activity }));
-      event.currentTarget.elements.title.value = "";
-      event.currentTarget.elements.notes.value = "";
-      activeSession = await api(`/practice-sessions/${session.id}`);
+      noteDirty = false;
       await refreshSessionListOnly();
       renderActiveSession();
       renderHistory();
+      return activeSession;
     } catch (error) {
-      $("#practice-session-summary").textContent = `Could not save that work: ${error.message}`;
-    } finally {
-      button.disabled = false;
+      noteDirty = true;
+      setNoteStatus(`Not saved: ${error.message}`, "error");
+      throw error;
     }
+  }
+
+  function queueSessionNoteSave() {
+    noteDirty = true;
+    setNoteStatus("Waiting to sync", "saving");
+    clearTimeout(noteSaveTimer);
+    noteSaveTimer = setTimeout(() => saveSessionNote().catch(() => {}), 700);
+  }
+
+  async function finishSession() {
+    if (!activeSession || !confirm("Finish today’s practice session? Your notes and recordings will stay in Previous work.")) return;
+    if (noteDirty) await saveSessionNote();
+    activeSession = await api(`/practice-sessions/${activeSession.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "completed", endedAt: new Date().toISOString() }),
+    });
+    activeSession = null;
+    noteDirty = false;
+    await refreshSessionListOnly();
+    renderActiveSession();
+    renderHistory();
   }
 
   async function logGuidedActivity(block) {
@@ -249,16 +217,10 @@
     refresh: loadSessions,
   };
 
-  resetDraft();
-  $("#begin-practice-session").addEventListener("click", () => ensureActive().catch((error) => {
-    $("#practice-session-summary").textContent = `Could not begin the session: ${error.message}`;
+  $("#practice-session-notes")?.addEventListener("input", queueSessionNoteSave);
+  $("#practice-session-notes")?.addEventListener("blur", () => saveSessionNote().catch(() => {}));
+  $("#finish-practice-session")?.addEventListener("click", () => finishSession().catch((error) => {
+    setNoteStatus(`Could not finish: ${error.message}`, "error");
   }));
-  $("#save-practice-session").addEventListener("click", () => saveSession().catch((error) => {
-    $("#practice-session-summary").textContent = `Could not save session notes: ${error.message}`;
-  }));
-  $("#finish-practice-session").addEventListener("click", () => finishSession().catch((error) => {
-    $("#practice-session-summary").textContent = `Could not finish the session: ${error.message}`;
-  }));
-  $("#practice-activity-form").addEventListener("submit", addActivity);
   loadSessions();
 })();
