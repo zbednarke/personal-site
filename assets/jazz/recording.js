@@ -427,10 +427,10 @@
 
   async function loadRecordings() {
     const library = $("#recording-library");
-    if (!library) return;
     try {
       const result = await api("/recordings");
       setServiceStatus("Private storage connected", "online");
+      if (!library) return;
       library.replaceChildren();
       if (!result.recordings.length) {
         library.innerHTML = '<p class="empty-recordings">No recordings yet. Your first honest take is the baseline.</p>';
