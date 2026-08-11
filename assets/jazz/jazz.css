@@ -810,6 +810,9 @@ footer p[data-tone="offline"] { color: var(--red); }
 .selected-section-kicker { display: block; margin-bottom: 7px; color: var(--brass); font: 8px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
 .selected-section-head h3 { margin: 0; color: var(--ink); font: 600 clamp(26px, 2.7vw, 38px)/1.06 var(--serif); letter-spacing: -0.025em; }
 .selected-section-head p { max-width: 610px; margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.selected-section-win { max-width: 610px; margin-top: 17px; padding: 11px 13px; border-left: 2px solid var(--brass); background: rgba(181, 147, 91, 0.07); }
+.selected-section-win span { display: block; margin-bottom: 4px; color: var(--brass); font: 7px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
+.selected-section-win strong { display: block; color: var(--text); font-size: 11px; font-weight: 500; line-height: 1.55; }
 .selected-section-target { min-width: 60px; color: var(--brass-light); font: 600 24px/1 var(--mono); text-align: right; }
 .selected-section-target small { display: block; margin-top: 7px; color: var(--faint); font: 7px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .selected-progress { padding: 14px 25px; border-bottom: 1px solid var(--line); }
