@@ -364,6 +364,7 @@
           category: block.category,
           title: block.title,
           detail: block.instructions || curriculum.detail || "Open practice block.",
+          win: curriculum.win || "",
         };
       });
   }
@@ -847,6 +848,7 @@
           <span class="selected-section-kicker">${escapeHTML(session.category || session.track || "Practice")}</span>
           <h3>${escapeHTML(session.title)}</h3>
           <p>${escapeHTML(session.detail)}</p>
+          ${session.win ? `<div class="selected-section-win"><span>Today’s win</span><strong>${escapeHTML(session.win)}</strong></div>` : ""}
         </div>
         <span class="selected-section-target">${session.minutes}<small>min goal</small></span>
       </header>
