@@ -3,9 +3,11 @@
 
   const DATA = globalThis.JAZZ_DATA;
   const API_BASE = "./api/v1";
+  const MICROPHONE_STORAGE_KEY = "zach-jazz-microphone-v1";
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
+  let monitorStream = null;
   let losslessRecorder = null;
   let startedAt = 0;
   let recordedAt = "";
@@ -74,12 +76,33 @@
     const microphones = devices.filter((device) => device.kind === "audioinput");
     const select = $("#microphone-select");
     if (!select) return;
-    const selected = select.value;
+    const selected = select.value || localStorage.getItem(MICROPHONE_STORAGE_KEY) || "";
     select.replaceChildren(new Option("Default microphone", ""));
     microphones.forEach((microphone, index) => {
       select.add(new Option(microphone.label || `Microphone ${index + 1}`, microphone.deviceId));
     });
     if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+    const activeName = $("#active-input-name");
+    if (activeName) activeName.textContent = select.selectedOptions[0]?.textContent || "Default microphone";
+  }
+
+  function setMonitorStatus(message, tone = "") {
+    const status = $("#input-monitor-status");
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  }
+
+  function setSignalStatus(message, tone = "waiting") {
+    const status = $("#input-signal-status");
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  }
+
+  function setPreflightVisible(visible) {
+    const preflight = $("#audio-preflight");
+    if (preflight) preflight.hidden = !visible;
   }
 
   function drawWaveforms(samples) {
@@ -152,6 +175,8 @@
   function startLevelMeter(activeStream) {
     const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (!AudioContext) return;
+    setPreflightVisible(true);
+    setSignalStatus("Listening…", "waiting");
     audioContext = new AudioContext();
     audioContext.resume().catch(() => {});
     recordedSampleRate = audioContext.sampleRate;
@@ -176,11 +201,13 @@
         if (!detected || detected.clarity < 0.82) {
           pitchHistory = [];
           renderTuner(null, level >= 0.012 ? "Hold the note" : "Play a held note");
+          setSignalStatus(level >= 0.006 ? "Signal detected" : "No signal — check input", level >= 0.006 ? "live" : "silent");
         } else {
           pitchHistory.push(detected);
           pitchHistory = pitchHistory.slice(-4);
           const stable = analysis.stablePitch(pitchHistory);
           renderTuner(stable, "Hold the note");
+          setSignalStatus("Signal detected", "live");
         }
       }
       levelFrame = requestAnimationFrame(render);
@@ -188,18 +215,71 @@
     render();
   }
 
-  function stopCapture() {
-    clearInterval(timerID);
-    timerID = null;
+  function stopLiveAnalysis(hide = true) {
     if (levelFrame) cancelAnimationFrame(levelFrame);
     levelFrame = null;
     const inputMeter = $("#input-meter-fill");
     if (inputMeter) inputMeter.style.width = "0";
-    stream?.getTracks().forEach((track) => track.stop());
-    stream = null;
     audioContext?.close().catch(() => {});
     audioContext = null;
     resetLiveAudio();
+    setSignalStatus("Tuner off", "waiting");
+    if (hide) setPreflightVisible(false);
+  }
+
+  function selectedAudioConstraints() {
+    const deviceID = $("#microphone-select")?.value || "";
+    return {
+      ...(deviceID ? { deviceId: { exact: deviceID } } : {}),
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 1,
+    };
+  }
+
+  function stopMonitoring() {
+    monitorStream?.getTracks().forEach((track) => track.stop());
+    monitorStream = null;
+    if (!stream) stopLiveAnalysis();
+    const toggle = $("#toggle-input-monitor");
+    if (toggle) toggle.textContent = "Start live tuner";
+    setMonitorStatus("Live tuner stopped.");
+  }
+
+  async function startMonitoring() {
+    if (stream || finishing) {
+      setMonitorStatus("The selected microphone is already being used by the active take.", "live");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMonitorStatus("Live microphone monitoring is not supported in this browser.", "error");
+      return;
+    }
+    try {
+      if (monitorStream) stopMonitoring();
+      setMonitorStatus("Requesting microphone access…");
+      monitorStream = await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() });
+      await updateMicrophones();
+      startLevelMeter(monitorStream);
+      const toggle = $("#toggle-input-monitor");
+      if (toggle) toggle.textContent = "Stop live tuner";
+      setMonitorStatus("Live tuner active — play to verify the selected input.", "live");
+    } catch (error) {
+      monitorStream?.getTracks().forEach((track) => track.stop());
+      monitorStream = null;
+      stopLiveAnalysis();
+      setMonitorStatus(error.name === "NotAllowedError" ? "Microphone permission was not granted." : "Could not start the selected microphone.", "error");
+    }
+  }
+
+  function stopCapture() {
+    clearInterval(timerID);
+    timerID = null;
+    stream?.getTracks().forEach((track) => track.stop());
+    stream = null;
+    if (monitorStream?.active) setMonitorStatus("Live tuner active — play to verify the selected input.", "live");
+    else stopLiveAnalysis();
     $("#recording-light")?.classList.remove("active");
     const startButton = $("#start-recording");
     const stopButton = $("#stop-recording");
@@ -219,24 +299,21 @@
       const practiceSession = await globalThis.JazzPracticeSession.ensureActive();
       currentPracticeSessionID = practiceSession.id;
       finishing = false;
-      const deviceID = $("#microphone-select")?.value || "";
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          ...(deviceID ? { deviceId: { exact: deviceID } } : {}),
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1,
-        },
-      });
-      await updateMicrophones();
+      const monitoring = Boolean(monitorStream?.active);
+      stream = monitoring
+        ? monitorStream.clone()
+        : await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() });
+      if (!monitoring) {
+        await updateMicrophones();
+        startLevelMeter(stream);
+      }
       losslessRecorder = new globalThis.JazzLosslessRecorder();
       await losslessRecorder.start(stream);
       recordedAt = new Date().toISOString();
       startedAt = performance.now();
       updateTimer();
       timerID = setInterval(updateTimer, 250);
-      startLevelMeter(stream);
+      setMonitorStatus("Recording with the selected microphone.", "live");
       $("#recording-light")?.classList.add("active");
       const startButton = $("#start-recording");
       const stopButton = $("#stop-recording");
@@ -561,10 +638,33 @@
   };
 
   populateMetadata();
+  const microphoneSelect = $("#microphone-select");
+  microphoneSelect?.addEventListener("change", async () => {
+    localStorage.setItem(MICROPHONE_STORAGE_KEY, microphoneSelect.value);
+    const activeName = $("#active-input-name");
+    if (activeName) activeName.textContent = microphoneSelect.selectedOptions[0]?.textContent || "Default microphone";
+    if (monitorStream?.active && !stream && !finishing) {
+      stopMonitoring();
+      await startMonitoring();
+    } else if (stream || finishing) {
+      setMonitorStatus("Input selection saved for the next take.");
+    } else {
+      setMonitorStatus("Input selected. Start the tuner to verify it.");
+    }
+  });
+  $("#toggle-input-monitor")?.addEventListener("click", () => {
+    if (stream || finishing) {
+      setMonitorStatus("Finish the current take before changing live monitoring.");
+      return;
+    }
+    if (monitorStream?.active) stopMonitoring();
+    else startMonitoring();
+  });
   $("#start-recording")?.addEventListener("click", startGeneralRecording);
   $("#stop-recording")?.addEventListener("click", stopRecording);
   $("#retry-recording")?.addEventListener("click", retryUpload);
   $("#refresh-recordings")?.addEventListener("click", loadRecordings);
-  navigator.mediaDevices?.addEventListener?.("devicechange", updateMicrophones);
+  navigator.mediaDevices?.addEventListener?.("devicechange", () => updateMicrophones().catch(() => {}));
+  updateMicrophones().catch(() => setMonitorStatus("Microphone list is unavailable until permission is granted."));
   loadRecordings();
 })();
