@@ -766,10 +766,8 @@
     if (!list || !activePanel) return;
     list.replaceChildren();
     const firstIncomplete = practiceSections.findIndex((session) => !timerFor(session).completed);
-    const recordingSession = activeSectionRecordingID ? sessionForRecording(activeSectionRecordingID) : null;
     const selectedExists = practiceSections.some((session) => session.id === selectedPracticeSectionID);
-    selectedPracticeSectionID = recordingSession?.id
-      || (selectedExists ? selectedPracticeSectionID : "")
+    selectedPracticeSectionID = (selectedExists ? selectedPracticeSectionID : "")
       || practiceSections[Math.max(0, firstIncomplete)]?.id
       || practiceSections[0]?.id
       || "";
@@ -792,16 +790,20 @@
       const block = guidedBlockFor(session);
       const activeRecordings = activeBlockRecordings(block);
       const selected = session.id === selectedPracticeSectionID;
+      const recordingHere = activeSectionRecordingID === block?.id;
+      const recordingStatus = recordingHere
+        ? (activeSectionRecordingPhase === "uploading" ? "Uploading" : (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording"))
+        : "";
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
       const card = document.createElement("article");
       card.dataset.sessionId = session.id;
-      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}`;
+      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${recordingHere ? " recording-owner" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}`;
       card.innerHTML = `
         <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(session.title)}">
           <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
           <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${activeRecordings.length} take${activeRecordings.length === 1 ? "" : "s"}</small></span>
-          <span class="plan-status">${timer.running ? "Recording" : (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
+          <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
           <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
         </button>`;
       $(".practice-plan-select", card).addEventListener("click", () => {
@@ -830,6 +832,7 @@
     const uploadingHere = recordingHere && activeSectionRecordingPhase === "uploading";
     const recordingActionLocked = activeSectionRecordingID && activeSectionRecordingPhase && !recordingHere
       && (activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing" || activeSectionRecordingPhase === "uploading");
+    const recordingOwner = recordingActionLocked ? sessionForRecording(activeSectionRecordingID) : null;
     const failedHere = failedSectionRecordingID === block?.id;
     const targetMs = session.minutes * 60 * 1000;
     const elapsedMs = elapsedFor(timer);
@@ -839,6 +842,19 @@
     setText("current-section-state", stateLabel);
 
     panel.replaceChildren();
+    if (recordingOwner) {
+      const banner = document.createElement("aside");
+      banner.className = "background-recording-banner";
+      banner.innerHTML = `
+        <span><em>${activeSectionRecordingPhase === "uploading" ? "Uploading" : (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording continues")}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
+        <div><button type="button" data-return-to-recording>Return to recorder</button>${activeSectionRecordingPhase === "recording" ? '<button type="button" class="stop-background-recording" data-stop-background-recording>Stop take</button>' : ""}</div>`;
+      $("[data-return-to-recording]", banner).addEventListener("click", () => {
+        selectedPracticeSectionID = recordingOwner.id;
+        renderSessions();
+      });
+      $("[data-stop-background-recording]", banner)?.addEventListener("click", () => globalThis.JazzRecording?.stop());
+      panel.appendChild(banner);
+    }
     const card = document.createElement("article");
     card.dataset.sessionId = session.id;
     card.className = `selected-section-card${complete ? " complete" : ""}${timer.running ? " running" : ""}`;
@@ -859,7 +875,7 @@
       <div class="section-recording-panel">
         <div class="section-recording-head">
           <span><strong>Section takes</strong><em>${activeRecordings.length} / 5</em></span>
-          <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading…" : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
+          <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading…" : (recordingHere ? "Stop recording" : (recordingActionLocked ? "Recorder busy" : (failedHere ? "Retry upload" : "+ Record take")))}</button>
         </div>
         ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
         ${recordingHere && activeSectionRecordingPhase === "recording" ? `<div class="section-live-audio" data-live-audio><canvas class="recording-waveform" data-waveform aria-label="Live ${escapeHTML(session.title)} microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>` : ""}
