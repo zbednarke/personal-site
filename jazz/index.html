@@ -15,10 +15,34 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="theme-color" content="#08060f">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23f2ad5c'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;family=Playfair+Display:wght@600;700&amp;display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../assets/jazz/jazz.css">
 </head>
-<body>
+<body class="virtuoso-today">
   <a class="skip-link" href="#main">Skip to campaign</a>
+
+  <nav class="virtuoso-nav" aria-label="Jazz Project">
+    <a class="virtuoso-brand" href="./" aria-label="Jazz Project today">
+      <span class="virtuoso-monogram">JP</span>
+      <span><strong>Jazz Project</strong><small>Private trumpet archive</small></span>
+    </a>
+    <div class="virtuoso-nav-links">
+      <a class="active" href="#today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
+      <span class="disabled" title="Archive screen is next"><span aria-hidden="true">▱</span>Archive <em>Next</em></span>
+      <span class="disabled" title="Progress screen is coming later"><span aria-hidden="true">⌁</span>Progress</span>
+    </div>
+    <div class="virtuoso-nav-footer">
+      <span class="cloud-status" id="recording-service-status">Connecting private storage…</span>
+      <p>Editorial technical<br>practice system</p>
+    </div>
+  </nav>
+
+  <header class="virtuoso-mobile-header">
+    <strong>Jazz Project</strong>
+    <span>Today</span>
+  </header>
 
   <header class="site-header">
       <a class="brand" href="../" aria-label="Zach Bednarke home" rel="noreferrer">
@@ -72,72 +96,49 @@
     </section>
 
     <section class="section" id="today" aria-labelledby="today-title">
-      <div class="section-heading">
+      <header class="today-screen-header">
         <div>
-          <p class="eyebrow">The daily engine</p>
-          <h2 id="today-title">Today’s practice</h2>
-          <p class="section-intro">Work one block at a time. Recording a take advances that section’s practice time, with cloud-synced notes and up to five private recordings.</p>
+          <p class="eyebrow">Today’s practice</p>
+          <h1 id="today-title"><span id="today-date">Today</span></h1>
+          <p><span id="practice-session-heading">Today’s session</span> <span aria-hidden="true">·</span> <span id="practice-session-summary">Connecting private practice data…</span></p>
         </div>
-      </div>
-
-      <div class="today-session-note" id="practice-session-editor">
-        <div class="today-session-note-copy">
-          <span class="label">Session note</span>
-          <h3 id="practice-session-heading">Today’s session</h3>
-          <p id="practice-session-summary">Your note and recordings sync privately across devices.</p>
+        <div class="today-header-stats" aria-label="Today’s session statistics">
+          <div><span>Time</span><strong><b id="today-total-minutes">0</b> / <b id="today-goal-minutes">50</b> minutes</strong></div>
+          <div><span>Takes</span><strong><b id="today-total-takes">0</b> recorded</strong></div>
         </div>
-        <label class="today-session-note-field" for="practice-session-notes">
-          <span>What are you noticing today?</span>
-          <textarea id="practice-session-notes" maxlength="2000" rows="3" placeholder="How does the horn feel? What is improving? What should you revisit next time?"></textarea>
-        </label>
-        <div class="today-session-note-actions">
-          <span id="practice-session-note-status" role="status">Ready to sync</span>
-          <button class="button button-quiet" id="finish-practice-session" type="button" hidden>Finish today’s session</button>
-        </div>
-      </div>
+      </header>
 
-      <div class="today-layout">
-        <div class="session-list" id="session-list" aria-live="polite"></div>
+      <div class="today-workspace">
+        <section class="practice-plan" aria-labelledby="practice-plan-title">
+          <div class="workspace-label"><h2 id="practice-plan-title">Practice plan</h2><span>Recording drives practice time</span></div>
+          <div class="session-list" id="session-list" aria-live="polite"></div>
+        </section>
 
-        <aside class="week-card">
-          <div class="week-card-header">
-            <div>
-              <span class="label">This week</span>
-              <h3><span id="week-hours">0.0</span> / 6 hours</h3>
+        <aside class="active-stage" aria-label="Selected practice section">
+          <section class="session-stat-grid" aria-label="Session stats">
+            <article><span>Total time</span><strong><b id="today-stage-minutes">0</b> / <b id="today-stage-goal">50</b> min</strong></article>
+            <article><span>Total takes</span><strong><b id="today-stage-takes">0</b> recorded</strong></article>
+          </section>
+
+          <section class="current-section-stage">
+            <div class="workspace-label"><h2>Current section</h2><span id="current-section-state">Ready</span></div>
+            <div id="active-section-panel"></div>
+          </section>
+
+          <section class="session-reflection" id="practice-session-editor">
+            <div class="workspace-label">
+              <label for="practice-session-notes">Session notes</label>
+              <span id="practice-session-note-status" role="status">Ready to sync</span>
             </div>
-            <span class="week-percent" id="week-percent">0%</span>
-          </div>
-          <div class="meter meter-warm" aria-label="Weekly practice progress"><span id="week-meter"></span></div>
-          <div class="week-chart" id="week-chart" aria-label="Practice minutes for the last seven days"></div>
-          <p class="week-note" id="week-note">Start with one small session. Momentum is the first unlock.</p>
+            <textarea id="practice-session-notes" maxlength="2000" rows="5" placeholder="Overall session reflections…"></textarea>
+            <button class="button button-quiet" id="finish-practice-session" type="button" hidden>Finish today’s session</button>
+          </section>
         </aside>
       </div>
 
-      <section class="previous-work" aria-labelledby="previous-work-title">
-        <div class="previous-work-heading">
-          <div>
-            <p class="eyebrow">Practice review</p>
-            <h3 id="previous-work-title">Previous work</h3>
-            <p>Revisit recent session notes or listen back to a take without leaving today’s practice flow.</p>
-          </div>
-          <div class="previous-work-tools">
-            <span class="cloud-status" id="recording-service-status">Checking private storage...</span>
-            <button class="button button-quiet" id="refresh-recordings" type="button">Refresh</button>
-          </div>
-        </div>
-        <div class="previous-work-grid">
-          <div class="previous-work-column">
-            <span class="label">Recent sessions</span>
-            <div class="session-history" id="practice-session-history" aria-live="polite"></div>
-          </div>
-          <div class="previous-work-column">
-            <span class="label">Recent takes</span>
-            <div class="recording-library" id="recording-library" aria-live="polite">
-              <p class="empty-recordings">No recordings yet. Your first honest take is the baseline.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+      <div class="week-card today-week-data" aria-hidden="true">
+        <span id="week-hours">0.0</span><span id="week-percent">0%</span><span id="week-meter"></span><div id="week-chart"></div><p id="week-note"></p>
+      </div>
     </section>
 
     <section class="section mission-section" aria-labelledby="mission-title">

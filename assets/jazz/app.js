@@ -40,6 +40,7 @@
   let failedSectionRecordingID = "";
   let failedSectionRecordingMessage = "";
   let recordingTimerSessionID = "";
+  let selectedPracticeSectionID = "";
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -451,10 +452,10 @@
   }
 
   function updateSectionSyncStatus(sessionID, message, tone = "") {
-    const status = document.querySelector(`[data-session-id="${sessionID}"] [data-section-sync]`);
-    if (!status) return;
-    status.textContent = message;
-    status.dataset.tone = tone;
+    document.querySelectorAll(`[data-session-id="${sessionID}"] [data-section-sync]`).forEach((status) => {
+      status.textContent = message;
+      status.dataset.tone = tone;
+    });
   }
 
   function formatRecordingDuration(milliseconds) {
@@ -713,66 +714,133 @@
   }
 
   function updateTimerElements() {
+    let totalElapsedMs = 0;
     DATA.sessions.forEach((session) => {
       const timer = timerFor(session);
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
-      const card = document.querySelector(`[data-session-id="${session.id}"]`);
-      if (!card) return;
-      card.classList.toggle("running", timer.running);
-      const readout = $("[data-timer-readout]", card);
-      const progress = $("[data-timer-progress]", card);
-      readout.textContent = `${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal`;
-      progress.style.width = `${Math.min(100, (elapsedMs / targetMs) * 100)}%`;
-      progress.parentElement.setAttribute("aria-valuenow", String(Math.min(100, Math.round((elapsedMs / targetMs) * 100))));
+      totalElapsedMs += elapsedMs;
+      document.querySelectorAll(`[data-session-id="${session.id}"]`).forEach((card) => {
+        card.classList.toggle("running", timer.running);
+        const readout = $("[data-timer-readout]", card);
+        const progress = $("[data-timer-progress]", card);
+        if (readout) readout.textContent = `${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal`;
+        if (progress) {
+          progress.style.width = `${Math.min(100, (elapsedMs / targetMs) * 100)}%`;
+          progress.parentElement?.setAttribute("aria-valuenow", String(Math.min(100, Math.round((elapsedMs / targetMs) * 100))));
+        }
+      });
     });
+    const practicedMinutes = (totalElapsedMs / 60000).toFixed(1);
+    setText("today-total-minutes", practicedMinutes);
+    setText("today-stage-minutes", practicedMinutes);
   }
 
   function renderSessions() {
     const list = $("#session-list");
+    const activePanel = $("#active-section-panel");
+    if (!list || !activePanel) return;
     list.replaceChildren();
     const firstIncomplete = DATA.sessions.findIndex((session) => !timerFor(session).completed);
+    const recordingSession = activeSectionRecordingID ? sessionForRecording(activeSectionRecordingID) : null;
+    const selectedExists = DATA.sessions.some((session) => session.id === selectedPracticeSectionID);
+    selectedPracticeSectionID = recordingSession?.id
+      || (selectedExists ? selectedPracticeSectionID : "")
+      || DATA.sessions[Math.max(0, firstIncomplete)]?.id
+      || DATA.sessions[0]?.id
+      || "";
+
+    const goalMinutes = DATA.sessions.reduce((sum, session) => sum + Number(session.minutes || 0), 0);
+    const totalElapsedMs = DATA.sessions.reduce((sum, session) => sum + elapsedFor(timerFor(session)), 0);
+    const totalTakes = DATA.sessions.reduce((sum, session) => sum + activeBlockRecordings(guidedBlockFor(session)).length, 0);
+    const practicedMinutes = (totalElapsedMs / 60000).toFixed(1);
+    setText("today-date", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }));
+    setText("today-total-minutes", practicedMinutes);
+    setText("today-stage-minutes", practicedMinutes);
+    setText("today-goal-minutes", goalMinutes);
+    setText("today-stage-goal", goalMinutes);
+    setText("today-total-takes", totalTakes);
+    setText("today-stage-takes", totalTakes);
+
     DATA.sessions.forEach((session, index) => {
       const timer = timerFor(session);
       const complete = timer.completed;
       const block = guidedBlockFor(session);
-      const recordings = block?.recordings || [];
       const activeRecordings = activeBlockRecordings(block);
-      const recordingHere = activeSectionRecordingID === block?.id;
-      const uploadingHere = recordingHere && activeSectionRecordingPhase === "uploading";
-      const recordingActionLocked = activeSectionRecordingID && activeSectionRecordingPhase && !recordingHere
-        && (activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing" || activeSectionRecordingPhase === "uploading");
-      const failedHere = failedSectionRecordingID === block?.id;
-      const card = document.createElement("article");
-      card.dataset.sessionId = session.id;
-      card.className = `session-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}`;
+      const selected = session.id === selectedPracticeSectionID;
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
+      const card = document.createElement("article");
+      card.dataset.sessionId = session.id;
+      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}`;
       card.innerHTML = `
-        <span class="session-time">${session.time}</span>
-        <div class="session-copy">
-          <div class="session-heading-line"><span class="session-step">${String(index + 1).padStart(2, "0")}</span><h3>${session.title}</h3></div>
-          <p>${session.detail}</p>
-          <div class="session-progress-meta"><div class="session-timer-track" role="progressbar" aria-label="${session.title} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div><span class="timer-readout" data-timer-readout aria-live="off">${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal</span></div>
-        </div>
-        <div class="session-cms">
-          <label class="section-notes-field">
-            <span><strong>Section notes</strong><em data-section-sync data-tone="saved">${block ? "Cloud synced" : "Waiting for cloud"}</em></span>
-            <textarea data-section-notes maxlength="4000" rows="3" ${block ? "" : "disabled"} placeholder="What did you work on during ${session.title.toLowerCase()}?">${escapeHTML(block?.notes || "")}</textarea>
-          </label>
-          <div class="section-recording-panel">
-            <div class="section-recording-head">
-              <span><strong>Section takes</strong><em>${activeRecordings.length} / 5</em></span>
-              <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading..." : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
-            </div>
-            ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
-            ${recordingHere && activeSectionRecordingPhase === "recording" ? `<div class="section-live-audio" data-live-audio><canvas class="recording-waveform" data-waveform aria-label="Live ${escapeHTML(session.title)} microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>` : ""}
-            <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
-          </div>
-        </div>`;
-      wireSectionTools(card, session, block);
+        <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(session.title)}">
+          <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
+          <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${activeRecordings.length} take${activeRecordings.length === 1 ? "" : "s"}</small></span>
+          <span class="plan-status">${timer.running ? "Recording" : (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
+          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
+        </button>`;
+      $(".practice-plan-select", card).addEventListener("click", () => {
+        selectedPracticeSectionID = session.id;
+        renderSessions();
+      });
       list.appendChild(card);
     });
+
+    const selectedSession = DATA.sessions.find((session) => session.id === selectedPracticeSectionID) || DATA.sessions[0];
+    renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
+  }
+
+  function renderActiveSection(session, block) {
+    const panel = $("#active-section-panel");
+    if (!panel || !session) return;
+    const timer = timerFor(session);
+    const complete = timer.completed;
+    const activeRecordings = activeBlockRecordings(block);
+    const recordingHere = activeSectionRecordingID === block?.id;
+    const uploadingHere = recordingHere && activeSectionRecordingPhase === "uploading";
+    const recordingActionLocked = activeSectionRecordingID && activeSectionRecordingPhase && !recordingHere
+      && (activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing" || activeSectionRecordingPhase === "uploading");
+    const failedHere = failedSectionRecordingID === block?.id;
+    const targetMs = session.minutes * 60 * 1000;
+    const elapsedMs = elapsedFor(timer);
+    const stateLabel = recordingHere
+      ? (uploadingHere ? "Uploading take" : (activeSectionRecordingPhase === "recording" ? "Recording now" : "Processing take"))
+      : (failedHere ? "Upload needs attention" : (complete ? "Goal met" : (elapsedMs > 0 ? "In progress" : "Ready")));
+    setText("current-section-state", stateLabel);
+
+    panel.replaceChildren();
+    const card = document.createElement("article");
+    card.dataset.sessionId = session.id;
+    card.className = `selected-section-card${complete ? " complete" : ""}${timer.running ? " running" : ""}`;
+    card.innerHTML = `
+      <header class="selected-section-head">
+        <div>
+          <span class="selected-section-kicker">${escapeHTML(session.category || session.track || "Practice")}</span>
+          <h3>${escapeHTML(session.title)}</h3>
+          <p>${escapeHTML(session.detail)}</p>
+        </div>
+        <span class="selected-section-target">${session.minutes}<small>min goal</small></span>
+      </header>
+      <div class="selected-progress">
+        <div class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div>
+        <span class="timer-readout" data-timer-readout aria-live="off">${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal</span>
+      </div>
+      <div class="section-recording-panel">
+        <div class="section-recording-head">
+          <span><strong>Section takes</strong><em>${activeRecordings.length} / 5</em></span>
+          <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading…" : (recordingHere ? "Stop recording" : (failedHere ? "Retry upload" : "+ Record take"))}</button>
+        </div>
+        ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
+        ${recordingHere && activeSectionRecordingPhase === "recording" ? `<div class="section-live-audio" data-live-audio><canvas class="recording-waveform" data-waveform aria-label="Live ${escapeHTML(session.title)} microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>` : ""}
+        <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
+      </div>
+      <label class="section-notes-field">
+        <span><strong>Section notes</strong><em data-section-sync data-tone="saved">${block ? "Cloud synced" : "Waiting for cloud"}</em></span>
+        <textarea data-section-notes maxlength="4000" rows="5" ${block ? "" : "disabled"} placeholder="What did you work on during ${session.title.toLowerCase()}?">${escapeHTML(block?.notes || "")}</textarea>
+      </label>`;
+    panel.appendChild(card);
+    wireSectionTools(card, session, block);
   }
 
   function renderWeek() {
