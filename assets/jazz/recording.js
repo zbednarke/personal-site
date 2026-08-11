@@ -4,6 +4,7 @@
   const DATA = globalThis.JAZZ_DATA;
   const API_BASE = "./api/v1";
   const MICROPHONE_STORAGE_KEY = "zach-jazz-microphone-v1";
+  const { MAX_TAKE_DURATION_MS, shouldAutoFinish } = globalThis.JazzRecordingPolicy;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
@@ -12,6 +13,7 @@
   let startedAt = 0;
   let recordedAt = "";
   let timerID = null;
+  let autoStopID = null;
   let levelFrame = null;
   let audioContext = null;
   let recordedSampleRate = 0;
@@ -30,12 +32,12 @@
     element.className = `cloud-status${tone ? ` ${tone}` : ""}`;
   }
 
-  function setRecorderState(message, phase = "status", canRetry = false, notify = true) {
+  function setRecorderState(message, phase = "status", canRetry = false, notify = true, extra = {}) {
     const state = $("#recording-state");
     if (state) state.textContent = message;
     if (!notify) return;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
-      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
+      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry, ...extra },
     }));
   }
 
@@ -62,6 +64,7 @@
     const elapsed = performance.now() - startedAt;
     const timer = $("#recording-timer");
     if (timer) timer.textContent = formatTimer(elapsed);
+    if (shouldAutoFinish(elapsed) && losslessRecorder && !captureFinalizing) stopRecording({ automatic: true });
   }
 
   async function updateMicrophones() {
@@ -269,6 +272,8 @@
   function stopCapture() {
     clearInterval(timerID);
     timerID = null;
+    clearTimeout(autoStopID);
+    autoStopID = null;
     stream?.getTracks().forEach((track) => track.stop());
     stream = null;
     if (monitorStream?.active) setMonitorStatus("Live tuner active — play to verify the selected input.", "live");
@@ -306,6 +311,7 @@
       startedAt = performance.now();
       updateTimer();
       timerID = setInterval(updateTimer, 250);
+      autoStopID = setTimeout(() => stopRecording({ automatic: true }), MAX_TAKE_DURATION_MS);
       setMonitorStatus("Recording with the selected microphone.", "live");
       $("#recording-light")?.classList.add("active");
       const startButton = $("#start-recording");
@@ -320,16 +326,17 @@
     }
   }
 
-  function stopRecording() {
+  function stopRecording(options = {}) {
     if (!losslessRecorder || captureFinalizing) return;
     captureFinalizing = true;
     const stopButton = $("#stop-recording");
     if (stopButton) stopButton.disabled = true;
-    setRecorderState("Building the lossless take...", "processing");
-    finishRecording();
+    const automatic = options.automatic === true;
+    setRecorderState(automatic ? "Four-hour limit reached - finishing the take..." : "Building the lossless take...", "processing");
+    finishRecording(automatic);
   }
 
-  async function finishRecording() {
+  async function finishRecording(automatic = false) {
     let result;
     try {
       result = await losslessRecorder.stop();
@@ -355,9 +362,28 @@
     }
     const capture = captureUpload(blob, durationMS, contentType);
     captureFinalizing = false;
-    setRecorderState("Take captured - uploading in the background", "complete");
+    setRecorderState(automatic ? "Four-hour take captured - uploading in the background" : "Take captured - uploading in the background", "complete");
     activeBlockContext = null;
     uploadQueue.enqueue(capture);
+  }
+
+  async function cancelRecording() {
+    if (!losslessRecorder || captureFinalizing) return false;
+    captureFinalizing = true;
+    const recorder = losslessRecorder;
+    losslessRecorder = null;
+    setRecorderState("Cancelling and discarding the take...", "cancelling", false, true, { discardPractice: true });
+    try {
+      await recorder.cancel();
+    } catch {
+      // The media tracks are still stopped below, so the take remains discarded.
+    } finally {
+      stopCapture();
+      captureFinalizing = false;
+    }
+    setRecorderState("Take cancelled - no audio was uploaded", "cancelled", false, true, { discardPractice: true });
+    activeBlockContext = null;
+    return true;
   }
 
   function captureUpload(blob, durationMS, contentType) {
@@ -606,6 +632,7 @@
   globalThis.JazzRecording = {
     startForBlock,
     stop: stopRecording,
+    cancel: cancelRecording,
     retry: retryUpload,
     play: playRecording,
     delete: deleteRecording,
