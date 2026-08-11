@@ -539,6 +539,7 @@
         takeNumber: recordings.length + 1,
       });
     });
+    $("[data-audio-options]", card)?.addEventListener("click", () => $("#audio-options-dialog")?.showModal());
     $$('[data-section-take]', card).forEach((take) => {
       const recordingID = take.dataset.sectionTake;
       $("[data-section-play]", take).addEventListener("click", () => globalThis.JazzRecording?.play(recordingID, take));
@@ -875,10 +876,9 @@
       <div class="section-recording-panel">
         <div class="section-recording-head">
           <span><strong>Section takes</strong><em>${activeRecordings.length} / 5</em></span>
-          <button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading…" : (recordingHere ? "Stop recording" : (recordingActionLocked ? "Recorder busy" : (failedHere ? "Retry upload" : "+ Record take")))}</button>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Audio input options" title="Audio input options">⚙</button><button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading…" : (recordingHere ? "Stop recording" : (recordingActionLocked ? "Recorder busy" : (failedHere ? "Retry upload" : "+ Record take")))}</button></div>
         </div>
         ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
-        ${recordingHere && activeSectionRecordingPhase === "recording" ? `<div class="section-live-audio" data-live-audio><canvas class="recording-waveform" data-waveform aria-label="Live ${escapeHTML(session.title)} microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>` : ""}
         <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
       </div>
       <label class="section-notes-field">

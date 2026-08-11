@@ -835,6 +835,9 @@ footer p[data-tone="offline"] { color: var(--red); }
 .selected-section-card .section-recording-panel { padding: 21px 25px 24px; border-bottom: 1px solid var(--line); }
 .selected-section-card .section-recording-head strong { color: var(--ink); font: 600 15px var(--serif); }
 .selected-section-card .section-recording-head em { margin-left: 9px; color: var(--brass); }
+.section-recording-actions { display: flex; align-items: center; gap: 7px; }
+.audio-options-button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; }
+.audio-options-button:hover { border-color: var(--brass); color: var(--brass-light); }
 .selected-section-card .section-record-button { min-height: 36px; padding: 0 14px; border-radius: 2px; border-color: var(--brass); color: var(--brass-light); }
 .selected-section-card .section-record-button:hover { background: rgba(181, 147, 91, 0.1); }
 .selected-section-card .section-record-button.recording { border-color: var(--red); color: var(--red); }
@@ -845,6 +848,19 @@ footer p[data-tone="offline"] { color: var(--red); }
 .selected-section-card .section-live-audio { margin-top: 16px; }
 .selected-section-card .recording-waveform,
 .selected-section-card .tuner { border-radius: 2px; background: #151415; }
+.audio-preflight { margin-bottom: 10px; padding: 15px; border: 1px solid rgba(165, 201, 159, 0.38); border-radius: 2px; background: #191919; }
+.audio-preflight[hidden] { display: none; }
+.audio-preflight-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.audio-preflight-head > span { min-width: 0; display: grid; gap: 2px; }
+.audio-preflight-head em { color: var(--green); font: normal 7px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
+.audio-preflight-head strong { overflow: hidden; color: var(--ink); font: 600 12px var(--serif); text-overflow: ellipsis; white-space: nowrap; }
+.audio-preflight-head small { color: var(--muted); font: 8px var(--mono); text-transform: uppercase; }
+.audio-preflight-head small[data-tone="live"] { color: var(--green); }
+.audio-preflight-head small[data-tone="silent"] { color: var(--red); }
+.audio-preflight .input-meter { height: 4px; margin: 0 0 12px; border-radius: 0; background: #302e2b; }
+.audio-preflight .section-live-audio { grid-template-columns: minmax(0, 1.5fr) minmax(210px, 0.7fr); }
+.audio-preflight .recording-waveform,
+.audio-preflight .tuner { border-radius: 2px; background: #151415; }
 .selected-section-card > .section-notes-field { padding: 22px 25px 25px; }
 .selected-section-card .section-notes-field > span { margin-bottom: 5px; }
 .selected-section-card .section-notes-field strong { color: var(--ink); font: 600 15px var(--serif); }
@@ -873,6 +889,16 @@ footer p[data-tone="offline"] { color: var(--red); }
 .section-form-status { min-height: 18px; margin: -4px 0 0; color: var(--red); font: 9px var(--mono); }
 .section-form-actions { margin-top: -4px; }
 .section-form-actions .button { border-radius: 2px; }
+.virtuoso-today .audio-options-dialog { width: min(520px, calc(100vw - 32px)); padding: 34px; border-radius: 4px; background: #1c1b1c; }
+.audio-options-dialog h2 { font-family: var(--serif); font-weight: 600; }
+.audio-input-field { display: grid; gap: 8px; margin-top: 27px; }
+.audio-input-field > span { color: var(--muted); font: 8px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.audio-input-field select { width: 100%; border: 1px solid var(--line); border-radius: 2px; background: #151415; color: var(--ink); padding: 11px 12px; font: 12px var(--sans); }
+.audio-input-field select:focus { outline: 1px solid var(--brass); border-color: var(--brass); }
+.audio-monitor-status { min-height: 18px; margin: 12px 0 0; color: var(--muted); font: 9px/1.5 var(--mono); }
+.audio-monitor-status[data-tone="live"] { color: var(--green); }
+.audio-monitor-status[data-tone="error"] { color: var(--red); }
+.audio-options-dialog .dialog-actions .button { border-radius: 2px; }
 
 @media (max-width: 1100px) {
   .virtuoso-today main { margin-left: 218px; }
@@ -905,6 +931,8 @@ footer p[data-tone="offline"] { color: var(--red); }
   .selected-section-card > .section-notes-field { padding-left: 18px; padding-right: 18px; }
   .selected-section-card .section-recording-head { align-items: flex-start; }
   .selected-section-card .section-live-audio { grid-template-columns: 1fr; }
+  .audio-preflight .section-live-audio { grid-template-columns: 1fr; }
+  .audio-preflight-head { align-items: flex-start; }
   .background-recording-banner { align-items: flex-start; flex-direction: column; }
   .background-recording-banner > div { width: 100%; }
   .session-reflection { padding: 18px; }
