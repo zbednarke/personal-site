@@ -841,6 +841,8 @@ footer p[data-tone="offline"] { color: var(--red); }
 .section-recording-actions { display: flex; align-items: center; gap: 7px; }
 .audio-options-button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; }
 .audio-options-button:hover { border-color: var(--brass); color: var(--brass-light); }
+.section-cancel-button { min-height: 36px; padding: 0 11px; border: 1px solid rgba(211, 139, 130, 0.55); border-radius: 2px; background: transparent; color: var(--red); cursor: pointer; font: 8px var(--mono); }
+.section-cancel-button:hover { background: rgba(211, 139, 130, 0.08); border-color: var(--red); }
 .selected-section-card .section-record-button { min-height: 36px; padding: 0 14px; border-radius: 2px; border-color: var(--brass); color: var(--brass-light); }
 .selected-section-card .section-record-button:hover { background: rgba(181, 147, 91, 0.1); }
 .selected-section-card .section-record-button.recording { border-color: var(--red); color: var(--red); }

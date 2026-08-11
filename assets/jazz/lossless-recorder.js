@@ -60,6 +60,22 @@
         durationMS: Math.round((this.frameCount / sampleRate) * 1000),
       };
     }
+
+    async cancel() {
+      if (!this.context) return;
+      if (this.node?.port) this.node.port.onmessage = null;
+      try { this.source?.disconnect(); } catch {}
+      try { this.node?.disconnect(); } catch {}
+      try { this.silentGain?.disconnect(); } catch {}
+      await this.context.close().catch(() => {});
+      this.context = null;
+      this.source = null;
+      this.node = null;
+      this.silentGain = null;
+      this.chunks = [];
+      this.frameCount = 0;
+      this.flushed = null;
+    }
   }
 
   function encodeWAV24(chunks, frameCount, sampleRate) {

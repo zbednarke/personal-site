@@ -40,6 +40,7 @@
   let activeSectionRecordingPhase = "";
   const sectionUploadJobs = new Map();
   let recordingTimerSessionID = "";
+  let recordingTimerSnapshot = null;
   let selectedPracticeSectionID = "";
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -567,6 +568,11 @@
         takeNumber: nextBlockTakeNumber(block),
       });
     });
+    $("[data-section-cancel]", card)?.addEventListener("click", () => {
+      if (confirm("Cancel and permanently discard this take? It will not be uploaded or counted as practice time.")) {
+        globalThis.JazzRecording?.cancel();
+      }
+    });
     $$('[data-retry-upload]', card).forEach((button) => {
       button.addEventListener("click", () => globalThis.JazzRecording?.retry(button.dataset.retryUpload));
     });
@@ -652,6 +658,7 @@
     if (!session) return;
     const timer = timerFor(session);
     recordingTimerSessionID = session.id;
+    recordingTimerSnapshot = globalThis.JazzPracticeTimerPolicy.snapshot(timer, session.id);
     stopOtherRecordingTimers(session.id);
     if (!timer.running) {
       timer.running = true;
@@ -677,11 +684,25 @@
       timer.completedAt = new Date().toISOString();
     }
     recordingTimerSessionID = "";
+    recordingTimerSnapshot = null;
     persistTimerState();
     syncGuidedPracticeEntry(session);
     saveTimerBlock(session, timer);
     renderAll();
     logGuidedBlockToCloud(session);
+  }
+
+  function cancelRecordingPractice(blockID) {
+    const session = practiceSections.find((candidate) => candidate.id === recordingTimerSessionID);
+    if (!session || (blockID && guidedBlockFor(session)?.id !== blockID)) return;
+    const timer = timerFor(session);
+    globalThis.JazzPracticeTimerPolicy.restoreCancelled(timer, recordingTimerSnapshot, session.id);
+    recordingTimerSessionID = "";
+    recordingTimerSnapshot = null;
+    persistTimerState();
+    syncGuidedPracticeEntry(session);
+    saveTimerBlock(session, timer);
+    renderAll();
   }
 
   function checkpointRecordingPractice() {
@@ -881,10 +902,15 @@
       banner.className = "background-recording-banner";
       banner.innerHTML = `
         <span><em>${activeSectionRecordingPhase === "processing" ? "Processing" : "Recording continues"}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
-        <div><button type="button" data-return-to-recording>Return to recorder</button>${activeSectionRecordingPhase === "recording" ? '<button type="button" class="stop-background-recording" data-stop-background-recording>Stop take</button>' : ""}</div>`;
+        <div><button type="button" data-return-to-recording>Return to recorder</button>${activeSectionRecordingPhase === "recording" ? '<button type="button" class="cancel-background-recording" data-cancel-background-recording>Cancel take</button><button type="button" class="stop-background-recording" data-stop-background-recording>Stop take</button>' : ""}</div>`;
       $("[data-return-to-recording]", banner).addEventListener("click", () => {
         selectedPracticeSectionID = recordingOwner.id;
         renderSessions();
+      });
+      $("[data-cancel-background-recording]", banner)?.addEventListener("click", () => {
+        if (confirm("Cancel and permanently discard this take? It will not be uploaded or counted as practice time.")) {
+          globalThis.JazzRecording?.cancel();
+        }
       });
       $("[data-stop-background-recording]", banner)?.addEventListener("click", () => globalThis.JazzRecording?.stop());
       panel.appendChild(banner);
@@ -909,7 +935,7 @@
       <div class="section-recording-panel">
         <div class="section-recording-head">
           <span><strong>Section takes</strong><em>${takeCount} / 5</em></span>
-          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Audio input options" title="Audio input options">⚙</button><button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Audio input options" title="Audio input options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
         </div>
         ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
         ${sectionUploadMarkup(block)}
@@ -1353,10 +1379,11 @@
     if (detail.phase === "recording" && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
       beginRecordingPractice(detail.blockId);
     } else if (detail.phase !== "recording" && recordingTimerSessionID) {
-      endRecordingPractice(detail.blockId);
+      if (detail.discardPractice) cancelRecordingPractice(detail.blockId);
+      else endRecordingPractice(detail.blockId);
     }
     if (!detail.blockId) return;
-    activeSectionRecordingID = detail.phase === "idle" || detail.phase === "complete" || detail.phase === "error" ? "" : detail.blockId;
+    activeSectionRecordingID = detail.phase === "idle" || detail.phase === "complete" || detail.phase === "cancelled" || detail.phase === "error" ? "" : detail.blockId;
     activeSectionRecordingMessage = detail.message || "";
     activeSectionRecordingPhase = detail.phase || "";
     renderSessions();
