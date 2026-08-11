@@ -22,6 +22,7 @@
 
   let state = loadState();
   let activeTrack = "all";
+  let practiceSections = DATA.sessions.map((session, position) => ({ ...session, position }));
   let activeSkillId = null;
   let toastTimer = null;
   let syncRevision = loadSyncRevision();
@@ -265,7 +266,7 @@
 
   function liveGuidedMinutesForDate(dateKey) {
     if (timerState.date !== dateKey) return 0;
-    return DATA.sessions.reduce((sum, session) => {
+    return practiceSections.reduce((sum, session) => {
       const timer = timerFor(session);
       const logged = state.practice.find((entry) => entry.id === guidedLogId(session));
       return sum + Math.max(0, (elapsedFor(timer) / 60000) - Number(logged?.minutes || 0));
@@ -345,6 +346,28 @@
     return guidedBlocks.get(session.id) || null;
   }
 
+  function applyPracticeBlocks(blocks) {
+    guidedBlocks = new Map((blocks || []).map((block) => [block.blockKey, block]));
+    if (!blocks?.length) return;
+    practiceSections = [...blocks]
+      .sort((a, b) => Number(a.position) - Number(b.position))
+      .map((block) => {
+        const curriculum = DATA.sessions.find((session) => session.id === block.blockKey) || {};
+        const minutes = Number(block.targetMinutes || curriculum.minutes || 10);
+        return {
+          ...curriculum,
+          id: block.blockKey,
+          position: Number(block.position),
+          time: `${minutes} min`,
+          minutes,
+          track: block.track,
+          category: block.category,
+          title: block.title,
+          detail: block.instructions || curriculum.detail || "Open practice block.",
+        };
+      });
+  }
+
   async function hydrateGuidedBlocks() {
     if (typeof globalThis.JazzPracticeSession?.ensureGuidedBlocks !== "function") {
       setTimeout(hydrateGuidedBlocks, 350);
@@ -361,8 +384,8 @@
         targetMinutes: session.minutes,
       }));
       const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), definitions);
-      guidedBlocks = new Map((result.blocks || []).map((block) => [block.blockKey, block]));
-      DATA.sessions.forEach((session) => {
+      applyPracticeBlocks(result.blocks || []);
+      practiceSections.forEach((session) => {
         const block = guidedBlockFor(session);
         if (!block) return;
         const timer = timerFor(session);
@@ -572,7 +595,7 @@
   }
 
   function stopOtherRecordingTimers(activeID) {
-    DATA.sessions.forEach((session) => {
+    practiceSections.forEach((session) => {
       if (session.id === activeID) return;
       const timer = timerFor(session);
       if (!timer.running) return;
@@ -585,9 +608,9 @@
   }
 
   function sessionForRecording(blockID) {
-    if (blockID) return DATA.sessions.find((session) => guidedBlockFor(session)?.id === blockID) || null;
-    return DATA.sessions.find((session) => timerFor(session).running && !timerFor(session).completed)
-      || DATA.sessions.find((session) => !timerFor(session).completed)
+    if (blockID) return practiceSections.find((session) => guidedBlockFor(session)?.id === blockID) || null;
+    return practiceSections.find((session) => timerFor(session).running && !timerFor(session).completed)
+      || practiceSections.find((session) => !timerFor(session).completed)
       || null;
   }
 
@@ -608,7 +631,7 @@
   }
 
   function endRecordingPractice(blockID) {
-    const session = DATA.sessions.find((candidate) => candidate.id === recordingTimerSessionID);
+    const session = practiceSections.find((candidate) => candidate.id === recordingTimerSessionID);
     if (!session || (blockID && guidedBlockFor(session)?.id !== blockID)) return;
     const timer = timerFor(session);
     if (timer.running) {
@@ -629,7 +652,7 @@
   }
 
   function checkpointRecordingPractice() {
-    const session = DATA.sessions.find((candidate) => candidate.id === recordingTimerSessionID);
+    const session = practiceSections.find((candidate) => candidate.id === recordingTimerSessionID);
     if (!session) return;
     const timer = timerFor(session);
     if (!timer.running) return;
@@ -693,7 +716,7 @@
 
   function syncCompletedGuidedBlocks() {
     let restoredPracticeLog = false;
-    DATA.sessions.forEach((session) => {
+    practiceSections.forEach((session) => {
       const timer = timerFor(session);
       if (timer.elapsedMs > 0) restoredPracticeLog = syncGuidedPracticeEntry(session) || restoredPracticeLog;
       if (timer.elapsedMs > 0) logGuidedBlockToCloud(session);
@@ -705,7 +728,7 @@
   }
 
   function tickGuidedTimers() {
-    DATA.sessions.forEach((session) => {
+    practiceSections.forEach((session) => {
       const timer = timerFor(session);
       if (!timer.running || timer.completed) return;
       if (elapsedFor(timer) >= session.minutes * 60 * 1000) markGuidedGoalMet(session);
@@ -715,7 +738,7 @@
 
   function updateTimerElements() {
     let totalElapsedMs = 0;
-    DATA.sessions.forEach((session) => {
+    practiceSections.forEach((session) => {
       const timer = timerFor(session);
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
@@ -741,18 +764,18 @@
     const activePanel = $("#active-section-panel");
     if (!list || !activePanel) return;
     list.replaceChildren();
-    const firstIncomplete = DATA.sessions.findIndex((session) => !timerFor(session).completed);
+    const firstIncomplete = practiceSections.findIndex((session) => !timerFor(session).completed);
     const recordingSession = activeSectionRecordingID ? sessionForRecording(activeSectionRecordingID) : null;
-    const selectedExists = DATA.sessions.some((session) => session.id === selectedPracticeSectionID);
+    const selectedExists = practiceSections.some((session) => session.id === selectedPracticeSectionID);
     selectedPracticeSectionID = recordingSession?.id
       || (selectedExists ? selectedPracticeSectionID : "")
-      || DATA.sessions[Math.max(0, firstIncomplete)]?.id
-      || DATA.sessions[0]?.id
+      || practiceSections[Math.max(0, firstIncomplete)]?.id
+      || practiceSections[0]?.id
       || "";
 
-    const goalMinutes = DATA.sessions.reduce((sum, session) => sum + Number(session.minutes || 0), 0);
-    const totalElapsedMs = DATA.sessions.reduce((sum, session) => sum + elapsedFor(timerFor(session)), 0);
-    const totalTakes = DATA.sessions.reduce((sum, session) => sum + activeBlockRecordings(guidedBlockFor(session)).length, 0);
+    const goalMinutes = practiceSections.reduce((sum, session) => sum + Number(session.minutes || 0), 0);
+    const totalElapsedMs = practiceSections.reduce((sum, session) => sum + elapsedFor(timerFor(session)), 0);
+    const totalTakes = practiceSections.reduce((sum, session) => sum + activeBlockRecordings(guidedBlockFor(session)).length, 0);
     const practicedMinutes = (totalElapsedMs / 60000).toFixed(1);
     setText("today-date", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }));
     setText("today-total-minutes", practicedMinutes);
@@ -762,7 +785,7 @@
     setText("today-total-takes", totalTakes);
     setText("today-stage-takes", totalTakes);
 
-    DATA.sessions.forEach((session, index) => {
+    practiceSections.forEach((session, index) => {
       const timer = timerFor(session);
       const complete = timer.completed;
       const block = guidedBlockFor(session);
@@ -787,8 +810,13 @@
       list.appendChild(card);
     });
 
-    const selectedSession = DATA.sessions.find((session) => session.id === selectedPracticeSectionID) || DATA.sessions[0];
+    const selectedSession = practiceSections.find((session) => session.id === selectedPracticeSectionID) || practiceSections[0];
     renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
+    const addButton = $("#add-practice-section");
+    if (addButton) {
+      addButton.disabled = !guidedBlocksReady || practiceSections.length >= 20;
+      addButton.title = practiceSections.length >= 20 ? "Today’s plan already has 20 sections" : "Add a cloud-synced section";
+    }
   }
 
   function renderActiveSection(session, block) {
@@ -1112,6 +1140,81 @@
     $("#level-down").addEventListener("click", () => changeSkillLevel(-1));
   }
 
+  function setupPracticeSectionCreator() {
+    const dialog = $("#section-dialog");
+    const form = $("#section-form");
+    const openButton = $("#add-practice-section");
+    const status = $("#section-form-status");
+    if (!dialog || !form || !openButton || !status) return;
+
+    const closeDialog = () => {
+      status.textContent = "";
+      dialog.close();
+    };
+    openButton.addEventListener("click", () => {
+      if (!guidedBlocksReady) {
+        showToast("The practice plan is still syncing");
+        return;
+      }
+      dialog.showModal();
+      $("#new-section-title")?.focus();
+    });
+    $("#close-section-dialog")?.addEventListener("click", closeDialog);
+    $("#cancel-section-dialog")?.addEventListener("click", closeDialog);
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = $("button[type='submit']", form);
+      const title = $("#new-section-title").value.trim();
+      const instructions = $("#new-section-instructions").value.trim();
+      const type = $("#new-section-type").value;
+      const minutes = Number($("#new-section-minutes").value);
+      const presets = {
+        fundamentals: { category: "fundamentals", track: "trumpet" },
+        technique: { category: "technique", track: "trumpet" },
+        scales: { category: "scales", track: "language" },
+        listening: { category: "listening", track: "musician" },
+        tune: { category: "repertoire", track: "musician" },
+        improvisation: { category: "improvisation", track: "language" },
+        other: { category: "general", track: "musician" },
+      };
+      if (!title || !Number.isInteger(minutes) || minutes < 1 || minutes > 360 || practiceSections.length >= 20) {
+        status.textContent = practiceSections.length >= 20 ? "Today’s plan already has 20 sections." : "Add a title and a target from 1 to 360 minutes.";
+        return;
+      }
+      if (typeof globalThis.JazzPracticeSession?.ensureGuidedBlocks !== "function") {
+        status.textContent = "The private practice service is still connecting.";
+        return;
+      }
+      const blockKey = `custom-${crypto.randomUUID()}`;
+      const position = Math.min(99, Math.max(-1, ...practiceSections.map((section) => Number(section.position ?? -1))) + 1);
+      submit.disabled = true;
+      status.textContent = "Adding section…";
+      try {
+        const preset = presets[type] || presets.other;
+        const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), [{
+          blockKey,
+          position,
+          title,
+          instructions,
+          category: preset.category,
+          track: preset.track,
+          targetMinutes: minutes,
+        }]);
+        applyPracticeBlocks(result.blocks || []);
+        selectedPracticeSectionID = blockKey;
+        form.reset();
+        closeDialog();
+        renderSessions();
+        showToast(`${title} added to today’s plan`);
+      } catch (error) {
+        status.textContent = `Could not add section: ${error.message}`;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  }
+
   function changeSkillLevel(direction) {
     const skill = DATA.skills.find((item) => item.id === activeSkillId);
     if (!skill || !skillUnlocked(skill)) return;
@@ -1175,6 +1278,7 @@
 
   renderRoadmap();
   setupDialogs();
+  setupPracticeSectionCreator();
   setupDataActions();
   addEventListener("jazz:activity-logged", (event) => {
     const activity = event.detail;
@@ -1222,7 +1326,7 @@
   addEventListener("online", syncCompletedGuidedBlocks);
   const animateGuidedTimers = () => {
     tickGuidedTimers();
-    if (DATA.sessions.some((session) => timerFor(session).running)) updateWeekLive();
+    if (practiceSections.some((session) => timerFor(session).running)) updateWeekLive();
     requestAnimationFrame(animateGuidedTimers);
   };
   requestAnimationFrame(animateGuidedTimers);

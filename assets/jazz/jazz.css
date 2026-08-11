@@ -781,6 +781,10 @@ footer p[data-tone="offline"] { color: var(--red); }
 .workspace-label label { margin: 0; color: var(--ink); font: 600 18px/1.2 var(--serif); }
 .workspace-label > span { color: var(--faint); font: 8px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .session-list { display: grid; gap: 8px; }
+.add-practice-section { width: 100%; min-height: 62px; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 8px; border: 1px dashed rgba(181, 147, 91, 0.42); border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; font: 600 9px var(--mono); letter-spacing: 0.11em; text-transform: uppercase; transition: border-color 140ms ease, color 140ms ease, background 140ms ease; }
+.add-practice-section span { color: var(--brass); font-size: 16px; line-height: 1; }
+.add-practice-section:hover { border-color: var(--brass); background: rgba(181, 147, 91, 0.06); color: var(--brass-light); }
+.add-practice-section:disabled { cursor: default; opacity: 0.4; }
 .plan-card { min-width: 0; border: 1px solid var(--line); background: var(--panel); transition: border-color 140ms ease, background 140ms ease; }
 .plan-card.selected { border-color: var(--brass); background: #22201e; }
 .plan-card.running { border-color: var(--green); }
@@ -838,6 +842,23 @@ footer p[data-tone="offline"] { color: var(--red); }
 .session-reflection textarea:focus { outline: 1px solid var(--brass); border-color: var(--brass); }
 .session-reflection .button { margin-top: 12px; border-radius: 2px; }
 .today-week-data { display: none !important; }
+.virtuoso-today .section-dialog { width: min(620px, calc(100vw - 32px)); padding: 34px; border-radius: 4px; background: #1c1b1c; }
+.section-dialog h2 { font-family: var(--serif); font-weight: 600; }
+.section-form { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 18px 16px; margin-top: 28px; }
+.section-form label { display: grid; gap: 7px; }
+.section-form label > span { color: var(--muted); font: 8px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.section-form input,
+.section-form select,
+.section-form textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 2px; background: #151415; color: var(--ink); padding: 11px 12px; font: 12px/1.5 var(--sans); }
+.section-form input:focus,
+.section-form select:focus,
+.section-form textarea:focus { outline: 1px solid var(--brass); border-color: var(--brass); }
+.section-form-wide,
+.section-form-status,
+.section-form-actions { grid-column: 1 / -1; }
+.section-form-status { min-height: 18px; margin: -4px 0 0; color: var(--red); font: 9px var(--mono); }
+.section-form-actions { margin-top: -4px; }
+.section-form-actions .button { border-radius: 2px; }
 
 @media (max-width: 1100px) {
   .virtuoso-today main { margin-left: 218px; }
@@ -871,6 +892,11 @@ footer p[data-tone="offline"] { color: var(--red); }
   .selected-section-card .section-recording-head { align-items: flex-start; }
   .selected-section-card .section-live-audio { grid-template-columns: 1fr; }
   .session-reflection { padding: 18px; }
+  .virtuoso-today .section-dialog { padding: 28px 20px 22px; }
+  .section-form { grid-template-columns: 1fr; }
+  .section-form-wide,
+  .section-form-status,
+  .section-form-actions { grid-column: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

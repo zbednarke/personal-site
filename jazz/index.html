@@ -112,6 +112,7 @@
         <section class="practice-plan" aria-labelledby="practice-plan-title">
           <div class="workspace-label"><h2 id="practice-plan-title">Practice plan</h2><span>Recording drives practice time</span></div>
           <div class="session-list" id="session-list" aria-live="polite"></div>
+          <button class="add-practice-section" id="add-practice-section" type="button"><span aria-hidden="true">＋</span>Add section</button>
         </section>
 
         <aside class="active-stage" aria-label="Selected practice section">
@@ -254,6 +255,21 @@
       <button class="button button-quiet" id="level-down" type="button">− Level</button>
       <button class="button button-primary" id="level-up" type="button">Complete next level</button>
     </div>
+  </dialog>
+
+  <dialog class="dialog section-dialog" id="section-dialog" aria-labelledby="section-dialog-title">
+    <button class="dialog-close" id="close-section-dialog" type="button" aria-label="Close add section">×</button>
+    <p class="eyebrow">Today’s practice plan</p>
+    <h2 id="section-dialog-title">Add a section</h2>
+    <p class="dialog-copy">Create another focused block for today. Notes, recordings, and recorded practice time will sync with the rest of the session.</p>
+    <form class="section-form" id="section-form">
+      <label><span>Section title</span><input id="new-section-title" name="title" maxlength="160" required placeholder="Ear training"></label>
+      <label><span>Type</span><select id="new-section-type" name="type"><option value="fundamentals">Fundamentals</option><option value="technique">Technique</option><option value="scales">Scales</option><option value="listening">Listening</option><option value="tune">Tune / repertoire</option><option value="improvisation">Improvisation</option><option value="other">Other</option></select></label>
+      <label><span>Target minutes</span><input id="new-section-minutes" name="minutes" type="number" min="1" max="360" value="10" required></label>
+      <label class="section-form-wide"><span>Plan or instructions</span><textarea id="new-section-instructions" name="instructions" maxlength="2000" rows="4" placeholder="What will you work on?"></textarea></label>
+      <p class="section-form-status" id="section-form-status" role="status"></p>
+      <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-section-dialog" type="button">Cancel</button><button class="button button-primary" type="submit">Add section</button></div>
+    </form>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
