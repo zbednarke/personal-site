@@ -38,8 +38,7 @@
   let activeSectionRecordingID = "";
   let activeSectionRecordingMessage = "";
   let activeSectionRecordingPhase = "";
-  let failedSectionRecordingID = "";
-  let failedSectionRecordingMessage = "";
+  const sectionUploadJobs = new Map();
   let recordingTimerSessionID = "";
   let selectedPracticeSectionID = "";
 
@@ -502,6 +501,40 @@
     return (block?.recordings || []).filter((recording) => recording.status === "ready" || recording.status === "uploading");
   }
 
+  function uploadJobsForBlock(block) {
+    if (!block) return [];
+    return [...sectionUploadJobs.values()].filter((job) => job.blockId === block.id);
+  }
+
+  function reservedTakeNumbers(block) {
+    const numbers = new Set(activeBlockRecordings(block).map((recording) => Number(recording.takeNumber)).filter((number) => Number.isFinite(number) && number > 0));
+    uploadJobsForBlock(block).forEach((job) => numbers.add(Number(job.takeNumber)));
+    return numbers;
+  }
+
+  function activeBlockTakeCount(block) {
+    const recordings = activeBlockRecordings(block);
+    const recordedTakeNumbers = new Set(recordings.map((recording) => Number(recording.takeNumber)).filter((number) => Number.isFinite(number) && number > 0));
+    const transientTakes = uploadJobsForBlock(block).filter((job) => !recordedTakeNumbers.has(Number(job.takeNumber))).length;
+    return recordings.length + transientTakes;
+  }
+
+  function nextBlockTakeNumber(block) {
+    const reserved = reservedTakeNumbers(block);
+    for (let takeNumber = 1; takeNumber <= 5; takeNumber += 1) {
+      if (!reserved.has(takeNumber)) return takeNumber;
+    }
+    return 6;
+  }
+
+  function sectionUploadMarkup(block) {
+    return uploadJobsForBlock(block).map((job) => `
+      <div class="section-upload-job" data-upload-job="${job.id}" data-tone="${job.phase === "failed" ? "error" : "active"}">
+        <span>Take ${job.takeNumber} · ${escapeHTML(job.message)}</span>
+        ${job.canRetry ? `<button type="button" data-retry-upload="${job.id}">Retry upload</button>` : ""}
+      </div>`).join("");
+  }
+
   function wireSectionTools(card, session, block) {
     const notes = $("[data-section-notes]", card);
     if (notes) {
@@ -510,20 +543,15 @@
     }
     const recordButton = $("[data-section-record]", card);
     if (recordButton) recordButton.addEventListener("click", () => {
-      if (failedSectionRecordingID === block?.id) {
-        globalThis.JazzRecording?.retry();
-        return;
-      }
       if (activeSectionRecordingID === block?.id) {
-        globalThis.JazzRecording?.stop();
+        if (activeSectionRecordingPhase === "recording") globalThis.JazzRecording?.stop();
         return;
       }
       if (!block || !globalThis.JazzRecording?.startForBlock) {
         showToast("Section recorder is still connecting");
         return;
       }
-      const recordings = activeBlockRecordings(block);
-      if (recordings.length >= 5) {
+      if (activeBlockTakeCount(block) >= 5) {
         showToast("This section already has five recordings");
         return;
       }
@@ -536,8 +564,11 @@
         track: session.track,
         tuneId: session.tuneId || "",
         skillIds: session.skillIds || [],
-        takeNumber: recordings.length + 1,
+        takeNumber: nextBlockTakeNumber(block),
       });
+    });
+    $$('[data-retry-upload]', card).forEach((button) => {
+      button.addEventListener("click", () => globalThis.JazzRecording?.retry(button.dataset.retryUpload));
     });
     $("[data-audio-options]", card)?.addEventListener("click", () => $("#audio-options-dialog")?.showModal());
     $$('[data-section-take]', card).forEach((take) => {
@@ -775,7 +806,7 @@
 
     const goalMinutes = practiceSections.reduce((sum, session) => sum + Number(session.minutes || 0), 0);
     const totalElapsedMs = practiceSections.reduce((sum, session) => sum + elapsedFor(timerFor(session)), 0);
-    const totalTakes = practiceSections.reduce((sum, session) => sum + activeBlockRecordings(guidedBlockFor(session)).length, 0);
+    const totalTakes = practiceSections.reduce((sum, session) => sum + activeBlockTakeCount(guidedBlockFor(session)), 0);
     const practicedMinutes = (totalElapsedMs / 60000).toFixed(1);
     setText("today-date", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }));
     setText("today-total-minutes", practicedMinutes);
@@ -789,12 +820,13 @@
       const timer = timerFor(session);
       const complete = timer.completed;
       const block = guidedBlockFor(session);
-      const activeRecordings = activeBlockRecordings(block);
+      const takeCount = activeBlockTakeCount(block);
+      const uploadJobs = uploadJobsForBlock(block);
       const selected = session.id === selectedPracticeSectionID;
       const recordingHere = activeSectionRecordingID === block?.id;
       const recordingStatus = recordingHere
-        ? (activeSectionRecordingPhase === "uploading" ? "Uploading" : (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording"))
-        : "";
+        ? (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording")
+        : (uploadJobs.some((job) => job.phase === "failed") ? "Upload failed" : (uploadJobs.length ? "Uploading" : ""));
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
       const card = document.createElement("article");
@@ -803,7 +835,7 @@
       card.innerHTML = `
         <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(session.title)}">
           <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
-          <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${activeRecordings.length} take${activeRecordings.length === 1 ? "" : "s"}</small></span>
+          <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
           <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
           <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
         </button>`;
@@ -828,18 +860,19 @@
     if (!panel || !session) return;
     const timer = timerFor(session);
     const complete = timer.completed;
-    const activeRecordings = activeBlockRecordings(block);
+    const takeCount = activeBlockTakeCount(block);
+    const uploadJobs = uploadJobsForBlock(block);
     const recordingHere = activeSectionRecordingID === block?.id;
-    const uploadingHere = recordingHere && activeSectionRecordingPhase === "uploading";
     const recordingActionLocked = activeSectionRecordingID && activeSectionRecordingPhase && !recordingHere
-      && (activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing" || activeSectionRecordingPhase === "uploading");
+      && (activeSectionRecordingPhase === "starting" || activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing");
     const recordingOwner = recordingActionLocked ? sessionForRecording(activeSectionRecordingID) : null;
-    const failedHere = failedSectionRecordingID === block?.id;
+    const processingHere = recordingHere && activeSectionRecordingPhase !== "recording";
+    const failedHere = uploadJobs.some((job) => job.phase === "failed");
     const targetMs = session.minutes * 60 * 1000;
     const elapsedMs = elapsedFor(timer);
     const stateLabel = recordingHere
-      ? (uploadingHere ? "Uploading take" : (activeSectionRecordingPhase === "recording" ? "Recording now" : "Processing take"))
-      : (failedHere ? "Upload needs attention" : (complete ? "Goal met" : (elapsedMs > 0 ? "In progress" : "Ready")));
+      ? (activeSectionRecordingPhase === "recording" ? "Recording now" : "Processing take")
+      : (failedHere ? "Upload needs attention" : (uploadJobs.length ? "Uploading in background" : (complete ? "Goal met" : (elapsedMs > 0 ? "In progress" : "Ready"))));
     setText("current-section-state", stateLabel);
 
     panel.replaceChildren();
@@ -847,7 +880,7 @@
       const banner = document.createElement("aside");
       banner.className = "background-recording-banner";
       banner.innerHTML = `
-        <span><em>${activeSectionRecordingPhase === "uploading" ? "Uploading" : (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording continues")}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
+        <span><em>${activeSectionRecordingPhase === "processing" ? "Processing" : "Recording continues"}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
         <div><button type="button" data-return-to-recording>Return to recorder</button>${activeSectionRecordingPhase === "recording" ? '<button type="button" class="stop-background-recording" data-stop-background-recording>Stop take</button>' : ""}</div>`;
       $("[data-return-to-recording]", banner).addEventListener("click", () => {
         selectedPracticeSectionID = recordingOwner.id;
@@ -875,10 +908,11 @@
       </div>
       <div class="section-recording-panel">
         <div class="section-recording-head">
-          <span><strong>Section takes</strong><em>${activeRecordings.length} / 5</em></span>
-          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Audio input options" title="Audio input options">⚙</button><button class="section-record-button${recordingHere && !uploadingHere ? " recording" : ""}" data-section-record type="button" ${!block || uploadingHere || recordingActionLocked || (activeRecordings.length >= 5 && !recordingHere && !failedHere) ? "disabled" : ""}>${uploadingHere ? "Uploading…" : (recordingHere ? "Stop recording" : (recordingActionLocked ? "Recorder busy" : (failedHere ? "Retry upload" : "+ Record take")))}</button></div>
+          <span><strong>Section takes</strong><em>${takeCount} / 5</em></span>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Audio input options" title="Audio input options">⚙</button><button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
         </div>
-        ${(recordingHere && activeSectionRecordingMessage) || (failedHere && failedSectionRecordingMessage) ? `<p class="section-recording-state">${escapeHTML(failedHere ? failedSectionRecordingMessage : activeSectionRecordingMessage)}</p>` : ""}
+        ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
+        ${sectionUploadMarkup(block)}
         <div class="section-take-list">${sectionRecordingMarkup(block)}</div>
       </div>
       <label class="section-notes-field">
@@ -1322,23 +1356,30 @@
       endRecordingPractice(detail.blockId);
     }
     if (!detail.blockId) return;
-    if (detail.phase === "uploading" && detail.blockId === activeSectionRecordingID && activeSectionRecordingPhase === "uploading") {
-      activeSectionRecordingMessage = detail.message || "";
-      return;
-    }
-    if (detail.phase === "error" && detail.canRetry) {
-      failedSectionRecordingID = detail.blockId;
-      failedSectionRecordingMessage = detail.message || "Upload failed. The take is safe in this tab.";
-    } else if ((detail.phase === "uploading" || detail.phase === "complete") && failedSectionRecordingID === detail.blockId) {
-      failedSectionRecordingID = "";
-      failedSectionRecordingMessage = "";
-    }
     activeSectionRecordingID = detail.phase === "idle" || detail.phase === "complete" || detail.phase === "error" ? "" : detail.blockId;
     activeSectionRecordingMessage = detail.message || "";
     activeSectionRecordingPhase = detail.phase || "";
     renderSessions();
   });
-  addEventListener("jazz:recordings-changed", () => hydrateGuidedBlocks());
+  addEventListener("jazz:upload-state", (event) => {
+    const detail = event.detail || {};
+    if (!detail.id || !detail.blockId) return;
+    sectionUploadJobs.set(detail.id, detail);
+    const existing = document.querySelector(`[data-upload-job="${detail.id}"]`);
+    if (existing && detail.phase === "uploading") {
+      const message = $("span", existing);
+      if (message) message.textContent = `Take ${detail.takeNumber} · ${detail.message}`;
+      return;
+    }
+    renderSessions();
+  });
+  addEventListener("jazz:recordings-changed", async () => {
+    await hydrateGuidedBlocks();
+    sectionUploadJobs.forEach((job, id) => {
+      if (job.phase === "complete") sectionUploadJobs.delete(id);
+    });
+    renderSessions();
+  });
   renderAll();
   addEventListener("online", flushOutbox);
   addEventListener("online", syncCompletedGuidedBlocks);

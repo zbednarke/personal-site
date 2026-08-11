@@ -273,6 +273,9 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .section-record-button.recording { border-color: var(--red); background: rgba(231, 121, 126, 0.12); color: var(--red); }
 .section-record-button:disabled { cursor: default; opacity: 0.42; }
 .section-recording-state { margin: 8px 0 0; color: var(--brass-light); font: 10px var(--mono); }
+.section-upload-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 7px 9px; border: 1px solid rgba(181, 147, 91, 0.22); border-radius: 3px; background: rgba(181, 147, 91, 0.06); color: var(--brass-light); font: 9px/1.4 var(--mono); }
+.section-upload-job[data-tone="error"] { border-color: rgba(231, 121, 126, 0.42); color: var(--red); }
+.section-upload-job button { flex: 0 0 auto; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .section-live-audio { margin-top: 10px; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(170px, 0.8fr); gap: 9px; }
 .section-take-list { display: grid; gap: 5px; margin-top: 9px; }
 .section-empty { margin: 11px 0 0; color: var(--faint); font-size: 10px; }
