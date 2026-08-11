@@ -32,12 +32,12 @@
     element.className = `cloud-status${tone ? ` ${tone}` : ""}`;
   }
 
-  function setRecorderState(message, phase = "status", canRetry = false, notify = true, extra = {}) {
+  function setRecorderState(message, phase = "status", canRetry = false, notify = true) {
     const state = $("#recording-state");
     if (state) state.textContent = message;
     if (!notify) return;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
-      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry, ...extra },
+      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
     }));
   }
 
@@ -372,7 +372,7 @@
     captureFinalizing = true;
     const recorder = losslessRecorder;
     losslessRecorder = null;
-    setRecorderState("Cancelling and discarding the take...", "cancelling", false, true, { discardPractice: true });
+    setRecorderState("Cancelling and discarding the take...", "cancelling");
     try {
       await recorder.cancel();
     } catch {
@@ -381,7 +381,7 @@
       stopCapture();
       captureFinalizing = false;
     }
-    setRecorderState("Take cancelled - no audio was uploaded", "cancelled", false, true, { discardPractice: true });
+    setRecorderState("Take cancelled - no audio was uploaded", "cancelled");
     activeBlockContext = null;
     return true;
   }

@@ -40,7 +40,6 @@
   let activeSectionRecordingPhase = "";
   const sectionUploadJobs = new Map();
   let recordingTimerSessionID = "";
-  let recordingTimerSnapshot = null;
   let selectedPracticeSectionID = "";
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -569,7 +568,7 @@
       });
     });
     $("[data-section-cancel]", card)?.addEventListener("click", () => {
-      if (confirm("Cancel and permanently discard this take? It will not be uploaded or counted as practice time.")) {
+      if (confirm("Cancel and permanently discard this take? It will not be uploaded, but the practice time will remain counted.")) {
         globalThis.JazzRecording?.cancel();
       }
     });
@@ -658,7 +657,6 @@
     if (!session) return;
     const timer = timerFor(session);
     recordingTimerSessionID = session.id;
-    recordingTimerSnapshot = globalThis.JazzPracticeTimerPolicy.snapshot(timer, session.id);
     stopOtherRecordingTimers(session.id);
     if (!timer.running) {
       timer.running = true;
@@ -684,25 +682,11 @@
       timer.completedAt = new Date().toISOString();
     }
     recordingTimerSessionID = "";
-    recordingTimerSnapshot = null;
     persistTimerState();
     syncGuidedPracticeEntry(session);
     saveTimerBlock(session, timer);
     renderAll();
     logGuidedBlockToCloud(session);
-  }
-
-  function cancelRecordingPractice(blockID) {
-    const session = practiceSections.find((candidate) => candidate.id === recordingTimerSessionID);
-    if (!session || (blockID && guidedBlockFor(session)?.id !== blockID)) return;
-    const timer = timerFor(session);
-    globalThis.JazzPracticeTimerPolicy.restoreCancelled(timer, recordingTimerSnapshot, session.id);
-    recordingTimerSessionID = "";
-    recordingTimerSnapshot = null;
-    persistTimerState();
-    syncGuidedPracticeEntry(session);
-    saveTimerBlock(session, timer);
-    renderAll();
   }
 
   function checkpointRecordingPractice() {
@@ -908,7 +892,7 @@
         renderSessions();
       });
       $("[data-cancel-background-recording]", banner)?.addEventListener("click", () => {
-        if (confirm("Cancel and permanently discard this take? It will not be uploaded or counted as practice time.")) {
+        if (confirm("Cancel and permanently discard this take? It will not be uploaded, but the practice time will remain counted.")) {
           globalThis.JazzRecording?.cancel();
         }
       });
@@ -1379,8 +1363,7 @@
     if (detail.phase === "recording" && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
       beginRecordingPractice(detail.blockId);
     } else if (detail.phase !== "recording" && recordingTimerSessionID) {
-      if (detail.discardPractice) cancelRecordingPractice(detail.blockId);
-      else endRecordingPractice(detail.blockId);
+      endRecordingPractice(detail.blockId);
     }
     if (!detail.blockId) return;
     activeSectionRecordingID = detail.phase === "idle" || detail.phase === "complete" || detail.phase === "cancelled" || detail.phase === "error" ? "" : detail.blockId;
