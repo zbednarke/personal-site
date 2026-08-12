@@ -104,7 +104,7 @@ func newDevHandler(cfg devConfig) (http.Handler, error) {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
 		response.Header().Set("Referrer-Policy", "no-referrer")
-		response.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
+		response.Header().Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
 		if strings.HasPrefix(request.URL.Path, "/jazz/api/") {
 			proxy.ServeHTTP(response, request)
 			return

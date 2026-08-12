@@ -4,11 +4,21 @@
   const DATA = globalThis.JAZZ_DATA;
   const API_BASE = "./api/v1";
   const MICROPHONE_STORAGE_KEY = "zach-jazz-microphone-v1";
+  const CAMERA_STORAGE_KEY = "zach-jazz-camera-v1";
+  const RECORDING_MODE_STORAGE_KEY = "zach-jazz-recording-mode-v1";
+  const VIDEO_RESOLUTION_STORAGE_KEY = "zach-jazz-video-resolution-v1";
+  const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
   const { MAX_TAKE_DURATION_MS, shouldAutoFinish } = globalThis.JazzRecordingPolicy;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
   let monitorStream = null;
+  let cameraStream = null;
+  let recordingCameraStream = null;
+  let videoRecordingStream = null;
+  let videoRecorder = null;
+  let videoChunks = [];
+  let videoContentType = "";
   let losslessRecorder = null;
   let startedAt = 0;
   let recordedAt = "";
@@ -70,6 +80,7 @@
   async function updateMicrophones() {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const microphones = devices.filter((device) => device.kind === "audioinput");
+    const cameras = devices.filter((device) => device.kind === "videoinput");
     const select = $("#microphone-select");
     if (!select) return;
     const selected = select.value || localStorage.getItem(MICROPHONE_STORAGE_KEY) || "";
@@ -80,6 +91,51 @@
     if ([...select.options].some((option) => option.value === selected)) select.value = selected;
     const activeName = $("#active-input-name");
     if (activeName) activeName.textContent = select.selectedOptions[0]?.textContent || "Default microphone";
+    const cameraSelect = $("#camera-select");
+    if (!cameraSelect) return;
+    const selectedCamera = cameraSelect.value || localStorage.getItem(CAMERA_STORAGE_KEY) || "";
+    cameraSelect.replaceChildren(new Option("Default camera", ""));
+    cameras.forEach((camera, index) => cameraSelect.add(new Option(camera.label || `Camera ${index + 1}`, camera.deviceId)));
+    if ([...cameraSelect.options].some((option) => option.value === selectedCamera)) cameraSelect.value = selectedCamera;
+  }
+
+  function recordingMode() {
+    return $("#recording-mode")?.value === "video" ? "video" : "audio";
+  }
+
+  function selectedVideoProfile() {
+    return $("#video-resolution")?.value === "720"
+      ? { width: 1280, height: 720, frameRate: 30, bitsPerSecond: 2500000 }
+      : { width: 1920, height: 1080, frameRate: 30, bitsPerSecond: 5000000 };
+  }
+
+  function selectedVideoConstraints() {
+    const deviceID = $("#camera-select")?.value || "";
+    const profile = selectedVideoProfile();
+    return {
+      ...(deviceID ? { deviceId: { exact: deviceID } } : {}),
+      width: { ideal: profile.width },
+      height: { ideal: profile.height },
+      frameRate: { ideal: profile.frameRate, max: profile.frameRate },
+    };
+  }
+
+  function syncVideoOptions() {
+    const videoEnabled = recordingMode() === "video";
+    document.querySelectorAll("[data-video-option]").forEach((field) => { field.hidden = !videoEnabled; });
+    const previewShell = $("#camera-preview-shell");
+    if (previewShell) previewShell.hidden = !videoEnabled || !(cameraStream?.active || recordingCameraStream?.active);
+    const livePreview = $("#live-camera-preview");
+    if (livePreview) livePreview.hidden = !videoEnabled || !(cameraStream?.active || recordingCameraStream?.active);
+  }
+
+  function attachCameraPreview(activeStream) {
+    [$("#camera-preview"), $("#live-camera-preview")].forEach((video) => {
+      if (!video) return;
+      video.srcObject = activeStream || null;
+      if (activeStream) video.play().catch(() => {});
+    });
+    syncVideoOptions();
   }
 
   function setMonitorStatus(message, tone = "") {
@@ -237,10 +293,13 @@
   function stopMonitoring() {
     monitorStream?.getTracks().forEach((track) => track.stop());
     monitorStream = null;
+    cameraStream?.getTracks().forEach((track) => track.stop());
+    cameraStream = null;
+    attachCameraPreview(recordingCameraStream?.active ? recordingCameraStream : null);
     if (!stream) stopLiveAnalysis();
     const toggle = $("#toggle-input-monitor");
-    if (toggle) toggle.textContent = "Start live tuner";
-    setMonitorStatus("Live tuner stopped.");
+    if (toggle) toggle.textContent = "Start preview & tuner";
+    setMonitorStatus("Input preview stopped.");
   }
 
   async function startMonitoring() {
@@ -256,16 +315,24 @@
       if (monitorStream) stopMonitoring();
       setMonitorStatus("Requesting microphone access…");
       monitorStream = await navigator.mediaDevices.getUserMedia({ audio: selectedAudioConstraints() });
+      if (recordingMode() === "video") {
+        setMonitorStatus("Requesting camera access…");
+        cameraStream = await navigator.mediaDevices.getUserMedia({ video: selectedVideoConstraints() });
+        attachCameraPreview(cameraStream);
+      }
       await updateMicrophones();
       startLevelMeter(monitorStream);
       const toggle = $("#toggle-input-monitor");
-      if (toggle) toggle.textContent = "Stop live tuner";
-      setMonitorStatus("Live tuner active — play to verify the selected input.", "live");
+      if (toggle) toggle.textContent = "Stop preview & tuner";
+      setMonitorStatus(recordingMode() === "video" ? "Camera and microphone ready — play to verify the input." : "Live tuner active — play to verify the selected input.", "live");
     } catch (error) {
       monitorStream?.getTracks().forEach((track) => track.stop());
       monitorStream = null;
+      cameraStream?.getTracks().forEach((track) => track.stop());
+      cameraStream = null;
+      attachCameraPreview(null);
       stopLiveAnalysis();
-      setMonitorStatus(error.name === "NotAllowedError" ? "Microphone permission was not granted." : "Could not start the selected microphone.", "error");
+      setMonitorStatus(error.name === "NotAllowedError" ? "Camera or microphone permission was not granted." : "Could not start the selected camera and microphone.", "error");
     }
   }
 
@@ -276,6 +343,10 @@
     autoStopID = null;
     stream?.getTracks().forEach((track) => track.stop());
     stream = null;
+    recordingCameraStream?.getTracks().forEach((track) => track.stop());
+    recordingCameraStream = null;
+    videoRecordingStream = null;
+    attachCameraPreview(cameraStream?.active ? cameraStream : null);
     if (monitorStream?.active) setMonitorStatus("Live tuner active — play to verify the selected input.", "live");
     else stopLiveAnalysis();
     $("#recording-light")?.classList.remove("active");
@@ -283,6 +354,81 @@
     const stopButton = $("#stop-recording");
     if (startButton) startButton.disabled = false;
     if (stopButton) stopButton.disabled = true;
+  }
+
+  function preferredVideoType() {
+    if (!globalThis.MediaRecorder) return "";
+    return [
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/webm",
+      "video/mp4",
+    ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function startVideoRecording(audioStream, activeCameraStream) {
+    const mimeType = preferredVideoType();
+    if (!mimeType) throw new Error("Video recording is not supported in this browser");
+    videoRecordingStream = new MediaStream([
+      ...activeCameraStream.getVideoTracks(),
+      ...audioStream.getAudioTracks(),
+    ]);
+    const profile = selectedVideoProfile();
+    videoChunks = [];
+    videoRecorder = new MediaRecorder(videoRecordingStream, {
+      mimeType,
+      videoBitsPerSecond: profile.bitsPerSecond,
+      audioBitsPerSecond: 192000,
+    });
+    videoContentType = videoRecorder.mimeType || mimeType;
+    videoRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) videoChunks.push(event.data);
+    });
+    videoRecorder.start(1000);
+  }
+
+  function finishVideoRecording() {
+    if (!videoRecorder) return Promise.resolve(null);
+    const recorder = videoRecorder;
+    const settings = recordingCameraStream?.getVideoTracks()[0]?.getSettings?.() || {};
+    return new Promise((resolve, reject) => {
+      recorder.addEventListener("error", (event) => reject(event.error || new Error("Video recording failed")), { once: true });
+      recorder.addEventListener("stop", () => {
+        const blob = new Blob(videoChunks, { type: videoContentType.split(";")[0] });
+        const codecMatch = /codecs?=([^;]+)/i.exec(videoContentType);
+        videoRecorder = null;
+        videoChunks = [];
+        resolve({
+          blob,
+          contentType: videoContentType,
+          codec: codecMatch?.[1] || "",
+          width: Number(settings.width || selectedVideoProfile().width),
+          height: Number(settings.height || selectedVideoProfile().height),
+          frameRate: Number(settings.frameRate || selectedVideoProfile().frameRate),
+        });
+      }, { once: true });
+      if (recorder.state === "inactive") recorder.dispatchEvent(new Event("stop"));
+      else recorder.stop();
+    });
+  }
+
+  function discardVideoRecording() {
+    if (!videoRecorder) {
+      videoChunks = [];
+      return Promise.resolve();
+    }
+    const recorder = videoRecorder;
+    videoRecorder = null;
+    return new Promise((resolve) => {
+      const finish = () => {
+        videoChunks = [];
+        resolve();
+      };
+      recorder.addEventListener("stop", finish, { once: true });
+      if (recorder.state === "inactive") finish();
+      else recorder.stop();
+    });
   }
 
   async function startRecording() {
@@ -305,8 +451,15 @@
         await updateMicrophones();
         startLevelMeter(stream);
       }
+      if (recordingMode() === "video") {
+        recordingCameraStream = cameraStream?.active
+          ? cameraStream.clone()
+          : await navigator.mediaDevices.getUserMedia({ video: selectedVideoConstraints() });
+        attachCameraPreview(recordingCameraStream);
+      }
       losslessRecorder = new globalThis.JazzLosslessRecorder();
       await losslessRecorder.start(stream);
+      if (recordingCameraStream) startVideoRecording(stream, recordingCameraStream);
       recordedAt = new Date().toISOString();
       startedAt = performance.now();
       updateTimer();
@@ -318,10 +471,18 @@
       const stopButton = $("#stop-recording");
       if (startButton) startButton.disabled = true;
       if (stopButton) stopButton.disabled = false;
-      setRecorderState("Recording lossless 24-bit audio - play the take", "recording");
+      setRecorderState(recordingCameraStream
+        ? "Recording video + lossless 24-bit audio - play the take"
+        : "Recording lossless 24-bit audio - play the take", "recording");
     } catch (error) {
+      const recorder = losslessRecorder;
+      losslessRecorder = null;
+      await Promise.all([
+        recorder?.cancel?.().catch(() => {}),
+        discardVideoRecording().catch(() => {}),
+      ]);
       stopCapture();
-      setRecorderState(error.name === "NotAllowedError" ? "Microphone permission was not granted" : "Could not start the microphone", "error");
+      setRecorderState(error.name === "NotAllowedError" ? "Camera or microphone permission was not granted" : `Could not start recording: ${error.message}`, "error");
       activeBlockContext = null;
     }
   }
@@ -338,9 +499,14 @@
 
   async function finishRecording(automatic = false) {
     let result;
+    let videoResult;
     try {
-      result = await losslessRecorder.stop();
+      [result, videoResult] = await Promise.all([
+        losslessRecorder.stop(),
+        finishVideoRecording(),
+      ]);
     } catch (error) {
+      await discardVideoRecording().catch(() => {});
       stopCapture();
       losslessRecorder = null;
       captureFinalizing = false;
@@ -360,9 +526,11 @@
       preview.src = previewURL;
       preview.hidden = false;
     }
-    const capture = captureUpload(blob, durationMS, contentType);
+    const capture = captureUpload(blob, durationMS, contentType, videoResult);
     captureFinalizing = false;
-    setRecorderState(automatic ? "Four-hour take captured - uploading in the background" : "Take captured - uploading in the background", "complete");
+    setRecorderState(automatic
+      ? "Four-hour take captured - uploading in the background"
+      : `${videoResult ? "Video take" : "Take"} captured - uploading in the background`, "complete");
     activeBlockContext = null;
     uploadQueue.enqueue(capture);
   }
@@ -374,19 +542,20 @@
     losslessRecorder = null;
     setRecorderState("Cancelling and discarding the take...", "cancelling");
     try {
-      await recorder.cancel();
-    } catch {
-      // The media tracks are still stopped below, so the take remains discarded.
+      await Promise.allSettled([
+        recorder.cancel(),
+        discardVideoRecording(),
+      ]);
     } finally {
       stopCapture();
       captureFinalizing = false;
     }
-    setRecorderState("Take cancelled - no audio was uploaded", "cancelled");
+    setRecorderState("Take cancelled - no media was uploaded; practice time was kept", "cancelled");
     activeBlockContext = null;
     return true;
   }
 
-  function captureUpload(blob, durationMS, contentType) {
+  function captureUpload(blob, durationMS, contentType, videoResult = null) {
     const metadataForm = $("#recording-metadata");
     const metadata = metadataForm ? new FormData(metadataForm) : new FormData();
     const blockContext = activeBlockContext ? { ...activeBlockContext } : null;
@@ -394,6 +563,13 @@
       blob,
       durationMS,
       contentType,
+      mediaKind: videoResult ? "video" : "audio",
+      videoBlob: videoResult?.blob || null,
+      videoContentType: videoResult?.contentType || "",
+      videoCodec: videoResult?.codec || "",
+      videoWidth: videoResult?.width || 0,
+      videoHeight: videoResult?.height || 0,
+      videoFrameRate: videoResult?.frameRate || 0,
       recordedAt,
       sampleRate: recordedSampleRate,
       practiceSessionID: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
@@ -411,6 +587,7 @@
     const initialized = await api("/recordings/init", {
       method: "POST",
       body: JSON.stringify({
+        mediaKind: capture.mediaKind,
         contentType: baseType,
         codec: capture.contentType === "audio/wav" ? "pcm_s24le" : (codecMatch?.[1] || ""),
         sizeBytes: capture.blob.size,
@@ -425,11 +602,31 @@
         skillIds: capture.skillIds,
         takeNumber: capture.takeNumber,
         notes: capture.notes,
+        videoContentType: capture.videoContentType?.split(";")[0] || "",
+        videoCodec: capture.videoCodec,
+        videoSizeBytes: capture.videoBlob?.size || 0,
+        videoWidth: capture.videoWidth,
+        videoHeight: capture.videoHeight,
+        videoFrameRate: capture.videoFrameRate,
       }),
     });
     try {
-      await putBlob(initialized.uploadUrl, capture.blob, baseType, onProgress);
-      await api(`/recordings/${initialized.id}/complete`, { method: "POST", body: "{}" });
+      const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0);
+      const progressFor = (offset, assetBytes) => (percent) => {
+        const uploaded = offset + ((percent / 100) * assetBytes);
+        onProgress(totalBytes ? (uploaded / totalBytes) * 100 : 100);
+      };
+      await putBlob(initialized.uploadUrl, capture.blob, baseType, progressFor(0, capture.blob.size));
+      await completeAsset(initialized.id, "audio");
+      if (capture.videoBlob) {
+        await putBlob(
+          initialized.videoUploadUrl,
+          capture.videoBlob,
+          capture.videoContentType.split(";")[0],
+          progressFor(capture.blob.size, capture.videoBlob.size),
+        );
+        await completeAsset(initialized.id, "video");
+      }
     } catch (error) {
       await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
       throw error;
@@ -476,7 +673,37 @@
     return uploadQueue.retry(id);
   }
 
-  function putBlob(uploadURL, blob, contentType, onProgress = () => {}) {
+  async function putBlob(uploadURL, blob, contentType, onProgress = () => {}) {
+    if (!uploadURL) throw new Error("storage upload session is missing");
+    let offset = 0;
+    while (offset < blob.size) {
+      const end = Math.min(blob.size, offset + UPLOAD_CHUNK_BYTES);
+      const chunk = blob.slice(offset, end, contentType);
+      await putChunk(uploadURL, chunk, contentType, offset, end - 1, blob.size, (loaded) => {
+        onProgress(((offset + loaded) / blob.size) * 100);
+      });
+      offset = end;
+      onProgress((offset / blob.size) * 100);
+    }
+  }
+
+  async function completeAsset(recordingID, asset) {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await api(`/recordings/${recordingID}/complete`, {
+          method: "POST",
+          body: JSON.stringify({ asset }),
+        });
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  }
+
+  function putChunk(uploadURL, blob, contentType, start, end, totalSize, onProgress = () => {}) {
     let lastProgressAt = 0;
     let lastProgressPercent = -1;
     const shouldNotifyProgress = (percent) => {
@@ -491,7 +718,7 @@
       const request = new XMLHttpRequest();
       request.open("PUT", uploadURL);
       request.setRequestHeader("Content-Type", contentType);
-      request.setRequestHeader("Content-Range", `bytes 0-${blob.size - 1}/${blob.size}`);
+      request.setRequestHeader("Content-Range", `bytes ${start}-${end}/${totalSize}`);
       request.upload.addEventListener("progress", (event) => {
         if (!event.lengthComputable) return;
         const percent = Math.round((event.loaded / event.total) * 100);
@@ -499,11 +726,11 @@
         if (notify) {
           lastProgressPercent = percent;
           lastProgressAt = performance.now();
-          onProgress(percent);
+          onProgress(event.loaded);
         }
       });
       request.addEventListener("load", () => {
-        if (request.status >= 200 && request.status < 300) resolve();
+        if (request.status === 308 || (request.status >= 200 && request.status < 300)) resolve();
         else reject(new Error(`storage returned ${request.status}`));
       });
       request.addEventListener("error", () => reject(new Error("network error")));
@@ -537,7 +764,11 @@
         const context = blockTitle
           ? [formatPracticeDate(recording.practiceDate), track].filter(Boolean).join(" · ")
           : [sessionTitle, skill].filter(Boolean).join(" · ");
-        const format = recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType.replace("audio/", "").toUpperCase();
+        const isVideo = recording.mediaKind === "video";
+        const format = isVideo
+          ? `${recording.videoWidth || ""}${recording.videoHeight ? `×${recording.videoHeight}` : ""} video + lossless WAV`
+          : (recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType.replace("audio/", "").toUpperCase());
+        const ready = recording.status === "ready";
         const card = document.createElement("article");
         card.className = "recording-item";
         card.innerHTML = `
@@ -546,10 +777,13 @@
           <p>${escapeHTML(recording.notes || "No listening note yet.")}</p>
           <span class="recording-context">${escapeHTML(context)}</span>
           <div class="recording-item-actions">
-            <button type="button" class="play-recording">Play</button>
+            <button type="button" class="play-recording" data-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${ready ? (isVideo ? "Play video" : "Play") : "Uploading…"}</button>
+            ${isVideo ? `<button type="button" class="play-audio-master" data-asset="audio" ${ready ? "" : "disabled"}>Lossless audio</button>` : ""}
             <button type="button" class="delete-recording">Delete</button>
           </div>`;
-        $(".play-recording", card).addEventListener("click", () => playRecording(recording.id, card));
+        card.querySelectorAll("[data-asset]").forEach((button) => {
+          button.addEventListener("click", () => playRecording(recording.id, card, button.dataset.asset, button));
+        });
         $(".delete-recording", card).addEventListener("click", () => deleteRecording(recording.id));
         library.appendChild(card);
       });
@@ -565,16 +799,21 @@
     return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
-  async function playRecording(id, card) {
-    const button = $(".play-recording", card) || $("[data-section-play]", card);
+  async function playRecording(id, card, asset = "", trigger = null) {
+    const button = trigger || $(".play-recording", card) || $("[data-section-play]", card);
+    const originalLabel = button.textContent;
     button.disabled = true;
     button.textContent = "Loading...";
     try {
-      const result = await api(`/recordings/${id}/playback-url`, { method: "POST", body: "{}" });
-      let player = $("audio", card);
-      if (!player) {
-        player = document.createElement("audio");
+      const query = asset ? `?asset=${encodeURIComponent(asset)}` : "";
+      const result = await api(`/recordings/${id}/playback-url${query}`, { method: "POST", body: "{}" });
+      const tagName = result.contentType?.startsWith("video/") ? "video" : "audio";
+      let player = $("audio, video", card);
+      if (!player || player.tagName.toLowerCase() !== tagName) {
+        player?.remove();
+        player = document.createElement(tagName);
         player.controls = true;
+        if (tagName === "video") player.playsInline = true;
         card.appendChild(player);
       }
       player.src = result.url;
@@ -583,7 +822,7 @@
       setRecorderState(`Playback failed: ${error.message}`);
     } finally {
       button.disabled = false;
-      button.textContent = "Play";
+      button.textContent = originalLabel;
     }
   }
 
@@ -639,6 +878,32 @@
   };
 
   populateMetadata();
+  const recordingModeSelect = $("#recording-mode");
+  const cameraSelect = $("#camera-select");
+  const videoResolutionSelect = $("#video-resolution");
+  if (recordingModeSelect) recordingModeSelect.value = localStorage.getItem(RECORDING_MODE_STORAGE_KEY) === "video" ? "video" : "audio";
+  if (videoResolutionSelect) videoResolutionSelect.value = localStorage.getItem(VIDEO_RESOLUTION_STORAGE_KEY) === "720" ? "720" : "1080";
+  syncVideoOptions();
+
+  async function restartMonitoringIfActive() {
+    if (!monitorStream?.active || stream || captureFinalizing) return;
+    stopMonitoring();
+    await startMonitoring();
+  }
+
+  recordingModeSelect?.addEventListener("change", async () => {
+    localStorage.setItem(RECORDING_MODE_STORAGE_KEY, recordingMode());
+    syncVideoOptions();
+    await restartMonitoringIfActive();
+  });
+  cameraSelect?.addEventListener("change", async () => {
+    localStorage.setItem(CAMERA_STORAGE_KEY, cameraSelect.value);
+    await restartMonitoringIfActive();
+  });
+  videoResolutionSelect?.addEventListener("change", async () => {
+    localStorage.setItem(VIDEO_RESOLUTION_STORAGE_KEY, videoResolutionSelect.value);
+    await restartMonitoringIfActive();
+  });
   const microphoneSelect = $("#microphone-select");
   microphoneSelect?.addEventListener("change", async () => {
     localStorage.setItem(MICROPHONE_STORAGE_KEY, microphoneSelect.value);

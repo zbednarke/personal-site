@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	maxRequestBytes   = 2 << 20
-	maxRecordingBytes = 1 << 30
-	maxDurationMS     = 60 * 60 * 1000
+	maxRequestBytes = 2 << 20
+	maxAudioBytes   = int64(4) << 30
+	maxVideoBytes   = int64(32) << 30
+	maxDurationMS   = 4 * 60 * 60 * 1000
 )
 
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -96,6 +97,7 @@ type stateResponse struct {
 }
 
 type recordingInitRequest struct {
+	MediaKind         string   `json:"mediaKind"`
 	ContentType       string   `json:"contentType"`
 	Codec             string   `json:"codec"`
 	SizeBytes         int64    `json:"sizeBytes"`
@@ -110,30 +112,48 @@ type recordingInitRequest struct {
 	SkillIDs          []string `json:"skillIds"`
 	TakeNumber        int      `json:"takeNumber"`
 	Notes             string   `json:"notes"`
+	VideoContentType  string   `json:"videoContentType"`
+	VideoCodec        string   `json:"videoCodec"`
+	VideoSizeBytes    int64    `json:"videoSizeBytes"`
+	VideoWidth        int      `json:"videoWidth"`
+	VideoHeight       int      `json:"videoHeight"`
+	VideoFrameRate    float64  `json:"videoFrameRate"`
+}
+
+type recordingCompleteRequest struct {
+	Asset string `json:"asset"`
 }
 
 type recordingRow struct {
-	ID            uuid.UUID `json:"id"`
-	ContentType   string    `json:"contentType"`
-	Codec         string    `json:"codec,omitempty"`
-	SizeBytes     int64     `json:"sizeBytes,omitempty"`
-	DurationMS    int       `json:"durationMs,omitempty"`
-	RecordedAt    time.Time `json:"recordedAt"`
-	Status        string    `json:"status"`
-	TuneID        string    `json:"tuneId,omitempty"`
-	MissionID     string    `json:"missionId,omitempty"`
-	SkillIDs      []string  `json:"skillIds"`
-	TakeNumber    int       `json:"takeNumber,omitempty"`
-	Notes         string    `json:"notes,omitempty"`
-	SessionID     string    `json:"practiceSessionId,omitempty"`
-	SessionTitle  string    `json:"practiceSessionTitle,omitempty"`
-	BlockID       string    `json:"practiceBlockId,omitempty"`
-	BlockDate     string    `json:"practiceDate,omitempty"`
-	BlockKey      string    `json:"practiceBlockKey,omitempty"`
-	BlockTitle    string    `json:"practiceBlockTitle,omitempty"`
-	BlockCategory string    `json:"practiceBlockCategory,omitempty"`
-	BlockTrack    string    `json:"practiceBlockTrack,omitempty"`
-	ObjectName    string    `json:"-"`
+	ID               uuid.UUID `json:"id"`
+	ContentType      string    `json:"contentType"`
+	Codec            string    `json:"codec,omitempty"`
+	SizeBytes        int64     `json:"sizeBytes,omitempty"`
+	DurationMS       int       `json:"durationMs,omitempty"`
+	RecordedAt       time.Time `json:"recordedAt"`
+	Status           string    `json:"status"`
+	TuneID           string    `json:"tuneId,omitempty"`
+	MissionID        string    `json:"missionId,omitempty"`
+	SkillIDs         []string  `json:"skillIds"`
+	TakeNumber       int       `json:"takeNumber,omitempty"`
+	Notes            string    `json:"notes,omitempty"`
+	SessionID        string    `json:"practiceSessionId,omitempty"`
+	SessionTitle     string    `json:"practiceSessionTitle,omitempty"`
+	BlockID          string    `json:"practiceBlockId,omitempty"`
+	BlockDate        string    `json:"practiceDate,omitempty"`
+	BlockKey         string    `json:"practiceBlockKey,omitempty"`
+	BlockTitle       string    `json:"practiceBlockTitle,omitempty"`
+	BlockCategory    string    `json:"practiceBlockCategory,omitempty"`
+	BlockTrack       string    `json:"practiceBlockTrack,omitempty"`
+	ObjectName       string    `json:"-"`
+	MediaKind        string    `json:"mediaKind"`
+	VideoContentType string    `json:"videoContentType,omitempty"`
+	VideoCodec       string    `json:"videoCodec,omitempty"`
+	VideoSizeBytes   int64     `json:"videoSizeBytes,omitempty"`
+	VideoWidth       int       `json:"videoWidth,omitempty"`
+	VideoHeight      int       `json:"videoHeight,omitempty"`
+	VideoFrameRate   float64   `json:"videoFrameRate,omitempty"`
+	VideoObjectName  string    `json:"-"`
 }
 
 func main() {
@@ -435,15 +455,42 @@ func validateCampaignState(raw json.RawMessage) error {
 	return nil
 }
 
+func validateRecordingMedia(input recordingInitRequest) (string, string, string, error) {
+	mediaKind := strings.ToLower(strings.TrimSpace(input.MediaKind))
+	if mediaKind == "" {
+		mediaKind = "audio"
+	}
+	audioType := strings.ToLower(strings.TrimSpace(strings.Split(input.ContentType, ";")[0]))
+	if !allowedAudioType(audioType) || input.SizeBytes < 1 || input.SizeBytes > maxAudioBytes || input.DurationMS < 0 || input.DurationMS > maxDurationMS {
+		return "", "", "", errors.New("recording type, size, or duration is not allowed")
+	}
+	if mediaKind == "audio" {
+		if input.VideoSizeBytes != 0 || strings.TrimSpace(input.VideoContentType) != "" {
+			return "", "", "", errors.New("audio recordings cannot include video metadata")
+		}
+		return mediaKind, audioType, "", nil
+	}
+	if mediaKind != "video" {
+		return "", "", "", errors.New("recording media kind is not allowed")
+	}
+	videoType := strings.ToLower(strings.TrimSpace(strings.Split(input.VideoContentType, ";")[0]))
+	if !allowedVideoType(videoType) || input.VideoSizeBytes < 1 || input.VideoSizeBytes > maxVideoBytes ||
+		input.VideoWidth < 1 || input.VideoWidth > 7680 || input.VideoHeight < 1 || input.VideoHeight > 4320 ||
+		input.VideoFrameRate < 1 || input.VideoFrameRate > 120 {
+		return "", "", "", errors.New("video type, size, or dimensions are not allowed")
+	}
+	return mediaKind, audioType, videoType, nil
+}
+
 func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	var input recordingInitRequest
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	baseType := strings.ToLower(strings.TrimSpace(strings.Split(input.ContentType, ";")[0]))
-	if !allowedAudioType(baseType) || input.SizeBytes < 1 || input.SizeBytes > maxRecordingBytes || input.DurationMS < 0 || input.DurationMS > maxDurationMS {
-		writeError(w, http.StatusUnprocessableEntity, "recording type, size, or duration is not allowed")
+	mediaKind, baseType, videoType, err := validateRecordingMedia(input)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	recordedAt, err := time.Parse(time.RFC3339, input.RecordedAt)
@@ -490,38 +537,54 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		}
 		practiceBlockID = &blockID
 	}
-	objectName := fmt.Sprintf("users/%s/%s/%s/source.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
+	objectName := fmt.Sprintf("users/%s/%s/%s/audio-master.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
+	videoObjectName := ""
+	if mediaKind == "video" {
+		videoObjectName = fmt.Sprintf("users/%s/%s/%s/video.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(videoType))
+	}
 	skillJSON, _ := json.Marshal(input.SkillIDs)
 	_, err = app.db.Exec(r.Context(), `
 		INSERT INTO recordings
-		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes)
-		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''))`,
+		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
+		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''),
+		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0))`,
 		recordingID, userID, clean(input.PracticeSessionID, 160), practiceBlockID, app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
 		input.DurationMS, input.SampleRate, input.Channels, recordedAt, clean(input.TuneID, 100), clean(input.MissionID, 100), skillJSON,
-		input.TakeNumber, clean(input.Notes, 500))
+		input.TakeNumber, clean(input.Notes, 500), mediaKind, videoObjectName, videoType, clean(input.VideoCodec, 120), input.VideoSizeBytes,
+		input.VideoWidth, input.VideoHeight, input.VideoFrameRate)
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes, allowedUploadOrigin(r.Header.Get("Origin")))
+	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes, "audio", allowedUploadOrigin(r.Header.Get("Origin")))
 	if err != nil {
 		_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName,
-	})
+	response := map[string]any{"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName}
+	if mediaKind == "video" {
+		videoUploadURL, videoErr := app.createResumableUpload(r.Context(), recordingID, userID, videoObjectName, videoType, input.VideoSizeBytes, "video", allowedUploadOrigin(r.Header.Get("Origin")))
+		if videoErr != nil {
+			_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
+			app.serverError(w, videoErr)
+			return
+		}
+		response["videoUploadUrl"] = videoUploadURL
+		response["videoObjectName"] = videoObjectName
+	}
+	writeJSON(w, http.StatusCreated, response)
 }
 
-func (app *application) createResumableUpload(ctx context.Context, recordingID, userID uuid.UUID, objectName, contentType string, size int64, origin string) (string, error) {
+func (app *application) createResumableUpload(ctx context.Context, recordingID, userID uuid.UUID, objectName, contentType string, size int64, assetKind, origin string) (string, error) {
 	token, err := app.tokenSource.Token()
 	if err != nil {
 		return "", err
 	}
 	metadata := map[string]any{
 		"name": objectName, "contentType": contentType,
-		"metadata": map[string]string{"recordingId": recordingID.String(), "userId": userID.String()},
+		"metadata": map[string]string{"recordingId": recordingID.String(), "userId": userID.String(), "assetKind": assetKind},
 	}
 	body, _ := json.Marshal(metadata)
 	endpoint := "https://storage.googleapis.com/upload/storage/v1/b/" + url.PathEscape(app.cfg.Bucket) + "/o?uploadType=resumable&name=" + url.QueryEscape(objectName)
@@ -563,6 +626,19 @@ func allowedUploadOrigin(origin string) string {
 }
 
 func (app *application) completeRecording(w http.ResponseWriter, r *http.Request) {
+	var input recordingCompleteRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	asset := strings.ToLower(strings.TrimSpace(input.Asset))
+	if asset == "" {
+		asset = "audio"
+	}
+	if asset != "audio" && asset != "video" {
+		writeError(w, http.StatusUnprocessableEntity, "recording asset is invalid")
+		return
+	}
 	recordingID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid recording id")
@@ -573,10 +649,14 @@ func (app *application) completeRecording(w http.ResponseWriter, r *http.Request
 		app.serverError(w, err)
 		return
 	}
-	var objectName string
-	var expectedSize int64
-	err = app.db.QueryRow(r.Context(), `SELECT object_name, expected_size_bytes FROM recordings WHERE id=$1 AND user_id=$2 AND status='uploading'`, recordingID, userID).
-		Scan(&objectName, &expectedSize)
+	var mediaKind, audioObjectName, videoObjectName, status string
+	var audioExpectedSize, videoExpectedSize int64
+	var audioUploaded, videoUploaded bool
+	err = app.db.QueryRow(r.Context(), `
+		SELECT media_kind,object_name,expected_size_bytes,COALESCE(video_object_name,''),COALESCE(video_expected_size_bytes,0),
+		       uploaded_at IS NOT NULL,video_uploaded_at IS NOT NULL,status
+		FROM recordings WHERE id=$1 AND user_id=$2 AND status IN ('uploading','ready')`, recordingID, userID).
+		Scan(&mediaKind, &audioObjectName, &audioExpectedSize, &videoObjectName, &videoExpectedSize, &audioUploaded, &videoUploaded, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -585,22 +665,48 @@ func (app *application) completeRecording(w http.ResponseWriter, r *http.Request
 		app.serverError(w, err)
 		return
 	}
+	objectName, expectedSize := audioObjectName, audioExpectedSize
+	if asset == "video" {
+		if mediaKind != "video" || videoObjectName == "" || videoExpectedSize < 1 {
+			writeError(w, http.StatusUnprocessableEntity, "recording has no video asset")
+			return
+		}
+		objectName, expectedSize = videoObjectName, videoExpectedSize
+	}
+	if (asset == "audio" && audioUploaded) || (asset == "video" && videoUploaded) {
+		writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "asset": asset, "status": status})
+		return
+	}
 	attrs, err := app.storage.Bucket(app.cfg.Bucket).Object(objectName).Attrs(r.Context())
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	if attrs.Size != expectedSize || attrs.Metadata["recordingId"] != recordingID.String() || attrs.Metadata["userId"] != userID.String() {
+	if attrs.Size != expectedSize || attrs.Metadata["recordingId"] != recordingID.String() || attrs.Metadata["userId"] != userID.String() || attrs.Metadata["assetKind"] != asset {
 		writeError(w, http.StatusConflict, "uploaded object did not pass verification")
 		return
 	}
-	_, err = app.db.Exec(r.Context(), `UPDATE recordings SET status='ready', size_bytes=$1, object_generation=$2, checksum=$3, uploaded_at=now(), updated_at=now() WHERE id=$4 AND user_id=$5`,
-		attrs.Size, attrs.Generation, fmt.Sprintf("crc32c:%08x", attrs.CRC32C), recordingID, userID)
+	checksum := fmt.Sprintf("crc32c:%08x", attrs.CRC32C)
+	if asset == "video" {
+		_, err = app.db.Exec(r.Context(), `
+			UPDATE recordings SET video_size_bytes=$1,video_object_generation=$2,video_checksum=$3,video_uploaded_at=now(),
+			status=CASE WHEN uploaded_at IS NOT NULL THEN 'ready' ELSE 'uploading' END,updated_at=now()
+			WHERE id=$4 AND user_id=$5`, attrs.Size, attrs.Generation, checksum, recordingID, userID)
+	} else {
+		_, err = app.db.Exec(r.Context(), `
+			UPDATE recordings SET size_bytes=$1,object_generation=$2,checksum=$3,uploaded_at=now(),
+			status=CASE WHEN media_kind='video' AND video_uploaded_at IS NULL THEN 'uploading' ELSE 'ready' END,updated_at=now()
+			WHERE id=$4 AND user_id=$5`, attrs.Size, attrs.Generation, checksum, recordingID, userID)
+	}
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "status": "ready"})
+	if err := app.db.QueryRow(r.Context(), `SELECT status FROM recordings WHERE id=$1 AND user_id=$2`, recordingID, userID).Scan(&status); err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "asset": asset, "status": status})
 }
 
 func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
@@ -613,7 +719,9 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		SELECT r.id,r.content_type,COALESCE(r.codec,''),COALESCE(r.size_bytes,r.expected_size_bytes),COALESCE(r.duration_ms,0),r.recorded_at,r.status,
 		COALESCE(r.tune_id,''),COALESCE(r.mission_id,''),r.skill_ids,COALESCE(r.take_number,0),COALESCE(r.notes,''),
 		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),
-		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name
+		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name,
+		COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_codec,''),COALESCE(r.video_size_bytes,r.video_expected_size_bytes,0),
+		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,'')
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
 		LEFT JOIN practice_blocks pb ON pb.id = r.practice_block_id AND pb.user_id = r.user_id
@@ -629,7 +737,8 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		var skills []byte
 		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.RecordedAt, &item.Status,
 			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID,
-			&item.BlockDate, &item.BlockKey, &item.BlockTitle, &item.BlockCategory, &item.BlockTrack, &item.ObjectName); err != nil {
+			&item.BlockDate, &item.BlockKey, &item.BlockTitle, &item.BlockCategory, &item.BlockTrack, &item.ObjectName,
+			&item.MediaKind, &item.VideoContentType, &item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate, &item.VideoObjectName); err != nil {
 			app.serverError(w, err)
 			return
 		}
@@ -654,14 +763,31 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		app.serverError(w, err)
 		return
 	}
-	var objectName string
-	err = app.db.QueryRow(r.Context(), `SELECT object_name FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).Scan(&objectName)
+	var mediaKind, audioObjectName, audioContentType, videoObjectName, videoContentType string
+	err = app.db.QueryRow(r.Context(), `
+		SELECT media_kind,object_name,content_type,COALESCE(video_object_name,''),COALESCE(video_content_type,'')
+		FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).
+		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
 	}
 	if err != nil {
 		app.serverError(w, err)
+		return
+	}
+	asset := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("asset")))
+	if asset == "" {
+		asset = mediaKind
+	}
+	objectName, contentType := audioObjectName, audioContentType
+	if asset == "video" && mediaKind == "video" && videoObjectName != "" {
+		objectName, contentType = videoObjectName, videoContentType
+		asset = "video"
+	} else if asset == "audio" {
+		asset = "audio"
+	} else {
+		writeError(w, http.StatusUnprocessableEntity, "recording asset is invalid")
 		return
 	}
 	expires := time.Now().Add(10 * time.Minute)
@@ -684,7 +810,7 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires})
+	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires, "asset": asset, "contentType": contentType})
 }
 
 func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) {
@@ -698,8 +824,9 @@ func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	var objectName string
-	err = app.db.QueryRow(r.Context(), `SELECT object_name FROM recordings WHERE id=$1 AND user_id=$2 AND status <> 'deleted'`, recordingID, userID).Scan(&objectName)
+	var objectName, videoObjectName string
+	err = app.db.QueryRow(r.Context(), `SELECT object_name,COALESCE(video_object_name,'') FROM recordings WHERE id=$1 AND user_id=$2 AND status <> 'deleted'`, recordingID, userID).
+		Scan(&objectName, &videoObjectName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -708,9 +835,14 @@ func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	if err := app.storage.Bucket(app.cfg.Bucket).Object(objectName).Delete(r.Context()); err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
-		app.serverError(w, err)
-		return
+	for _, assetObjectName := range []string{objectName, videoObjectName} {
+		if assetObjectName == "" {
+			continue
+		}
+		if err := app.storage.Bucket(app.cfg.Bucket).Object(assetObjectName).Delete(r.Context()); err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
+			app.serverError(w, err)
+			return
+		}
 	}
 	_, err = app.db.Exec(r.Context(), `UPDATE recordings SET status='deleted', updated_at=now() WHERE id=$1 AND user_id=$2`, recordingID, userID)
 	if err != nil {
@@ -729,6 +861,15 @@ func allowedAudioType(contentType string) bool {
 	}
 }
 
+func allowedVideoType(contentType string) bool {
+	switch contentType {
+	case "video/webm", "video/mp4":
+		return true
+	default:
+		return false
+	}
+}
+
 func extensionFor(contentType string) string {
 	switch contentType {
 	case "audio/mp4":
@@ -739,6 +880,8 @@ func extensionFor(contentType string) string {
 		return "wav"
 	case "audio/mpeg":
 		return "mp3"
+	case "video/mp4":
+		return "mp4"
 	default:
 		return "webm"
 	}

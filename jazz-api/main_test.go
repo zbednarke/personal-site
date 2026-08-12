@@ -71,3 +71,35 @@ func TestAllowedUploadOrigin(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRecordingMedia(t *testing.T) {
+	audio := recordingInitRequest{ContentType: "audio/wav", SizeBytes: 1024, DurationMS: maxDurationMS}
+	kind, audioType, videoType, err := validateRecordingMedia(audio)
+	if err != nil || kind != "audio" || audioType != "audio/wav" || videoType != "" {
+		t.Fatalf("valid audio rejected: kind=%q audio=%q video=%q err=%v", kind, audioType, videoType, err)
+	}
+
+	video := recordingInitRequest{
+		MediaKind: "video", ContentType: "audio/wav", SizeBytes: 2048, DurationMS: 60000,
+		VideoContentType: "video/webm;codecs=vp9,opus", VideoSizeBytes: 4096,
+		VideoWidth: 1920, VideoHeight: 1080, VideoFrameRate: 30,
+	}
+	kind, audioType, videoType, err = validateRecordingMedia(video)
+	if err != nil || kind != "video" || audioType != "audio/wav" || videoType != "video/webm" {
+		t.Fatalf("valid video rejected: kind=%q audio=%q video=%q err=%v", kind, audioType, videoType, err)
+	}
+
+	video.VideoSizeBytes = maxVideoBytes + 1
+	if _, _, _, err = validateRecordingMedia(video); err == nil {
+		t.Fatal("oversized video was accepted")
+	}
+}
+
+func TestVideoExtensions(t *testing.T) {
+	if got := extensionFor("video/webm"); got != "webm" {
+		t.Fatalf("video/webm extension = %q", got)
+	}
+	if got := extensionFor("video/mp4"); got != "mp4" {
+		t.Fatalf("video/mp4 extension = %q", got)
+	}
+}

@@ -283,7 +283,9 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .section-take > span { color: var(--muted); font: 9px var(--mono); }
 .section-take > div { display: flex; gap: 9px; }
 .section-take button { border: 0; padding: 0; background: transparent; color: var(--violet); cursor: pointer; font: 9px var(--mono); text-decoration: underline; text-underline-offset: 3px; }
-.section-take audio { flex-basis: 100%; width: 100%; height: 32px; }
+.section-take audio, .section-take video { flex-basis: 100%; width: 100%; }
+.section-take audio { height: 32px; }
+.section-take video { max-height: 360px; background: #090909; }
 
 .week-card {
   min-height: 100%;
@@ -405,7 +407,9 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .recording-item-actions { display: flex; gap: 15px; margin-top: 18px; }
 .recording-item-actions button { border: 0; padding: 0; background: none; color: var(--violet); cursor: pointer; font: 10px var(--mono); text-decoration: underline; text-underline-offset: 4px; }
 .recording-item-actions .delete-recording { color: var(--faint); }
-.recording-item audio { width: 100%; height: 38px; margin-top: 14px; }
+.recording-item audio, .recording-item video { width: 100%; margin-top: 14px; }
+.recording-item audio { height: 38px; }
+.recording-item video { max-height: 520px; background: #090909; }
 .empty-recordings { grid-column: 1 / -1; margin: 0; padding: 28px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--faint); font-size: 12px; text-align: center; }
 .session-history-heading { margin: 48px 0 15px; }
 .session-history { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -866,6 +870,8 @@ footer p[data-tone="offline"] { color: var(--red); }
 .audio-preflight .section-live-audio { grid-template-columns: minmax(0, 1.5fr) minmax(210px, 0.7fr); }
 .audio-preflight .recording-waveform,
 .audio-preflight .tuner { border-radius: 2px; background: #151415; }
+.live-camera-preview { width: 100%; max-height: 340px; margin-bottom: 12px; border: 1px solid var(--line); background: #0b0b0b; object-fit: contain; transform: scaleX(-1); }
+.live-camera-preview[hidden] { display: none; }
 .selected-section-card > .section-notes-field { padding: 22px 25px 25px; }
 .selected-section-card .section-notes-field > span { margin-bottom: 5px; }
 .selected-section-card .section-notes-field strong { color: var(--ink); font: 600 15px var(--serif); }
@@ -896,7 +902,9 @@ footer p[data-tone="offline"] { color: var(--red); }
 .section-form-actions .button { border-radius: 2px; }
 .virtuoso-today .audio-options-dialog { width: min(520px, calc(100vw - 32px)); padding: 34px; border-radius: 4px; background: #1c1b1c; }
 .audio-options-dialog h2 { font-family: var(--serif); font-weight: 600; }
-.audio-input-field { display: grid; gap: 8px; margin-top: 27px; }
+.audio-device-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 27px; }
+.audio-input-field { display: grid; gap: 8px; }
+.audio-input-field[hidden] { display: none; }
 .audio-input-field > span { color: var(--muted); font: 8px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
 .audio-input-field select { width: 100%; border: 1px solid var(--line); border-radius: 2px; background: #151415; color: var(--ink); padding: 11px 12px; font: 12px var(--sans); }
 .audio-input-field select:focus { outline: 1px solid var(--brass); border-color: var(--brass); }
@@ -904,6 +912,10 @@ footer p[data-tone="offline"] { color: var(--red); }
 .audio-monitor-status[data-tone="live"] { color: var(--green); }
 .audio-monitor-status[data-tone="error"] { color: var(--red); }
 .audio-options-dialog .dialog-actions .button { border-radius: 2px; }
+.camera-preview-shell { position: relative; overflow: hidden; margin-top: 18px; border: 1px solid var(--line); background: #0b0b0b; }
+.camera-preview-shell[hidden] { display: none; }
+.camera-preview-shell video { display: block; width: 100%; max-height: 280px; object-fit: contain; transform: scaleX(-1); }
+.camera-preview-shell span { position: absolute; left: 8px; bottom: 8px; padding: 4px 6px; background: rgba(0,0,0,0.72); color: var(--muted); font: 7px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 
 @media (max-width: 1100px) {
   .virtuoso-today main { margin-left: 218px; }
@@ -938,6 +950,7 @@ footer p[data-tone="offline"] { color: var(--red); }
   .selected-section-card .section-live-audio { grid-template-columns: 1fr; }
   .audio-preflight .section-live-audio { grid-template-columns: 1fr; }
   .audio-preflight-head { align-items: flex-start; }
+  .audio-device-grid { grid-template-columns: 1fr; }
   .background-recording-banner { align-items: flex-start; flex-direction: column; }
   .background-recording-banner > div { width: 100%; }
   .session-reflection { padding: 18px; }

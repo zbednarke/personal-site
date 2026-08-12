@@ -490,11 +490,18 @@
     if (!block) return '<p class="section-empty">Connect the practice session to add section takes.</p>';
     const recordings = Array.isArray(block.recordings) ? block.recordings : [];
     if (!recordings.length) return '<p class="section-empty">No takes yet.</p>';
-    return recordings.map((recording, index) => `
-      <article class="section-take" data-section-take="${recording.id}">
-        <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
-        <div><button type="button" data-section-play ${recording.status === "ready" ? "" : "disabled"}>Play</button><button type="button" data-section-delete>Delete</button></div>
-      </article>`).join("");
+    return recordings.map((recording, index) => {
+      const isVideo = recording.mediaKind === "video";
+      return `
+        <article class="section-take" data-section-take="${recording.id}">
+          <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${isVideo ? " · Video" : ""}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
+          <div>
+            <button type="button" data-section-play data-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Video" : "Play"}</button>
+            ${isVideo ? `<button type="button" data-section-play data-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Audio</button>` : ""}
+            <button type="button" data-section-delete>Delete</button>
+          </div>
+        </article>`;
+    }).join("");
   }
 
   function activeBlockRecordings(block) {
@@ -578,7 +585,9 @@
     $("[data-audio-options]", card)?.addEventListener("click", () => $("#audio-options-dialog")?.showModal());
     $$('[data-section-take]', card).forEach((take) => {
       const recordingID = take.dataset.sectionTake;
-      $("[data-section-play]", take).addEventListener("click", () => globalThis.JazzRecording?.play(recordingID, take));
+      $$('[data-section-play]', take).forEach((button) => {
+        button.addEventListener("click", () => globalThis.JazzRecording?.play(recordingID, take, button.dataset.asset, button));
+      });
       $("[data-section-delete]", take).addEventListener("click", () => globalThis.JazzRecording?.delete(recordingID));
     });
   }
@@ -919,7 +928,7 @@
       <div class="section-recording-panel">
         <div class="section-recording-head">
           <span><strong>Section takes</strong><em>${takeCount} / 5</em></span>
-          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Audio input options" title="Audio input options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
         </div>
         ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
         ${sectionUploadMarkup(block)}

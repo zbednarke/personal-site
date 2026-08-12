@@ -125,6 +125,7 @@
             <div class="workspace-label"><h2>Current section</h2><span id="current-section-state">Ready</span></div>
             <section class="audio-preflight" id="audio-preflight" hidden aria-label="Live microphone signal">
               <div class="audio-preflight-head"><span><em>Live input</em><strong id="active-input-name">Default microphone</strong></span><small id="input-signal-status" data-tone="waiting">Listening…</small></div>
+              <video class="live-camera-preview" id="live-camera-preview" autoplay muted playsinline hidden aria-label="Live camera preview"></video>
               <div class="input-meter" aria-label="Microphone input level"><span id="input-meter-fill"></span></div>
               <div class="section-live-audio"><canvas class="recording-waveform" data-waveform aria-label="Live microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong data-tuner-cents>Play a held note</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>
             </section>
@@ -280,11 +281,17 @@
   <dialog class="dialog audio-options-dialog" id="audio-options-dialog" aria-labelledby="audio-options-title">
     <button class="dialog-close" type="button" data-close-dialog aria-label="Close audio options">×</button>
     <p class="eyebrow">Recording setup</p>
-    <h2 id="audio-options-title">Audio input</h2>
-    <p class="dialog-copy">Choose the microphone used for the tuner and every new take. Start the live tuner and play before recording to confirm that signal is reaching the browser.</p>
-    <label class="audio-input-field" for="microphone-select"><span>Microphone</span><select id="microphone-select"><option value="">Default microphone</option></select></label>
-    <p class="audio-monitor-status" id="input-monitor-status" role="status">Start the tuner to verify your input.</p>
-    <div class="dialog-actions"><button class="button button-primary" id="toggle-input-monitor" type="button">Start live tuner</button></div>
+    <h2 id="audio-options-title">Recording setup</h2>
+    <p class="dialog-copy">Choose audio-only or video, then select the camera and microphone independently. Preview both inputs before recording.</p>
+    <div class="audio-device-grid">
+      <label class="audio-input-field" for="recording-mode"><span>Recording mode</span><select id="recording-mode"><option value="audio">Audio only</option><option value="video">Video + lossless audio</option></select></label>
+      <label class="audio-input-field" for="microphone-select"><span>Microphone</span><select id="microphone-select"><option value="">Default microphone</option></select></label>
+      <label class="audio-input-field" for="camera-select" data-video-option hidden><span>Camera</span><select id="camera-select"><option value="">Default camera</option></select></label>
+      <label class="audio-input-field" for="video-resolution" data-video-option hidden><span>Video quality</span><select id="video-resolution"><option value="1080">1080p · 30 fps</option><option value="720">720p · 30 fps</option></select></label>
+    </div>
+    <div class="camera-preview-shell" id="camera-preview-shell" hidden><video id="camera-preview" autoplay muted playsinline aria-label="Camera preview"></video><span>Camera preview · mirrored</span></div>
+    <p class="audio-monitor-status" id="input-monitor-status" role="status">Start the preview to verify your input.</p>
+    <div class="dialog-actions"><button class="button button-primary" id="toggle-input-monitor" type="button">Start preview &amp; tuner</button></div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
