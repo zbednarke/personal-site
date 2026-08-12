@@ -32,14 +32,18 @@ type practiceBlock struct {
 }
 
 type blockRecordingSummary struct {
-	ID              uuid.UUID `json:"id"`
-	Status          string    `json:"status"`
-	ContentType     string    `json:"contentType"`
-	DurationMS      int       `json:"durationMs"`
-	RecordedAt      time.Time `json:"recordedAt"`
-	TakeNumber      int       `json:"takeNumber"`
-	Notes           string    `json:"notes"`
-	PracticeBlockID uuid.UUID `json:"practiceBlockId"`
+	ID               uuid.UUID `json:"id"`
+	Status           string    `json:"status"`
+	ContentType      string    `json:"contentType"`
+	DurationMS       int       `json:"durationMs"`
+	RecordedAt       time.Time `json:"recordedAt"`
+	TakeNumber       int       `json:"takeNumber"`
+	Notes            string    `json:"notes"`
+	PracticeBlockID  uuid.UUID `json:"practiceBlockId"`
+	MediaKind        string    `json:"mediaKind"`
+	VideoContentType string    `json:"videoContentType,omitempty"`
+	VideoWidth       int       `json:"videoWidth,omitempty"`
+	VideoHeight      int       `json:"videoHeight,omitempty"`
 }
 
 type blockDefinition struct {
@@ -320,7 +324,8 @@ func (app *application) loadPracticeBlocks(ctx context.Context, userID, sessionI
 
 func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID uuid.UUID) ([]blockRecordingSummary, error) {
 	rows, err := app.db.Query(ctx, `
-		SELECT id,status,content_type,COALESCE(duration_ms,0),recorded_at,COALESCE(take_number,0),COALESCE(notes,''),practice_block_id
+		SELECT id,status,content_type,COALESCE(duration_ms,0),recorded_at,COALESCE(take_number,0),COALESCE(notes,''),practice_block_id,
+		       COALESCE(media_kind,'audio'),COALESCE(video_content_type,''),COALESCE(video_width,0),COALESCE(video_height,0)
 		FROM recordings WHERE user_id=$1 AND practice_block_id=$2 AND status <> 'deleted' ORDER BY recorded_at,id`, userID, blockID)
 	if err != nil {
 		return nil, err
@@ -330,7 +335,8 @@ func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID
 	for rows.Next() {
 		var recording blockRecordingSummary
 		if err := rows.Scan(&recording.ID, &recording.Status, &recording.ContentType, &recording.DurationMS, &recording.RecordedAt,
-			&recording.TakeNumber, &recording.Notes, &recording.PracticeBlockID); err != nil {
+			&recording.TakeNumber, &recording.Notes, &recording.PracticeBlockID, &recording.MediaKind, &recording.VideoContentType,
+			&recording.VideoWidth, &recording.VideoHeight); err != nil {
 			return nil, err
 		}
 		recordings = append(recordings, recording)
