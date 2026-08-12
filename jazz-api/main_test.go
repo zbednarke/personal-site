@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,23 @@ func TestVideoExtensions(t *testing.T) {
 	}
 	if got := extensionFor("video/mp4"); got != "mp4" {
 		t.Fatalf("video/mp4 extension = %q", got)
+	}
+}
+
+func TestRecordingSectionLimits(t *testing.T) {
+	if maxTakesPerBlock != 20 {
+		t.Fatalf("max takes per block = %d, want 20", maxTakesPerBlock)
+	}
+	note := "  clean attacks today  "
+	got, err := normalizeRecordingNote(&note)
+	if err != nil || got != "clean attacks today" {
+		t.Fatalf("valid note normalized to %q with error %v", got, err)
+	}
+	tooLong := strings.Repeat("x", maxTakeNoteBytes+1)
+	if _, err := normalizeRecordingNote(&tooLong); err == nil {
+		t.Fatal("oversized take note was accepted")
+	}
+	if _, err := normalizeRecordingNote(nil); err == nil {
+		t.Fatal("missing take note was accepted")
 	}
 }

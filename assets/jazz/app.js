@@ -9,6 +9,7 @@
   const TIMER_STORAGE_KEY = "zach-jazz-practice-timers-v2";
   const API_BASE = "./api/v1";
   const MAX_SKILL_LEVEL = 4;
+  const MAX_TAKES_PER_SECTION = 20;
   const stateDefaults = {
     version: DATA.version,
     skillLevels: {},
@@ -35,6 +36,8 @@
   let guidedBlocks = new Map();
   let guidedBlocksReady = false;
   const noteSaveDelays = new Map();
+  const takeNoteSaveDelays = new Map();
+  const takeNoteSaveChains = new Map();
   let activeSectionRecordingID = "";
   let activeSectionRecordingMessage = "";
   let activeSectionRecordingPhase = "";
@@ -492,6 +495,7 @@
     if (!recordings.length) return '<p class="section-empty">No takes yet.</p>';
     return recordings.map((recording, index) => {
       const isVideo = recording.mediaKind === "video";
+      const note = String(recording.notes || "");
       return `
         <article class="section-take" data-section-take="${recording.id}">
           <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${isVideo ? " · Video" : ""}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
@@ -499,7 +503,12 @@
             <button type="button" data-section-play data-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Video" : "Play"}</button>
             ${isVideo ? `<button type="button" data-section-play data-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Audio</button>` : ""}
             <button type="button" data-section-delete>Delete</button>
+            <button class="take-note-button" type="button" data-take-note-toggle aria-expanded="false">${note ? "Edit note" : "Take note"}</button>
           </div>
+          <label class="take-note-editor" data-take-note-editor hidden>
+            <span><strong>Take note</strong><em data-take-note-status>${note ? "Cloud synced" : "Optional"}</em></span>
+            <textarea data-take-note maxlength="2000" rows="3" placeholder="What do you hear in this take?">${escapeHTML(note)}</textarea>
+          </label>
         </article>`;
     }).join("");
   }
@@ -528,10 +537,52 @@
 
   function nextBlockTakeNumber(block) {
     const reserved = reservedTakeNumbers(block);
-    for (let takeNumber = 1; takeNumber <= 5; takeNumber += 1) {
+    for (let takeNumber = 1; takeNumber <= MAX_TAKES_PER_SECTION; takeNumber += 1) {
       if (!reserved.has(takeNumber)) return takeNumber;
     }
-    return 6;
+    return MAX_TAKES_PER_SECTION + 1;
+  }
+
+  function wireTakeNoteEditor(recording, take) {
+    const toggle = $("[data-take-note-toggle]", take);
+    const editor = $("[data-take-note-editor]", take);
+    const textarea = $("[data-take-note]", take);
+    const status = $("[data-take-note-status]", take);
+    if (!toggle || !editor || !textarea || !status) return;
+
+    toggle.addEventListener("click", () => {
+      editor.hidden = !editor.hidden;
+      toggle.setAttribute("aria-expanded", String(!editor.hidden));
+      if (!editor.hidden) textarea.focus();
+    });
+
+    const save = () => {
+      clearTimeout(takeNoteSaveDelays.get(recording.id));
+      takeNoteSaveDelays.delete(recording.id);
+      const notes = textarea.value.trim();
+      if (notes === String(recording.notes || "")) return;
+      status.textContent = "Saving…";
+      status.dataset.tone = "saving";
+      const previous = takeNoteSaveChains.get(recording.id) || Promise.resolve();
+      const next = previous.catch(() => {}).then(async () => {
+        const updated = await globalThis.JazzRecording.updateNote(recording.id, notes);
+        recording.notes = updated.notes || "";
+        toggle.textContent = recording.notes ? "Edit note" : "Take note";
+        status.textContent = "Cloud synced";
+        status.dataset.tone = "saved";
+      }).catch(() => {
+        status.textContent = "Sync pending";
+        status.dataset.tone = "pending";
+      });
+      takeNoteSaveChains.set(recording.id, next);
+    };
+    textarea.addEventListener("input", () => {
+      status.textContent = "Saving…";
+      status.dataset.tone = "saving";
+      clearTimeout(takeNoteSaveDelays.get(recording.id));
+      takeNoteSaveDelays.set(recording.id, setTimeout(save, 650));
+    });
+    textarea.addEventListener("blur", save);
   }
 
   function sectionUploadMarkup(block) {
@@ -558,8 +609,8 @@
         showToast("Section recorder is still connecting");
         return;
       }
-      if (activeBlockTakeCount(block) >= 5) {
-        showToast("This section already has five recordings");
+      if (activeBlockTakeCount(block) >= MAX_TAKES_PER_SECTION) {
+        showToast(`This section already has ${MAX_TAKES_PER_SECTION} recordings`);
         return;
       }
       globalThis.JazzRecording.startForBlock({
@@ -589,6 +640,8 @@
         button.addEventListener("click", () => globalThis.JazzRecording?.play(recordingID, take, button.dataset.asset, button));
       });
       $("[data-section-delete]", take).addEventListener("click", () => globalThis.JazzRecording?.delete(recordingID));
+      const recording = block.recordings.find((candidate) => String(candidate.id) === recordingID);
+      if (recording) wireTakeNoteEditor(recording, take);
     });
   }
 
@@ -927,8 +980,8 @@
       </div>
       <div class="section-recording-panel">
         <div class="section-recording-head">
-          <span><strong>Section takes</strong><em>${takeCount} / 5</em></span>
-          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= 5 && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
+          <span><strong>Section takes</strong><em>${takeCount} / ${MAX_TAKES_PER_SECTION}</em></span>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= MAX_TAKES_PER_SECTION && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
         </div>
         ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
         ${sectionUploadMarkup(block)}

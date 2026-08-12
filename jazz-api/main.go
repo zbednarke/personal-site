@@ -29,10 +29,12 @@ import (
 )
 
 const (
-	maxRequestBytes = 2 << 20
-	maxAudioBytes   = int64(4) << 30
-	maxVideoBytes   = int64(32) << 30
-	maxDurationMS   = 4 * 60 * 60 * 1000
+	maxRequestBytes  = 2 << 20
+	maxAudioBytes    = int64(4) << 30
+	maxVideoBytes    = int64(32) << 30
+	maxDurationMS    = 4 * 60 * 60 * 1000
+	maxTakesPerBlock = 20
+	maxTakeNoteBytes = 2000
 )
 
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -122,6 +124,10 @@ type recordingInitRequest struct {
 
 type recordingCompleteRequest struct {
 	Asset string `json:"asset"`
+}
+
+type recordingUpdateRequest struct {
+	Notes *string `json:"notes"`
 }
 
 type recordingRow struct {
@@ -278,6 +284,7 @@ func (app *application) routes() http.Handler {
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
 	mux.Handle("POST /v1/recordings/{id}/playback-url", app.authenticate(http.HandlerFunc(app.recordingPlaybackURL)))
+	mux.Handle("PATCH /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.updateRecording)))
 	mux.Handle("DELETE /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.deleteRecording)))
 	return app.recoverPanic(app.logRequests(mux))
 }
@@ -531,8 +538,8 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 			app.serverError(w, queryErr)
 			return
 		}
-		if recordingCount >= 5 {
-			writeError(w, http.StatusConflict, "this practice block already has five recordings")
+		if recordingCount >= maxTakesPerBlock {
+			writeError(w, http.StatusConflict, "this practice block already has twenty recordings")
 			return
 		}
 		practiceBlockID = &blockID
@@ -811,6 +818,54 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires, "asset": asset, "contentType": contentType})
+}
+
+func (app *application) updateRecording(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	var input recordingUpdateRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	notes, err := normalizeRecordingNote(input.Notes)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var updatedAt time.Time
+	err = app.db.QueryRow(r.Context(), `
+		UPDATE recordings SET notes=NULLIF($1,''),updated_at=now()
+		WHERE id=$2 AND user_id=$3 AND status <> 'deleted'
+		RETURNING updated_at`, notes, recordingID, userID).Scan(&updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "notes": notes, "updatedAt": updatedAt})
+}
+
+func normalizeRecordingNote(input *string) (string, error) {
+	if input == nil {
+		return "", errors.New("recording notes are required")
+	}
+	notes := strings.TrimSpace(*input)
+	if len(notes) > maxTakeNoteBytes {
+		return "", errors.New("recording notes are too long")
+	}
+	return notes, nil
 }
 
 func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) {
