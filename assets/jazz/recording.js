@@ -34,6 +34,8 @@
   let uploadQueue = null;
   let pitchHistory = [];
   let lastPitchCheckAt = 0;
+  const archiveNoteSaveDelays = new Map();
+  const archiveNoteSaveChains = new Map();
 
   function setServiceStatus(message, tone = "") {
     const element = $("#recording-service-status");
@@ -191,15 +193,13 @@
     });
   }
 
-  function renderTuner(pitch, message = "Play a held note") {
+  function renderTuner(pitch) {
     document.querySelectorAll("[data-tuner]").forEach((tuner) => {
       const note = $("[data-tuner-note]", tuner);
-      const cents = $("[data-tuner-cents]", tuner);
       const frequency = $("[data-tuner-frequency]", tuner);
       const needle = $("[data-tuner-needle]", tuner);
       if (!pitch) {
         note.textContent = "—";
-        cents.textContent = message;
         frequency.textContent = "A4 = 440 Hz";
         needle.style.left = "50%";
         tuner.dataset.tone = "waiting";
@@ -207,8 +207,9 @@
       }
       const roundedCents = Math.round(pitch.cents);
       note.textContent = `${pitch.note}${pitch.octave}`;
-      cents.textContent = Math.abs(roundedCents) <= 4 ? "In tune" : `${roundedCents > 0 ? "+" : ""}${roundedCents} cents`;
-      frequency.textContent = `${pitch.frequency.toFixed(1)} Hz`;
+      frequency.textContent = Math.abs(roundedCents) <= 4
+        ? `${pitch.frequency.toFixed(1)} Hz · in tune`
+        : `${pitch.frequency.toFixed(1)} Hz · ${roundedCents > 0 ? "+" : ""}${roundedCents} cents`;
       needle.style.left = `${50 + Math.max(-50, Math.min(50, pitch.cents))}%`;
       tuner.dataset.tone = Math.abs(roundedCents) <= 4 ? "tuned" : (roundedCents < 0 ? "flat" : "sharp");
     });
@@ -252,13 +253,13 @@
         const detected = analysis.detectPitch(samples, audioContext.sampleRate);
         if (!detected || detected.clarity < 0.82) {
           pitchHistory = [];
-          renderTuner(null, level >= 0.012 ? "Hold the note" : "Play a held note");
+          renderTuner(null);
           setSignalStatus(level >= 0.006 ? "Signal detected" : "No signal — check input", level >= 0.006 ? "live" : "silent");
         } else {
           pitchHistory.push(detected);
           pitchHistory = pitchHistory.slice(-4);
           const stable = analysis.stablePitch(pitchHistory);
-          renderTuner(stable, "Hold the note");
+          renderTuner(stable);
           setSignalStatus("Signal detected", "live");
         }
       }
@@ -577,7 +578,7 @@
       tuneId: blockContext ? String(blockContext.tuneId || "") : String(metadata.get("tuneId") || ""),
       skillIds: blockContext?.skillIds || (metadata.get("skillId") ? [String(metadata.get("skillId"))] : []),
       takeNumber: blockContext?.takeNumber || Number(metadata.get("takeNumber") || 1),
-      notes: blockContext ? `${blockContext.title} section take` : String(metadata.get("notes") || ""),
+      notes: blockContext ? "" : String(metadata.get("notes") || ""),
     };
   }
 
@@ -771,20 +772,27 @@
         const ready = recording.status === "ready";
         const card = document.createElement("article");
         card.className = "recording-item";
+        card.dataset.recordingId = recording.id;
         card.innerHTML = `
           <div class="recording-item-top"><span>${new Date(recording.recordedAt).toLocaleDateString()}</span><span>${formatDuration(recording.durationMs)} · ${format}</span></div>
           <h4>${escapeHTML(title)}${recording.takeNumber ? ` · Take ${recording.takeNumber}` : ""}</h4>
-          <p>${escapeHTML(recording.notes || "No listening note yet.")}</p>
+          <p data-recording-note-copy>${escapeHTML(recording.notes || "No listening note yet.")}</p>
           <span class="recording-context">${escapeHTML(context)}</span>
           <div class="recording-item-actions">
             <button type="button" class="play-recording" data-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${ready ? (isVideo ? "Play video" : "Play") : "Uploading…"}</button>
             ${isVideo ? `<button type="button" class="play-audio-master" data-asset="audio" ${ready ? "" : "disabled"}>Lossless audio</button>` : ""}
             <button type="button" class="delete-recording">Delete</button>
-          </div>`;
+            <button type="button" class="take-note-button" data-take-note-toggle aria-expanded="false">${recording.notes ? "Edit note" : "Take note"}</button>
+          </div>
+          <label class="take-note-editor" data-take-note-editor hidden>
+            <span><strong>Take note</strong><em data-take-note-status>${recording.notes ? "Cloud synced" : "Optional"}</em></span>
+            <textarea data-take-note maxlength="2000" rows="3" placeholder="What do you hear in this take?">${escapeHTML(recording.notes || "")}</textarea>
+          </label>`;
         card.querySelectorAll("[data-asset]").forEach((button) => {
           button.addEventListener("click", () => playRecording(recording.id, card, button.dataset.asset, button));
         });
         $(".delete-recording", card).addEventListener("click", () => deleteRecording(recording.id));
+        wireArchiveTakeNote(recording, card);
         library.appendChild(card);
       });
     } catch {
@@ -838,6 +846,61 @@
     }
   }
 
+  async function updateRecordingNote(id, notes) {
+    return api(`/recordings/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ notes }),
+    });
+  }
+
+  function wireArchiveTakeNote(recording, card) {
+    const toggle = $("[data-take-note-toggle]", card);
+    const editor = $("[data-take-note-editor]", card);
+    const textarea = $("[data-take-note]", card);
+    const status = $("[data-take-note-status]", card);
+    const copy = $("[data-recording-note-copy]", card);
+    if (!toggle || !editor || !textarea || !status || !copy) return;
+
+    toggle.addEventListener("click", () => {
+      editor.hidden = !editor.hidden;
+      toggle.setAttribute("aria-expanded", String(!editor.hidden));
+      if (!editor.hidden) textarea.focus();
+    });
+
+    const save = () => {
+      clearTimeout(archiveNoteSaveDelays.get(recording.id));
+      archiveNoteSaveDelays.delete(recording.id);
+      const notes = textarea.value.trim();
+      if (notes === String(recording.notes || "")) {
+        status.textContent = notes ? "Cloud synced" : "Optional";
+        status.dataset.tone = notes ? "saved" : "";
+        return;
+      }
+      status.textContent = "Saving…";
+      status.dataset.tone = "saving";
+      const previous = archiveNoteSaveChains.get(recording.id) || Promise.resolve();
+      const next = previous.catch(() => {}).then(async () => {
+        const updated = await updateRecordingNote(recording.id, notes);
+        recording.notes = updated.notes || "";
+        toggle.textContent = recording.notes ? "Edit note" : "Take note";
+        copy.textContent = recording.notes || "No listening note yet.";
+        status.textContent = "Cloud synced";
+        status.dataset.tone = "saved";
+      }).catch(() => {
+        status.textContent = "Sync pending";
+        status.dataset.tone = "pending";
+      });
+      archiveNoteSaveChains.set(recording.id, next);
+    };
+    textarea.addEventListener("input", () => {
+      status.textContent = "Saving…";
+      status.dataset.tone = "saving";
+      clearTimeout(archiveNoteSaveDelays.get(recording.id));
+      archiveNoteSaveDelays.set(recording.id, setTimeout(save, 650));
+    });
+    textarea.addEventListener("blur", save);
+  }
+
   function escapeHTML(value) {
     const element = document.createElement("span");
     element.textContent = value;
@@ -875,6 +938,7 @@
     retry: retryUpload,
     play: playRecording,
     delete: deleteRecording,
+    updateNote: updateRecordingNote,
   };
 
   populateMetadata();
