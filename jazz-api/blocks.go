@@ -69,6 +69,8 @@ type updateBlockRequest struct {
 	CompletedAt    *string `json:"completedAt"`
 }
 
+const legacyCombinedFundamentalsKey = "articulation-flexibility"
+
 func (app *application) bootstrapPracticeBlocks(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -80,6 +82,14 @@ func (app *application) bootstrapPracticeBlocks(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	filteredBlocks := make([]blockDefinition, 0, len(input.Blocks))
+	for _, block := range input.Blocks {
+		if strings.TrimSpace(block.BlockKey) == legacyCombinedFundamentalsKey {
+			continue
+		}
+		filteredBlocks = append(filteredBlocks, block)
+	}
+	input.Blocks = filteredBlocks
 	if len(input.Blocks) < 1 || len(input.Blocks) > 20 {
 		writeError(w, http.StatusUnprocessableEntity, "practice blocks are invalid")
 		return

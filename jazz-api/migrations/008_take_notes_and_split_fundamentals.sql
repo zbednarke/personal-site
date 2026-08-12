@@ -13,7 +13,10 @@ WHERE recording.practice_block_id = block.id
 DO $$
 DECLARE
     combined RECORD;
+    articulation_id uuid;
+    articulation_position integer;
     flexibility_id uuid;
+    flexibility_exists boolean;
 BEGIN
     FOR combined IN
         SELECT block.*
@@ -23,22 +26,60 @@ BEGIN
           AND session.status = 'active'
         ORDER BY block.practice_date, block.position
     LOOP
+        SELECT block.id, block.position
+        INTO articulation_id, articulation_position
+        FROM practice_blocks AS block
+        WHERE block.session_id = combined.session_id
+          AND block.practice_date = combined.practice_date
+          AND block.block_key = 'articulation';
+
+        IF articulation_id IS NULL THEN
+            articulation_id := combined.id;
+            articulation_position := combined.position;
+            UPDATE practice_blocks
+            SET block_key = 'articulation',
+                title = 'Articulation',
+                instructions = 'Light, centered attacks across comfortable registers. Keep the air moving and the tongue economical.',
+                category = 'fundamentals',
+                track = 'trumpet',
+                target_minutes = 10,
+                updated_at = now()
+            WHERE id = combined.id;
+        ELSE
+            UPDATE recordings
+            SET practice_block_id = articulation_id,
+                updated_at = now()
+            WHERE practice_block_id = combined.id;
+
+            UPDATE practice_blocks AS articulation
+            SET elapsed_ms = LEAST(21600000, articulation.elapsed_ms + combined.elapsed_ms),
+                notes = NULLIF(concat_ws(E'\n\n', NULLIF(articulation.notes,''), NULLIF(combined.notes,'')),''),
+                status = CASE WHEN articulation.elapsed_ms = 0 THEN combined.status ELSE articulation.status END,
+                timer_started_at = CASE WHEN articulation.elapsed_ms = 0 THEN combined.timer_started_at ELSE articulation.timer_started_at END,
+                completed_at = CASE WHEN articulation.elapsed_ms = 0 THEN combined.completed_at ELSE articulation.completed_at END,
+                updated_at = now()
+            WHERE articulation.id = articulation_id;
+
+            DELETE FROM practice_blocks WHERE id = combined.id;
+        END IF;
+
+        SELECT EXISTS (
+            SELECT 1 FROM practice_blocks AS block
+            WHERE block.session_id = combined.session_id
+              AND block.practice_date = combined.practice_date
+              AND block.block_key = 'flexibility'
+        ) INTO flexibility_exists;
+
+        IF flexibility_exists THEN
+            CONTINUE;
+        END IF;
+
         UPDATE practice_blocks
         SET position = LEAST(position + 1, 99),
             updated_at = now()
         WHERE session_id = combined.session_id
           AND practice_date = combined.practice_date
-          AND position > combined.position;
-
-        UPDATE practice_blocks
-        SET block_key = 'articulation',
-            title = 'Articulation',
-            instructions = 'Light, centered attacks across comfortable registers. Keep the air moving and the tongue economical.',
-            category = 'fundamentals',
-            track = 'trumpet',
-            target_minutes = 10,
-            updated_at = now()
-        WHERE id = combined.id;
+          AND position > articulation_position;
 
         flexibility_id := (
             substr(md5(combined.id::text || ':flexibility'), 1, 8) || '-' ||
@@ -51,7 +92,7 @@ BEGIN
         INSERT INTO practice_blocks
             (id,session_id,user_id,practice_date,block_key,position,title,instructions,category,track,target_minutes)
         VALUES
-            (flexibility_id,combined.session_id,combined.user_id,combined.practice_date,'flexibility',combined.position + 1,
+            (flexibility_id,combined.session_id,combined.user_id,combined.practice_date,'flexibility',articulation_position + 1,
              'Flexibility','Easy lip slurs with an even air stream, centered slots, and no forcing through register changes.',
              'fundamentals','trumpet',10)
         ON CONFLICT (session_id,practice_date,block_key) DO NOTHING;
