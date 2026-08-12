@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateCampaignState(t *testing.T) {
@@ -120,5 +121,57 @@ func TestRecordingSectionLimits(t *testing.T) {
 	}
 	if _, err := normalizeRecordingNote(nil); err == nil {
 		t.Fatal("missing take note was accepted")
+	}
+}
+
+func TestRecordingPracticeMSIncludesDurableTakesOnly(t *testing.T) {
+	recordings := []blockRecordingSummary{
+		{Status: "ready", DurationMS: 171000},
+		{Status: "uploading", DurationMS: 779000},
+		{Status: "failed", DurationMS: 60000},
+		{Status: "deleted", DurationMS: 60000},
+	}
+	if got := recordingPracticeMS(recordings); got != 950000 {
+		t.Fatalf("recordingPracticeMS() = %d, want 950000", got)
+	}
+}
+
+func TestBlockPracticeLimitMatchesRecordingPolicy(t *testing.T) {
+	if maxBlockElapsedMS != maxTakesPerBlock*maxDurationMS {
+		t.Fatalf("block practice limit = %d, want %d", maxBlockElapsedMS, maxTakesPerBlock*maxDurationMS)
+	}
+}
+
+func TestReconcileBlockPracticeTimeUsesRecordingFloorAndCompletesGoal(t *testing.T) {
+	updatedAt := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	block := practiceBlock{
+		TargetMinutes: 10,
+		ElapsedMS:     207000,
+		Status:        "paused",
+		UpdatedAt:     updatedAt,
+		Recordings: []blockRecordingSummary{
+			{Status: "ready", DurationMS: 171000},
+			{Status: "ready", DurationMS: 779000},
+		},
+	}
+	reconcileBlockPracticeTime(&block)
+	if block.RecordedMS != 950000 || block.ElapsedMS != 950000 {
+		t.Fatalf("reconciled durations = recorded %d elapsed %d, want 950000", block.RecordedMS, block.ElapsedMS)
+	}
+	if block.Status != "completed" || block.CompletedAt == nil || !block.CompletedAt.Equal(updatedAt) {
+		t.Fatalf("goal was not completed: status=%q completedAt=%v", block.Status, block.CompletedAt)
+	}
+}
+
+func TestReconcileBlockPracticeTimePreservesCancelledPracticeTime(t *testing.T) {
+	block := practiceBlock{
+		TargetMinutes: 20,
+		ElapsedMS:     720000,
+		Status:        "paused",
+		Recordings:    []blockRecordingSummary{{Status: "ready", DurationMS: 600000}},
+	}
+	reconcileBlockPracticeTime(&block)
+	if block.RecordedMS != 600000 || block.ElapsedMS != 720000 {
+		t.Fatalf("cancelled practice was lost: recorded=%d elapsed=%d", block.RecordedMS, block.ElapsedMS)
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -12,16 +13,17 @@ import (
 )
 
 type practiceSession struct {
-	ID             uuid.UUID          `json:"id"`
-	Title          string             `json:"title"`
-	Summary        string             `json:"summary,omitempty"`
-	StartedAt      time.Time          `json:"startedAt"`
-	EndedAt        *time.Time         `json:"endedAt,omitempty"`
-	Status         string             `json:"status"`
-	ActivityCount  int                `json:"activityCount"`
-	RecordingCount int                `json:"recordingCount"`
-	TotalMinutes   int                `json:"totalMinutes"`
-	Activities     []practiceActivity `json:"activities,omitempty"`
+	ID              uuid.UUID          `json:"id"`
+	Title           string             `json:"title"`
+	Summary         string             `json:"summary,omitempty"`
+	StartedAt       time.Time          `json:"startedAt"`
+	EndedAt         *time.Time         `json:"endedAt,omitempty"`
+	Status          string             `json:"status"`
+	ActivityCount   int                `json:"activityCount"`
+	RecordingCount  int                `json:"recordingCount"`
+	TotalMinutes    int                `json:"totalMinutes"`
+	TotalDurationMS int64              `json:"totalDurationMs"`
+	Activities      []practiceActivity `json:"activities,omitempty"`
 }
 
 type practiceActivity struct {
@@ -63,12 +65,21 @@ func (app *application) listPracticeSessions(w http.ResponseWriter, r *http.Requ
 	}
 	rows, err := app.db.Query(r.Context(), `
 		SELECT ps.id, ps.title, COALESCE(ps.summary,''), ps.started_at, ps.ended_at, ps.status,
-		       COUNT(DISTINCT pa.id)::int, COALESCE(SUM(pa.duration_minutes),0)::int,
-		       (SELECT COUNT(*)::int FROM recordings r WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status <> 'deleted')
+		       (SELECT COUNT(*)::int FROM practice_activities pa WHERE pa.session_id=ps.id),
+		       COALESCE((
+		           SELECT SUM(GREATEST(pb.elapsed_ms::bigint, COALESCE((
+		               SELECT SUM(r.duration_ms)::bigint FROM recordings r
+		               WHERE r.user_id=ps.user_id AND r.practice_block_id=pb.id AND r.status IN ('uploading','ready')
+		           ),0)))
+		           FROM practice_blocks pb WHERE pb.session_id=ps.id AND pb.user_id=ps.user_id
+		       ),0) + COALESCE((
+		           SELECT SUM(r.duration_ms)::bigint FROM recordings r
+		           WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status IN ('uploading','ready')
+		             AND NOT EXISTS (SELECT 1 FROM practice_blocks pb WHERE pb.id=r.practice_block_id AND pb.session_id=ps.id)
+		       ),0),
+		       (SELECT COUNT(*)::int FROM recordings r WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status IN ('uploading','ready'))
 		FROM practice_sessions ps
-		LEFT JOIN practice_activities pa ON pa.session_id=ps.id
 		WHERE ps.user_id=$1
-		GROUP BY ps.id
 		ORDER BY (ps.status='active') DESC, ps.started_at DESC
 		LIMIT 50`, userID)
 	if err != nil {
@@ -80,10 +91,11 @@ func (app *application) listPracticeSessions(w http.ResponseWriter, r *http.Requ
 	for rows.Next() {
 		var session practiceSession
 		if err := rows.Scan(&session.ID, &session.Title, &session.Summary, &session.StartedAt, &session.EndedAt, &session.Status,
-			&session.ActivityCount, &session.TotalMinutes, &session.RecordingCount); err != nil {
+			&session.ActivityCount, &session.TotalDurationMS, &session.RecordingCount); err != nil {
 			app.serverError(w, err)
 			return
 		}
+		session.TotalMinutes = int(math.Round(float64(session.TotalDurationMS) / 60000))
 		sessions = append(sessions, session)
 	}
 	if err := rows.Err(); err != nil {
@@ -163,11 +175,21 @@ func (app *application) getPracticeSession(w http.ResponseWriter, r *http.Reques
 	err = app.db.QueryRow(r.Context(), `
 		SELECT ps.id,ps.title,COALESCE(ps.summary,''),ps.started_at,ps.ended_at,ps.status,
 		       (SELECT COUNT(*)::int FROM practice_activities pa WHERE pa.session_id=ps.id),
-		       (SELECT COALESCE(SUM(duration_minutes),0)::int FROM practice_activities pa WHERE pa.session_id=ps.id),
-		       (SELECT COUNT(*)::int FROM recordings r WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status <> 'deleted')
+		       COALESCE((
+		           SELECT SUM(GREATEST(pb.elapsed_ms::bigint, COALESCE((
+		               SELECT SUM(r.duration_ms)::bigint FROM recordings r
+		               WHERE r.user_id=ps.user_id AND r.practice_block_id=pb.id AND r.status IN ('uploading','ready')
+		           ),0)))
+		           FROM practice_blocks pb WHERE pb.session_id=ps.id AND pb.user_id=ps.user_id
+		       ),0) + COALESCE((
+		           SELECT SUM(r.duration_ms)::bigint FROM recordings r
+		           WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status IN ('uploading','ready')
+		             AND NOT EXISTS (SELECT 1 FROM practice_blocks pb WHERE pb.id=r.practice_block_id AND pb.session_id=ps.id)
+		       ),0),
+		       (SELECT COUNT(*)::int FROM recordings r WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status IN ('uploading','ready'))
 		FROM practice_sessions ps WHERE ps.id=$1 AND ps.user_id=$2`, sessionID, userID).
 		Scan(&session.ID, &session.Title, &session.Summary, &session.StartedAt, &session.EndedAt, &session.Status,
-			&session.ActivityCount, &session.TotalMinutes, &session.RecordingCount)
+			&session.ActivityCount, &session.TotalDurationMS, &session.RecordingCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "practice session not found")
 		return
@@ -176,6 +198,7 @@ func (app *application) getPracticeSession(w http.ResponseWriter, r *http.Reques
 		app.serverError(w, err)
 		return
 	}
+	session.TotalMinutes = int(math.Round(float64(session.TotalDurationMS) / 60000))
 	rows, err := app.db.Query(r.Context(), `
 		SELECT id,category,title,duration_minutes,COALESCE(notes,''),occurred_at
 		FROM practice_activities WHERE session_id=$1 AND user_id=$2 ORDER BY occurred_at,created_at`, sessionID, userID)

@@ -10,6 +10,7 @@
   const API_BASE = "./api/v1";
   const MAX_SKILL_LEVEL = 4;
   const MAX_TAKES_PER_SECTION = 20;
+  const MAX_SECTION_PRACTICE_MS = MAX_TAKES_PER_SECTION * 4 * 60 * 60 * 1000;
   const stateDefaults = {
     version: DATA.version,
     skillLevels: {},
@@ -403,7 +404,7 @@
         }
         const cloudElapsedMs = Math.max(0, Number(block.elapsedMs || 0));
         if (localElapsed > cloudElapsedMs && localElapsed > 0) {
-          timer.elapsedMs = Math.min(21600000, localElapsed);
+          timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, localElapsed);
           timer.running = false;
           timer.completed = timer.elapsedMs >= targetMs;
           timer.startedAt = 0;
@@ -411,7 +412,7 @@
           saveTimerBlock(session, timer);
           return;
         }
-        timer.elapsedMs = Math.min(21600000, cloudElapsedMs);
+        timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, cloudElapsedMs);
         timer.completed = block.status === "completed" || cloudElapsedMs >= targetMs;
         timer.running = false;
         timer.startedAt = 0;
@@ -432,7 +433,7 @@
     const block = guidedBlockFor(session);
     if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
     const snapshot = {
-      elapsedMs: Math.min(21600000, Math.round(timer.elapsedMs)),
+      elapsedMs: Math.min(MAX_SECTION_PRACTICE_MS, Math.round(timer.elapsedMs)),
       status: timer.running ? "running" : (timer.completed ? "completed" : (timer.elapsedMs > 0 ? "paused" : "pending")),
       timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
       completedAt: timer.completed && !timer.running ? (timer.completedAt || new Date().toISOString()) : "",
@@ -739,7 +740,7 @@
     if (!session || (blockID && guidedBlockFor(session)?.id !== blockID)) return;
     const timer = timerFor(session);
     if (timer.running) {
-      timer.elapsedMs = Math.min(21600000, elapsedFor(timer));
+      timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, elapsedFor(timer));
       timer.running = false;
       timer.startedAt = 0;
     }
@@ -760,7 +761,7 @@
     if (!session) return;
     const timer = timerFor(session);
     if (!timer.running) return;
-    timer.elapsedMs = Math.min(21600000, elapsedFor(timer));
+    timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, elapsedFor(timer));
     timer.startedAt = Date.now();
     persistTimerState();
     saveTimerBlock(session, timer);
