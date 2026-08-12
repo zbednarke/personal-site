@@ -41,7 +41,9 @@
   }
 
   function sessionSummary(session) {
-    const minutes = Number(session.totalMinutes || 0);
+    const minutes = Number.isFinite(Number(session.totalDurationMs))
+      ? Math.round((Number(session.totalDurationMs) / 60000) * 10) / 10
+      : Number(session.totalMinutes || 0);
     const recordings = Number(session.recordingCount || 0);
     return `${minutes} minute${minutes === 1 ? "" : "s"} practiced · ${recordings} recording${recordings === 1 ? "" : "s"}`;
   }
@@ -126,7 +128,7 @@
         <div class="session-history-card-top"><span>${new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span><span>${session.status === "active" ? "Today" : "Finished"}</span></div>
         <h4>${escapeHTML(session.title)}</h4>
         <p>${escapeHTML(session.summary || "No session note yet.")}</p>
-        <div class="session-history-card-meta"><span>${session.totalMinutes} min</span><span>${session.recordingCount} takes</span></div>`;
+        <div class="session-history-card-meta"><span>${Number.isFinite(Number(session.totalDurationMs)) ? (Number(session.totalDurationMs) / 60000).toFixed(1) : session.totalMinutes} min</span><span>${session.recordingCount} takes</span></div>`;
       history.appendChild(card);
     });
   }

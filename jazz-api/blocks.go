@@ -24,6 +24,7 @@ type practiceBlock struct {
 	TargetMinutes  int                     `json:"targetMinutes"`
 	Notes          string                  `json:"notes"`
 	ElapsedMS      int                     `json:"elapsedMs"`
+	RecordedMS     int                     `json:"recordedMs"`
 	Status         string                  `json:"status"`
 	TimerStartedAt *time.Time              `json:"timerStartedAt,omitempty"`
 	CompletedAt    *time.Time              `json:"completedAt,omitempty"`
@@ -219,6 +220,11 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 		app.serverError(w, err)
 		return
 	}
+	block.Recordings, err = app.loadBlockRecordings(r.Context(), userID, block.ID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
 	if input.Notes != nil {
 		if len(*input.Notes) > 4000 {
 			writeError(w, http.StatusUnprocessableEntity, "practice block notes are too long")
@@ -227,7 +233,7 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 		block.Notes = *input.Notes
 	}
 	if input.ElapsedMS != nil {
-		if *input.ElapsedMS < 0 || *input.ElapsedMS > 21600000 {
+		if *input.ElapsedMS < 0 || *input.ElapsedMS > maxBlockElapsedMS {
 			writeError(w, http.StatusUnprocessableEntity, "practice timer is invalid")
 			return
 		}
@@ -277,16 +283,12 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 	if block.Status != "completed" {
 		block.CompletedAt = nil
 	}
+	reconcileBlockPracticeTime(&block)
 
 	err = app.db.QueryRow(r.Context(), `
 		UPDATE practice_blocks SET notes=NULLIF($1,''),elapsed_ms=$2,status=$3,timer_started_at=$4,completed_at=$5,updated_at=now()
 		WHERE id=$6 AND user_id=$7
 		RETURNING updated_at`, block.Notes, block.ElapsedMS, block.Status, block.TimerStartedAt, block.CompletedAt, block.ID, userID).Scan(&block.UpdatedAt)
-	if err != nil {
-		app.serverError(w, err)
-		return
-	}
-	block.Recordings, err = app.loadBlockRecordings(r.Context(), userID, block.ID)
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -328,8 +330,43 @@ func (app *application) loadPracticeBlocks(ctx context.Context, userID, sessionI
 		if err != nil {
 			return nil, err
 		}
+		reconcileBlockPracticeTime(&blocks[index])
 	}
 	return blocks, nil
+}
+
+func recordingPracticeMS(recordings []blockRecordingSummary) int {
+	total := 0
+	for _, recording := range recordings {
+		if recording.Status != "ready" && recording.Status != "uploading" {
+			continue
+		}
+		total += max(0, recording.DurationMS)
+		if total >= maxBlockElapsedMS {
+			return maxBlockElapsedMS
+		}
+	}
+	return total
+}
+
+const maxBlockElapsedMS = maxTakesPerBlock * maxDurationMS
+
+// A saved recording is durable evidence that the corresponding practice took
+// place. It therefore establishes a floor for a block's elapsed time. The
+// timer may be higher because intentionally cancelled takes still count as
+// practice, but a stale timer can never make recorded time disappear.
+func reconcileBlockPracticeTime(block *practiceBlock) {
+	block.RecordedMS = recordingPracticeMS(block.Recordings)
+	block.ElapsedMS = max(block.ElapsedMS, block.RecordedMS)
+	if block.ElapsedMS < block.TargetMinutes*60*1000 {
+		return
+	}
+	block.Status = "completed"
+	block.TimerStartedAt = nil
+	if block.CompletedAt == nil {
+		completedAt := block.UpdatedAt
+		block.CompletedAt = &completedAt
+	}
 }
 
 func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID uuid.UUID) ([]blockRecordingSummary, error) {
