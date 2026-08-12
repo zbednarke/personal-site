@@ -871,7 +871,11 @@
       clearTimeout(archiveNoteSaveDelays.get(recording.id));
       archiveNoteSaveDelays.delete(recording.id);
       const notes = textarea.value.trim();
-      if (notes === String(recording.notes || "")) return;
+      if (notes === String(recording.notes || "")) {
+        status.textContent = notes ? "Cloud synced" : "Optional";
+        status.dataset.tone = notes ? "saved" : "";
+        return;
+      }
       status.textContent = "Saving…";
       status.dataset.tone = "saving";
       const previous = archiveNoteSaveChains.get(recording.id) || Promise.resolve();
