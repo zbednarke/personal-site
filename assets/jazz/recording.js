@@ -773,6 +773,7 @@
         const card = document.createElement("article");
         card.className = "recording-item";
         card.dataset.recordingId = recording.id;
+        card.dataset.durationMs = String(Number(recording.durationMs || 0));
         card.innerHTML = `
           <div class="recording-item-top"><span>${new Date(recording.recordedAt).toLocaleDateString()}</span><span>${formatDuration(recording.durationMs)} · ${format}</span></div>
           <h4>${escapeHTML(title)}${recording.takeNumber ? ` · Take ${recording.takeNumber}` : ""}</h4>
@@ -816,15 +817,21 @@
       const query = asset ? `?asset=${encodeURIComponent(asset)}` : "";
       const result = await api(`/recordings/${id}/playback-url${query}`, { method: "POST", body: "{}" });
       const tagName = result.contentType?.startsWith("video/") ? "video" : "audio";
-      let player = $("audio, video", card);
-      if (!player || player.tagName.toLowerCase() !== tagName) {
-        player?.remove();
-        player = document.createElement(tagName);
-        player.controls = true;
-        if (tagName === "video") player.playsInline = true;
+      const existingPlayer = $("audio, video", card);
+      existingPlayer?.closest(".video-player-shell")?.remove();
+      if (existingPlayer?.isConnected) existingPlayer.remove();
+      const player = document.createElement(tagName);
+      player.controls = tagName === "audio";
+      if (tagName === "video") player.playsInline = true;
+      const expectedDurationMS = Number(result.durationMs || card.dataset.durationMs || 0);
+      if (tagName === "video" && globalThis.JazzMediaPlayback?.createVideoPlayer) {
+        card.appendChild(globalThis.JazzMediaPlayback.createVideoPlayer(player, { expectedDurationMS }));
+      } else {
         card.appendChild(player);
       }
       player.src = result.url;
+      player.preload = "metadata";
+      player.load();
       await player.play();
     } catch (error) {
       setRecorderState(`Playback failed: ${error.message}`);

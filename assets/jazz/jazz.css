@@ -287,6 +287,12 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .section-take audio, .section-take video { flex-basis: 100%; width: 100%; }
 .section-take audio { height: 32px; }
 .section-take video { max-height: 360px; background: #090909; }
+.video-player-shell { flex-basis: 100%; width: 100%; background: #090909; border: 1px solid rgba(181,147,91,.2); }
+.video-player-shell video { display: block; width: 100%; cursor: pointer; }
+.video-player-controls { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 7px 8px; padding: 8px; background: #131314; }
+.video-player-controls button { border: 0; padding: 0; color: var(--brass); background: transparent; font: 700 10px/1.2 var(--mono); text-transform: uppercase; cursor: pointer; }
+.video-player-controls span { color: var(--ink); font: 10px/1.2 var(--mono); white-space: nowrap; }
+.video-player-controls input { grid-column: 1 / -1; grid-row: 1; width: 100%; min-width: 0; accent-color: var(--brass); cursor: pointer; }
 .take-note-editor { flex-basis: 100%; width: 100%; display: grid; gap: 7px; padding-top: 9px; border-top: 1px solid var(--line); }
 .take-note-editor[hidden] { display: none; }
 .take-note-editor > span { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

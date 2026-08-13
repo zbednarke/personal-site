@@ -771,10 +771,11 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var mediaKind, audioObjectName, audioContentType, videoObjectName, videoContentType string
+	var durationMS int
 	err = app.db.QueryRow(r.Context(), `
-		SELECT media_kind,object_name,content_type,COALESCE(video_object_name,''),COALESCE(video_content_type,'')
+		SELECT media_kind,object_name,content_type,COALESCE(video_object_name,''),COALESCE(video_content_type,''),COALESCE(duration_ms,0)
 		FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).
-		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType)
+		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType, &durationMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -817,7 +818,7 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires, "asset": asset, "contentType": contentType})
+	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires, "asset": asset, "contentType": contentType, "durationMs": durationMS})
 }
 
 func (app *application) updateRecording(w http.ResponseWriter, r *http.Request) {
