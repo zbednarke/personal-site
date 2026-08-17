@@ -517,7 +517,7 @@
     }
     losslessRecorder = null;
     recordedSampleRate = result.sampleRate;
-    const { blob, durationMS } = result;
+    const { blob, durationMS, waveformPeaks } = result;
     const contentType = "audio/wav";
     stopCapture();
     if (previewURL) URL.revokeObjectURL(previewURL);
@@ -527,7 +527,7 @@
       preview.src = previewURL;
       preview.hidden = false;
     }
-    const capture = captureUpload(blob, durationMS, contentType, videoResult);
+    const capture = captureUpload(blob, durationMS, contentType, videoResult, waveformPeaks);
     captureFinalizing = false;
     setRecorderState(automatic
       ? "Four-hour take captured - uploading in the background"
@@ -556,7 +556,7 @@
     return true;
   }
 
-  function captureUpload(blob, durationMS, contentType, videoResult = null) {
+  function captureUpload(blob, durationMS, contentType, videoResult = null, waveformPeaks = []) {
     const metadataForm = $("#recording-metadata");
     const metadata = metadataForm ? new FormData(metadataForm) : new FormData();
     const blockContext = activeBlockContext ? { ...activeBlockContext } : null;
@@ -573,6 +573,7 @@
       videoFrameRate: videoResult?.frameRate || 0,
       recordedAt,
       sampleRate: recordedSampleRate,
+      waveformPeaks,
       practiceSessionID: currentPracticeSessionID || globalThis.JazzPracticeSession.currentID(),
       blockContext,
       tuneId: blockContext ? String(blockContext.tuneId || "") : String(metadata.get("tuneId") || ""),
@@ -595,6 +596,7 @@
         durationMs: capture.durationMS,
         sampleRate: capture.sampleRate,
         channels: 1,
+        waveformPeaks: capture.waveformPeaks || [],
         recordedAt: capture.recordedAt,
         practiceSessionId: capture.practiceSessionID,
         practiceBlockId: capture.blockContext?.id || "",

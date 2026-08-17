@@ -175,3 +175,49 @@ func TestReconcileBlockPracticeTimePreservesCancelledPracticeTime(t *testing.T) 
 		t.Fatalf("cancelled practice was lost: recorded=%d elapsed=%d", block.RecordedMS, block.ElapsedMS)
 	}
 }
+
+func TestParseArchiveDateRejectsNormalizedAndImpossibleDates(t *testing.T) {
+	valid, err := parseArchiveDate("2026-08-09")
+	if err != nil || valid.Format("2006-01-02") != "2026-08-09" {
+		t.Fatalf("valid archive date rejected: date=%v err=%v", valid, err)
+	}
+	for _, value := range []string{"2026-8-9", "2026-02-30", "", "Aug 9, 2026"} {
+		if _, err := parseArchiveDate(value); err == nil {
+			t.Fatalf("invalid archive date %q was accepted", value)
+		}
+	}
+}
+
+func TestArchiveRangeIsBounded(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/v1/archive/calendar?from=2026-08-01&to=2026-08-31", nil)
+	from, to, err := archiveRange(request)
+	if err != nil || from.Format("2006-01-02") != "2026-08-01" || to.Format("2006-01-02") != "2026-08-31" {
+		t.Fatalf("valid archive range rejected: from=%v to=%v err=%v", from, to, err)
+	}
+	for _, rawQuery := range []string{
+		"from=2026-08-31&to=2026-08-01",
+		"from=2025-01-01&to=2026-08-01",
+		"from=bad&to=2026-08-01",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/v1/archive/calendar?"+rawQuery, nil)
+		if _, _, err := archiveRange(request); err == nil {
+			t.Fatalf("invalid archive range %q was accepted", rawQuery)
+		}
+	}
+}
+
+func TestNormalizeWaveformPeaks(t *testing.T) {
+	peaks, err := normalizeWaveformPeaks([]float64{0, 0.123456, 1})
+	if err != nil || len(peaks) != 3 || peaks[1] != 0.1235 {
+		t.Fatalf("valid waveform rejected or not normalized: peaks=%v err=%v", peaks, err)
+	}
+	if _, err := normalizeWaveformPeaks([]float64{-0.1}); err == nil {
+		t.Fatal("negative waveform peak was accepted")
+	}
+	if _, err := normalizeWaveformPeaks([]float64{1.1}); err == nil {
+		t.Fatal("oversized waveform peak was accepted")
+	}
+	if _, err := normalizeWaveformPeaks(make([]float64, 1201)); err == nil {
+		t.Fatal("oversized waveform payload was accepted")
+	}
+}
