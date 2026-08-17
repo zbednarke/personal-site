@@ -8,6 +8,7 @@
       this.node = null;
       this.silentGain = null;
       this.chunks = [];
+      this.chunkPeaks = [];
       this.frameCount = 0;
       this.flushed = null;
     }
@@ -30,6 +31,7 @@
         if (event.data?.type === "samples") {
           const samples = event.data.samples;
           this.chunks.push(samples);
+          this.chunkPeaks.push(chunkPeak(samples));
           this.frameCount += samples.length;
         } else if (event.data?.type === "flushed") {
           this.flushed?.();
@@ -58,6 +60,7 @@
         channels: 1,
         bitDepth: 24,
         durationMS: Math.round((this.frameCount / sampleRate) * 1000),
+        waveformPeaks: compactPeaks(this.chunkPeaks, 600),
       };
     }
 
@@ -73,9 +76,31 @@
       this.node = null;
       this.silentGain = null;
       this.chunks = [];
+      this.chunkPeaks = [];
       this.frameCount = 0;
       this.flushed = null;
     }
+  }
+
+  function chunkPeak(samples) {
+    let peak = 0;
+    for (let index = 0; index < samples.length; index += 1) peak = Math.max(peak, Math.abs(samples[index]));
+    return Math.min(1, peak);
+  }
+
+  function compactPeaks(peaks, limit = 600) {
+    if (!Array.isArray(peaks) || peaks.length === 0) return [];
+    const size = Math.max(1, Math.min(1200, Math.round(limit)));
+    if (peaks.length <= size) return peaks.map((peak) => Math.round(Math.max(0, Math.min(1, Number(peak) || 0)) * 10000) / 10000);
+    const result = [];
+    for (let bin = 0; bin < size; bin += 1) {
+      const start = Math.floor((bin / size) * peaks.length);
+      const end = Math.max(start + 1, Math.floor(((bin + 1) / size) * peaks.length));
+      let peak = 0;
+      for (let index = start; index < end; index += 1) peak = Math.max(peak, Number(peaks[index]) || 0);
+      result.push(Math.round(Math.max(0, Math.min(1, peak)) * 10000) / 10000);
+    }
+    return result;
   }
 
   function encodeWAV24(chunks, frameCount, sampleRate) {
@@ -116,5 +141,6 @@
     for (let index = 0; index < text.length; index += 1) view.setUint8(offset + index, text.charCodeAt(index));
   }
 
+  LosslessRecorder.compactPeaks = compactPeaks;
   globalThis.JazzLosslessRecorder = LosslessRecorder;
 })();

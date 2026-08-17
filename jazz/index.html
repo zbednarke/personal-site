@@ -29,8 +29,8 @@
       <span><strong>Jazz Project</strong><small>Private trumpet archive</small></span>
     </a>
     <div class="virtuoso-nav-links">
-      <a class="active" href="#today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
-      <span class="disabled" title="Archive screen is next"><span aria-hidden="true">▱</span>Archive <em>Next</em></span>
+      <a class="active" href="#today" data-jazz-view="today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
+      <a href="#archive" data-jazz-view="archive"><span aria-hidden="true">▱</span>Archive</a>
       <span class="disabled" title="Progress screen is coming later"><span aria-hidden="true">⌁</span>Progress</span>
     </div>
     <div class="virtuoso-nav-footer">
@@ -41,7 +41,7 @@
 
   <header class="virtuoso-mobile-header">
     <strong>Jazz Project</strong>
-    <span>Today</span>
+    <span id="mobile-view-label">Today</span>
   </header>
 
   <header class="site-header">
@@ -145,6 +145,97 @@
 
       <div class="week-card today-week-data" aria-hidden="true">
         <span id="week-hours">0.0</span><span id="week-percent">0%</span><span id="week-meter"></span><div id="week-chart"></div><p id="week-note"></p>
+      </div>
+    </section>
+
+    <section class="archive-screen" id="archive" aria-labelledby="archive-title" hidden>
+      <header class="archive-screen-header">
+        <div>
+          <p class="eyebrow">Private recording archive</p>
+          <h1 id="archive-title">Practice Atlas</h1>
+          <p>Move through the calendar, reopen a section, and listen to the work exactly where it happened.</p>
+        </div>
+        <div class="archive-month-summary" aria-live="polite">
+          <span>This month</span>
+          <strong id="archive-month-time">0 min</strong>
+          <small id="archive-month-takes">0 takes</small>
+        </div>
+      </header>
+
+      <div class="archive-workspace">
+        <div class="archive-browser">
+          <section class="archive-calendar-card" aria-labelledby="archive-month-title">
+            <header class="archive-calendar-head">
+              <button type="button" id="archive-previous-month" aria-label="Previous month">‹</button>
+              <h2 id="archive-month-title">Month</h2>
+              <div>
+                <button type="button" id="archive-today-button">Today</button>
+                <button type="button" id="archive-next-month" aria-label="Next month">›</button>
+              </div>
+            </header>
+            <div class="archive-calendar-legend"><span>Practice density</span><span><i></i> Recorded practice</span></div>
+            <div class="archive-calendar" id="archive-calendar" role="grid" aria-labelledby="archive-month-title" aria-busy="true"></div>
+            <p class="archive-inline-status" id="archive-calendar-status" role="status">Loading the archive…</p>
+          </section>
+
+          <section class="archive-day-card" aria-labelledby="archive-day-title">
+            <header class="archive-day-head">
+              <div>
+                <span>Selected day</span>
+                <h2 id="archive-day-title">Choose a day</h2>
+              </div>
+              <dl class="archive-day-stats">
+                <div><dt>Time</dt><dd id="archive-day-time">0 min</dd></div>
+                <div><dt>Takes</dt><dd id="archive-day-takes">0</dd></div>
+              </dl>
+            </header>
+            <div class="archive-day-content" id="archive-day-content" aria-live="polite">
+              <p class="archive-empty">Select a practice day to open its notes, sections, and recordings.</p>
+            </div>
+          </section>
+        </div>
+
+        <aside class="archive-listening-room" id="archive-listening-room" aria-labelledby="archive-player-title">
+          <header class="archive-player-status">
+            <span><i></i><b id="archive-player-state">Listening room</b></span>
+            <button type="button" id="archive-player-close" aria-label="Close player">×</button>
+          </header>
+          <div class="archive-player-empty" id="archive-player-empty">
+            <span aria-hidden="true">◎</span>
+            <h2 id="archive-player-title">Choose a take</h2>
+            <p>Open any section from the selected day, then choose a recording to begin listening.</p>
+          </div>
+          <div class="archive-player" id="archive-player" hidden>
+            <div class="archive-player-heading">
+              <span id="archive-player-take">Take</span>
+              <h2 id="archive-player-name">Recording</h2>
+              <p id="archive-player-date"></p>
+            </div>
+            <div class="archive-media-host" id="archive-media-host"></div>
+            <div class="archive-waveform">
+              <canvas id="archive-waveform-canvas" aria-hidden="true"></canvas>
+              <input id="archive-player-seek" type="range" min="0" max="0" value="0" step="0.05" aria-label="Recording position">
+            </div>
+            <div class="archive-player-time"><span id="archive-player-current">00:00</span><span id="archive-player-duration">00:00</span></div>
+            <div class="archive-player-controls">
+              <button type="button" id="archive-player-previous" aria-label="Previous take">|◀</button>
+              <button type="button" id="archive-player-back" aria-label="Back 10 seconds">−10</button>
+              <button class="archive-player-toggle" type="button" id="archive-player-toggle" aria-label="Play">▶</button>
+              <button type="button" id="archive-player-forward" aria-label="Forward 10 seconds">+10</button>
+              <button type="button" id="archive-player-next" aria-label="Next take">▶|</button>
+            </div>
+            <div class="archive-player-asset-switch" id="archive-player-asset-switch" hidden>
+              <button type="button" data-archive-asset="video">Video</button>
+              <button type="button" data-archive-asset="audio">Lossless audio</button>
+            </div>
+            <dl class="archive-player-metadata" id="archive-player-metadata"></dl>
+            <label class="archive-player-note">
+              <span><strong>Take note</strong><em id="archive-player-note-status">Cloud synced</em></span>
+              <textarea id="archive-player-note" maxlength="2000" rows="5" placeholder="What do you hear in this take?"></textarea>
+            </label>
+            <button class="archive-delete-take" type="button" id="archive-delete-take">Delete take</button>
+          </div>
+        </aside>
       </div>
     </section>
 
@@ -305,5 +396,7 @@
   <script src="../assets/jazz/upload-queue.js"></script>
   <script src="../assets/jazz/media-playback.js"></script>
   <script src="../assets/jazz/recording.js"></script>
+  <script src="../assets/jazz/archive-utils.js"></script>
+  <script src="../assets/jazz/archive.js"></script>
 </body>
 </html>

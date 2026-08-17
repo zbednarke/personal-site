@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -99,27 +100,28 @@ type stateResponse struct {
 }
 
 type recordingInitRequest struct {
-	MediaKind         string   `json:"mediaKind"`
-	ContentType       string   `json:"contentType"`
-	Codec             string   `json:"codec"`
-	SizeBytes         int64    `json:"sizeBytes"`
-	DurationMS        int      `json:"durationMs"`
-	SampleRate        int      `json:"sampleRate"`
-	Channels          int      `json:"channels"`
-	RecordedAt        string   `json:"recordedAt"`
-	PracticeSessionID string   `json:"practiceSessionId"`
-	PracticeBlockID   string   `json:"practiceBlockId"`
-	TuneID            string   `json:"tuneId"`
-	MissionID         string   `json:"missionId"`
-	SkillIDs          []string `json:"skillIds"`
-	TakeNumber        int      `json:"takeNumber"`
-	Notes             string   `json:"notes"`
-	VideoContentType  string   `json:"videoContentType"`
-	VideoCodec        string   `json:"videoCodec"`
-	VideoSizeBytes    int64    `json:"videoSizeBytes"`
-	VideoWidth        int      `json:"videoWidth"`
-	VideoHeight       int      `json:"videoHeight"`
-	VideoFrameRate    float64  `json:"videoFrameRate"`
+	MediaKind         string    `json:"mediaKind"`
+	ContentType       string    `json:"contentType"`
+	Codec             string    `json:"codec"`
+	SizeBytes         int64     `json:"sizeBytes"`
+	DurationMS        int       `json:"durationMs"`
+	SampleRate        int       `json:"sampleRate"`
+	Channels          int       `json:"channels"`
+	RecordedAt        string    `json:"recordedAt"`
+	PracticeSessionID string    `json:"practiceSessionId"`
+	PracticeBlockID   string    `json:"practiceBlockId"`
+	TuneID            string    `json:"tuneId"`
+	MissionID         string    `json:"missionId"`
+	SkillIDs          []string  `json:"skillIds"`
+	TakeNumber        int       `json:"takeNumber"`
+	Notes             string    `json:"notes"`
+	VideoContentType  string    `json:"videoContentType"`
+	VideoCodec        string    `json:"videoCodec"`
+	VideoSizeBytes    int64     `json:"videoSizeBytes"`
+	VideoWidth        int       `json:"videoWidth"`
+	VideoHeight       int       `json:"videoHeight"`
+	VideoFrameRate    float64   `json:"videoFrameRate"`
+	WaveformPeaks     []float64 `json:"waveformPeaks"`
 }
 
 type recordingCompleteRequest struct {
@@ -136,6 +138,8 @@ type recordingRow struct {
 	Codec            string    `json:"codec,omitempty"`
 	SizeBytes        int64     `json:"sizeBytes,omitempty"`
 	DurationMS       int       `json:"durationMs,omitempty"`
+	SampleRate       int       `json:"sampleRate,omitempty"`
+	Channels         int       `json:"channels,omitempty"`
 	RecordedAt       time.Time `json:"recordedAt"`
 	Status           string    `json:"status"`
 	TuneID           string    `json:"tuneId,omitempty"`
@@ -160,6 +164,7 @@ type recordingRow struct {
 	VideoHeight      int       `json:"videoHeight,omitempty"`
 	VideoFrameRate   float64   `json:"videoFrameRate,omitempty"`
 	VideoObjectName  string    `json:"-"`
+	WaveformPeaks    []float64 `json:"waveformPeaks,omitempty"`
 }
 
 func main() {
@@ -280,6 +285,8 @@ func (app *application) routes() http.Handler {
 	mux.Handle("GET /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.listPracticeBlocks)))
 	mux.Handle("POST /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.bootstrapPracticeBlocks)))
 	mux.Handle("PATCH /v1/practice-blocks/{id}", app.authenticate(http.HandlerFunc(app.updatePracticeBlock)))
+	mux.Handle("GET /v1/archive/calendar", app.authenticate(http.HandlerFunc(app.archiveCalendar)))
+	mux.Handle("GET /v1/archive/days/{date}", app.authenticate(http.HandlerFunc(app.archiveDay)))
 	mux.Handle("GET /v1/recordings", app.authenticate(http.HandlerFunc(app.listRecordings)))
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
@@ -489,6 +496,20 @@ func validateRecordingMedia(input recordingInitRequest) (string, string, string,
 	return mediaKind, audioType, videoType, nil
 }
 
+func normalizeWaveformPeaks(peaks []float64) ([]float64, error) {
+	if len(peaks) > 1200 {
+		return nil, errors.New("recording waveform is too large")
+	}
+	result := make([]float64, len(peaks))
+	for index, peak := range peaks {
+		if math.IsNaN(peak) || math.IsInf(peak, 0) || peak < 0 || peak > 1 {
+			return nil, errors.New("recording waveform is invalid")
+		}
+		result[index] = math.Round(peak*10000) / 10000
+	}
+	return result, nil
+}
+
 func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	var input recordingInitRequest
 	if err := readJSON(w, r, &input); err != nil {
@@ -496,6 +517,11 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mediaKind, baseType, videoType, err := validateRecordingMedia(input)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	waveformPeaks, err := normalizeWaveformPeaks(input.WaveformPeaks)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -550,16 +576,17 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		videoObjectName = fmt.Sprintf("users/%s/%s/%s/video.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(videoType))
 	}
 	skillJSON, _ := json.Marshal(input.SkillIDs)
+	waveformJSON, _ := json.Marshal(waveformPeaks)
 	_, err = app.db.Exec(r.Context(), `
 		INSERT INTO recordings
 		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
-		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate)
+		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate,waveform_peaks)
 		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''),
-		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0))`,
+		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0),$27)`,
 		recordingID, userID, clean(input.PracticeSessionID, 160), practiceBlockID, app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
 		input.DurationMS, input.SampleRate, input.Channels, recordedAt, clean(input.TuneID, 100), clean(input.MissionID, 100), skillJSON,
 		input.TakeNumber, clean(input.Notes, 500), mediaKind, videoObjectName, videoType, clean(input.VideoCodec, 120), input.VideoSizeBytes,
-		input.VideoWidth, input.VideoHeight, input.VideoFrameRate)
+		input.VideoWidth, input.VideoHeight, input.VideoFrameRate, waveformJSON)
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -723,12 +750,13 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := app.db.Query(r.Context(), `
-		SELECT r.id,r.content_type,COALESCE(r.codec,''),COALESCE(r.size_bytes,r.expected_size_bytes),COALESCE(r.duration_ms,0),r.recorded_at,r.status,
+		SELECT r.id,r.content_type,COALESCE(r.codec,''),COALESCE(r.size_bytes,r.expected_size_bytes),COALESCE(r.duration_ms,0),
+		COALESCE(r.sample_rate,0),COALESCE(r.channels,0),r.recorded_at,r.status,
 		COALESCE(r.tune_id,''),COALESCE(r.mission_id,''),r.skill_ids,COALESCE(r.take_number,0),COALESCE(r.notes,''),
 		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),
 		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name,
 		COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_codec,''),COALESCE(r.video_size_bytes,r.video_expected_size_bytes,0),
-		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,'')
+		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),r.waveform_peaks
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
 		LEFT JOIN practice_blocks pb ON pb.id = r.practice_block_id AND pb.user_id = r.user_id
@@ -742,14 +770,16 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item recordingRow
 		var skills []byte
-		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.RecordedAt, &item.Status,
+		var waveform []byte
+		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.SampleRate, &item.Channels, &item.RecordedAt, &item.Status,
 			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID,
 			&item.BlockDate, &item.BlockKey, &item.BlockTitle, &item.BlockCategory, &item.BlockTrack, &item.ObjectName,
-			&item.MediaKind, &item.VideoContentType, &item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate, &item.VideoObjectName); err != nil {
+			&item.MediaKind, &item.VideoContentType, &item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate, &item.VideoObjectName, &waveform); err != nil {
 			app.serverError(w, err)
 			return
 		}
 		_ = json.Unmarshal(skills, &item.SkillIDs)
+		_ = json.Unmarshal(waveform, &item.WaveformPeaks)
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
