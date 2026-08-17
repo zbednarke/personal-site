@@ -106,6 +106,59 @@ func TestVideoExtensions(t *testing.T) {
 	}
 }
 
+func TestRecordingDownloadFilename(t *testing.T) {
+	recordedAt := time.Date(2026, 8, 12, 20, 34, 19, 0, time.UTC)
+	tests := []struct {
+		name, title, asset, contentType, want string
+		take                                  int
+	}{
+		{name: "lossless section take", title: "Warm up", take: 2, asset: "audio", contentType: "audio/wav", want: "2026-08-12-warm-up-take-2-audio.wav"},
+		{name: "video section take", title: "Articulation & Flexibility!", take: 3, asset: "video", contentType: "video/webm", want: "2026-08-12-articulation-flexibility-take-3-video.webm"},
+		{name: "uncategorized fallback", title: "", asset: "audio", contentType: "audio/webm", want: "2026-08-12-practice-audio.webm"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := recordingDownloadFilename(recordedAt, test.title, test.take, test.asset, test.contentType); got != test.want {
+				t.Fatalf("recordingDownloadFilename() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeShareAsset(t *testing.T) {
+	tests := []struct {
+		requested, mediaKind, want string
+		wantError                  bool
+	}{
+		{requested: "", mediaKind: "audio", want: "audio"},
+		{requested: "", mediaKind: "video", want: "video"},
+		{requested: "audio", mediaKind: "video", want: "audio"},
+		{requested: "video", mediaKind: "video", want: "video"},
+		{requested: "video", mediaKind: "audio", wantError: true},
+		{requested: "other", mediaKind: "video", wantError: true},
+	}
+	for _, test := range tests {
+		got, err := normalizeShareAsset(test.requested, test.mediaKind)
+		if test.wantError && err == nil {
+			t.Fatalf("normalizeShareAsset(%q, %q) accepted an invalid asset", test.requested, test.mediaKind)
+		}
+		if !test.wantError && (err != nil || got != test.want) {
+			t.Fatalf("normalizeShareAsset(%q, %q) = %q, %v; want %q", test.requested, test.mediaKind, got, err, test.want)
+		}
+	}
+}
+
+func TestNewPublicShareToken(t *testing.T) {
+	first, err := newPublicShareToken()
+	if err != nil || !publicShareTokenPattern.MatchString(first) {
+		t.Fatalf("invalid public share token %q: %v", first, err)
+	}
+	second, err := newPublicShareToken()
+	if err != nil || first == second {
+		t.Fatalf("share tokens were not independently generated: first=%q second=%q err=%v", first, second, err)
+	}
+}
+
 func TestRecordingSectionLimits(t *testing.T) {
 	if maxTakesPerBlock != 20 {
 		t.Fatalf("max takes per block = %d, want 20", maxTakesPerBlock)

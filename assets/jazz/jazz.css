@@ -281,8 +281,10 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .section-empty { margin: 11px 0 0; color: var(--faint); font-size: 10px; }
 .section-take { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 6, 15, 0.48); }
 .section-take > span { color: var(--muted); font: 9px var(--mono); }
-.section-take > div { display: flex; gap: 9px; }
+.section-take > div { display: flex; flex-wrap: wrap; gap: 9px; }
 .section-take button { border: 0; padding: 0; background: transparent; color: var(--violet); cursor: pointer; font: 9px var(--mono); text-decoration: underline; text-underline-offset: 3px; }
+.section-take .take-download-button, .recording-item-actions .download-recording { color: var(--brass); }
+.section-take .take-share-button, .recording-item-actions .share-recording { color: var(--green); text-decoration-style: dotted; }
 .section-take .take-note-button, .recording-item-actions .take-note-button { color: var(--green); text-decoration-style: dotted; }
 .section-take audio, .section-take video { flex-basis: 100%; width: 100%; }
 .section-take audio { height: 32px; }
@@ -421,7 +423,7 @@ main, footer { max-width: 1440px; margin: 0 auto; }
 .recording-item h4 { margin: 19px 0 4px; color: var(--ink); font-size: 16px; }
 .recording-item p { min-height: 35px; margin: 0; color: var(--muted); font-size: 11px; }
 .recording-context { display: block; margin-top: 9px; color: var(--brass); font: 9px/1.5 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
-.recording-item-actions { display: flex; gap: 15px; margin-top: 18px; }
+.recording-item-actions { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 18px; }
 .recording-item-actions button { border: 0; padding: 0; background: none; color: var(--violet); cursor: pointer; font: 10px var(--mono); text-decoration: underline; text-underline-offset: 4px; }
 .recording-item-actions .delete-recording { color: var(--faint); }
 .recording-item .take-note-editor { margin-top: 14px; }
@@ -926,7 +928,12 @@ footer p[data-tone="offline"] { color: var(--red); }
 .archive-player-note em { color: var(--green); font: normal 7px var(--mono); text-transform: uppercase; }
 .archive-player-note textarea { width: 100%; min-height: 108px; resize: vertical; padding: 11px 12px; border: 1px solid var(--line); border-radius: 2px; background: #151415; color: var(--ink); font-size: 11px; line-height: 1.55; }
 .archive-player-note textarea:focus { outline: 1px solid var(--brass); border-color: var(--brass); }
-.archive-delete-take { margin-top: 14px; padding: 0; border: 0; background: transparent; color: var(--red); cursor: pointer; font: 8px var(--mono); text-decoration: underline; text-underline-offset: 3px; }
+.archive-take-actions { display: flex; align-items: center; gap: 18px; margin-top: 14px; }
+.archive-take-actions button { padding: 0; border: 0; background: transparent; cursor: pointer; font: 8px var(--mono); text-decoration: underline; text-underline-offset: 3px; }
+.archive-download-take { color: var(--brass-light); }
+.archive-share-take { color: var(--green); text-decoration-style: dotted !important; }
+.archive-delete-take { color: var(--red); }
+.archive-take-actions button:disabled { cursor: default; opacity: 0.45; }
 
 @media (max-width: 1180px) {
   .virtuoso-archive main { margin-left: 218px; }
@@ -942,7 +949,7 @@ footer p[data-tone="offline"] { color: var(--red); }
   .archive-player-asset-switch { grid-column: 1; }
   .archive-player-metadata,
   .archive-player-note,
-  .archive-delete-take { grid-column: 2; }
+  .archive-take-actions { grid-column: 2; }
   .archive-player-metadata { grid-row: 1 / span 4; }
 }
 

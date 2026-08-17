@@ -28,6 +28,11 @@ storage. Practice sessions group session-wide notes, structured off-mic
 activities, and their associated recordings. New browser takes are captured as
 48 kHz / 24-bit mono lossless WAV files.
 
+The recordings bucket remains private. Explicit per-asset share actions create
+permanent opaque bearer links on `zachbednarke.com`; each visit resolves through
+the API to fresh short-lived storage access, so shared URLs stay stable without
+publishing the rest of the archive.
+
 The daily guide is stored as dated practice blocks within an active practice
 session. Each block keeps its own instructions, autosaved notes, synchronized
 recording-derived practice time, and up to twenty categorized recordings with

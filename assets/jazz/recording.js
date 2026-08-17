@@ -784,6 +784,10 @@
           <div class="recording-item-actions">
             <button type="button" class="play-recording" data-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${ready ? (isVideo ? "Play video" : "Play") : "Uploading…"}</button>
             ${isVideo ? `<button type="button" class="play-audio-master" data-asset="audio" ${ready ? "" : "disabled"}>Lossless audio</button>` : ""}
+            <button type="button" class="download-recording" data-download-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
+            ${isVideo ? `<button type="button" class="download-recording" data-download-asset="audio" ${ready ? "" : "disabled"}>Download WAV</button>` : ""}
+            <button type="button" class="share-recording" data-share-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${isVideo ? "Share video" : "Copy share link"}</button>
+            ${isVideo ? `<button type="button" class="share-recording" data-share-asset="audio" ${ready ? "" : "disabled"}>Share WAV</button>` : ""}
             <button type="button" class="delete-recording">Delete</button>
             <button type="button" class="take-note-button" data-take-note-toggle aria-expanded="false">${recording.notes ? "Edit note" : "Take note"}</button>
           </div>
@@ -793,6 +797,12 @@
           </label>`;
         card.querySelectorAll("[data-asset]").forEach((button) => {
           button.addEventListener("click", () => playRecording(recording.id, card, button.dataset.asset, button));
+        });
+        card.querySelectorAll("[data-download-asset]").forEach((button) => {
+          button.addEventListener("click", () => downloadRecording(recording.id, button.dataset.downloadAsset, button).catch(() => {}));
+        });
+        card.querySelectorAll("[data-share-asset]").forEach((button) => {
+          button.addEventListener("click", () => shareRecording(recording.id, button.dataset.shareAsset, button).catch(() => {}));
         });
         $(".delete-recording", card).addEventListener("click", () => deleteRecording(recording.id));
         wireArchiveTakeNote(recording, card);
@@ -840,6 +850,87 @@
     } finally {
       button.disabled = false;
       button.textContent = originalLabel;
+    }
+  }
+
+  async function downloadRecording(id, asset = "", trigger = null) {
+    const button = trigger;
+    const originalLabel = button?.textContent || "";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Preparing…";
+    }
+    try {
+      const query = new URLSearchParams({ download: "1" });
+      if (asset) query.set("asset", asset);
+      const result = await api(`/recordings/${id}/playback-url?${query}`, { method: "POST", body: "{}" });
+      const link = document.createElement("a");
+      link.href = result.url;
+      link.download = result.filename || "jazz-practice-take";
+      link.hidden = true;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return result;
+    } catch (error) {
+      setRecorderState(`Download failed: ${error.message}`);
+      throw error;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    }
+  }
+
+  async function copyShareLink(value) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {
+        // Fall back to a temporary selection for browsers that lose clipboard
+        // permission while the share URL request is in flight.
+      }
+    }
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand("copy");
+    input.remove();
+    if (!copied) throw new Error("the browser could not copy the link");
+  }
+
+  async function shareRecording(id, asset = "", trigger = null) {
+    const button = trigger;
+    const originalLabel = button?.textContent || "";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Creating link…";
+    }
+    let copied = false;
+    try {
+      const query = asset ? `?asset=${encodeURIComponent(asset)}` : "";
+      const result = await api(`/recordings/${id}/share-url${query}`, { method: "POST", body: "{}" });
+      await copyShareLink(result.url);
+      copied = true;
+      setRecorderState("Permanent share link copied to the clipboard");
+      return result;
+    } catch (error) {
+      setRecorderState(`Share link failed: ${error.message}`);
+      throw error;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = copied ? "Copied!" : originalLabel;
+        if (copied) setTimeout(() => {
+          if (button.isConnected) button.textContent = originalLabel;
+        }, 1600);
+      }
     }
   }
 
@@ -946,6 +1037,8 @@
     cancel: cancelRecording,
     retry: retryUpload,
     play: playRecording,
+    download: downloadRecording,
+    share: shareRecording,
     delete: deleteRecording,
     updateNote: updateRecordingNote,
   };
