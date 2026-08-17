@@ -503,6 +503,10 @@
           <div>
             <button type="button" data-section-play data-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Video" : "Play"}</button>
             ${isVideo ? `<button type="button" data-section-play data-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Audio</button>` : ""}
+            <button class="take-download-button" type="button" data-section-download data-download-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
+            ${isVideo ? `<button class="take-download-button" type="button" data-section-download data-download-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Download WAV</button>` : ""}
+            <button class="take-share-button" type="button" data-section-share data-share-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Share video" : "Copy share link"}</button>
+            ${isVideo ? `<button class="take-share-button" type="button" data-section-share data-share-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Share WAV</button>` : ""}
             <button type="button" data-section-delete>Delete</button>
             <button class="take-note-button" type="button" data-take-note-toggle aria-expanded="false">${note ? "Edit note" : "Take note"}</button>
           </div>
@@ -643,6 +647,12 @@
       const recordingID = take.dataset.sectionTake;
       $$('[data-section-play]', take).forEach((button) => {
         button.addEventListener("click", () => globalThis.JazzRecording?.play(recordingID, take, button.dataset.asset, button));
+      });
+      $$('[data-section-download]', take).forEach((button) => {
+        button.addEventListener("click", () => globalThis.JazzRecording?.download(recordingID, button.dataset.downloadAsset, button).catch(() => {}));
+      });
+      $$('[data-section-share]', take).forEach((button) => {
+        button.addEventListener("click", () => globalThis.JazzRecording?.share(recordingID, button.dataset.shareAsset, button).catch(() => {}));
       });
       $("[data-section-delete]", take).addEventListener("click", () => globalThis.JazzRecording?.delete(recordingID));
       const recording = block.recordings.find((candidate) => String(candidate.id) === recordingID);

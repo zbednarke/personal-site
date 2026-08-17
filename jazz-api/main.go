@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,8 @@ const (
 )
 
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+var downloadFilenamePartPattern = regexp.MustCompile(`[^a-z0-9]+`)
+var publicShareTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32}$`)
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
@@ -49,6 +53,7 @@ type config struct {
 	GatewayKey          string
 	Bucket              string
 	ServiceAccountEmail string
+	PublicShareBaseURL  string
 	AllowInsecureLocal  bool
 }
 
@@ -234,6 +239,7 @@ func loadConfig() (config, error) {
 		GatewayKey:          strings.TrimSpace(os.Getenv("GATEWAY_KEY")),
 		Bucket:              strings.TrimSpace(os.Getenv("GCS_BUCKET")),
 		ServiceAccountEmail: strings.TrimSpace(os.Getenv("GCP_SERVICE_ACCOUNT")),
+		PublicShareBaseURL:  strings.TrimRight(envOr("PUBLIC_SHARE_BASE_URL", "https://zachbednarke.com/jazz/share"), "/"),
 		AllowInsecureLocal:  os.Getenv("JAZZ_ALLOW_INSECURE_LOCAL") == "1",
 	}
 	if cfg.DatabaseURL == "" || cfg.Bucket == "" || cfg.ServiceAccountEmail == "" {
@@ -275,6 +281,7 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 func (app *application) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", app.health)
+	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
 	mux.Handle("GET /v1/practice-sessions", app.authenticate(http.HandlerFunc(app.listPracticeSessions)))
@@ -291,6 +298,7 @@ func (app *application) routes() http.Handler {
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
 	mux.Handle("POST /v1/recordings/{id}/playback-url", app.authenticate(http.HandlerFunc(app.recordingPlaybackURL)))
+	mux.Handle("POST /v1/recordings/{id}/share-url", app.authenticate(http.HandlerFunc(app.recordingShareURL)))
 	mux.Handle("PATCH /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.updateRecording)))
 	mux.Handle("DELETE /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.deleteRecording)))
 	return app.recoverPanic(app.logRequests(mux))
@@ -800,12 +808,17 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		app.serverError(w, err)
 		return
 	}
-	var mediaKind, audioObjectName, audioContentType, videoObjectName, videoContentType string
+	var mediaKind, audioObjectName, audioContentType, videoObjectName, videoContentType, blockTitle string
 	var durationMS int
+	var takeNumber int
+	var recordedAt time.Time
 	err = app.db.QueryRow(r.Context(), `
-		SELECT media_kind,object_name,content_type,COALESCE(video_object_name,''),COALESCE(video_content_type,''),COALESCE(duration_ms,0)
-		FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).
-		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType, &durationMS)
+		SELECT r.media_kind,r.object_name,r.content_type,COALESCE(r.video_object_name,''),COALESCE(r.video_content_type,''),
+		       COALESCE(r.duration_ms,0),COALESCE(pb.title,''),COALESCE(r.take_number,0),r.recorded_at
+		FROM recordings r
+		LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
+		WHERE r.id=$1 AND r.user_id=$2 AND r.status='ready'`, recordingID, userID).
+		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType, &durationMS, &blockTitle, &takeNumber, &recordedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -828,14 +841,34 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusUnprocessableEntity, "recording asset is invalid")
 		return
 	}
+	download := r.URL.Query().Get("download") == "1"
 	expires := time.Now().Add(10 * time.Minute)
-	signedURL, err := storage.SignedURL(app.cfg.Bucket, objectName, &storage.SignedURLOptions{
-		GoogleAccessID: app.cfg.ServiceAccountEmail,
-		Method:         http.MethodGet,
-		Expires:        expires,
-		Scheme:         storage.SigningSchemeV4,
+	filename := ""
+	var query url.Values
+	if download {
+		expires = time.Now().Add(time.Hour)
+		filename = recordingDownloadFilename(recordedAt, blockTitle, takeNumber, asset, contentType)
+		query = url.Values{
+			"response-content-disposition": {`attachment; filename="` + filename + `"`},
+		}
+	}
+	signedURL, err := app.signedRecordingObjectURL(r.Context(), objectName, expires, query)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires, "asset": asset, "contentType": contentType, "durationMs": durationMS, "filename": filename})
+}
+
+func (app *application) signedRecordingObjectURL(ctx context.Context, objectName string, expires time.Time, query url.Values) (string, error) {
+	return storage.SignedURL(app.cfg.Bucket, objectName, &storage.SignedURLOptions{
+		GoogleAccessID:  app.cfg.ServiceAccountEmail,
+		Method:          http.MethodGet,
+		Expires:         expires,
+		Scheme:          storage.SigningSchemeV4,
+		QueryParameters: query,
 		SignBytes: func(payload []byte) ([]byte, error) {
-			response, err := app.iamSigner.SignBlob(r.Context(), &credentialspb.SignBlobRequest{
+			response, err := app.iamSigner.SignBlob(ctx, &credentialspb.SignBlobRequest{
 				Name: "projects/-/serviceAccounts/" + app.cfg.ServiceAccountEmail, Payload: payload,
 			})
 			if err != nil {
@@ -844,11 +877,128 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 			return response.SignedBlob, nil
 		},
 	})
+}
+
+func normalizeShareAsset(requested, mediaKind string) (string, error) {
+	asset := strings.ToLower(strings.TrimSpace(requested))
+	if asset == "" {
+		asset = mediaKind
+	}
+	if asset == "audio" || (asset == "video" && mediaKind == "video") {
+		return asset, nil
+	}
+	return "", errors.New("recording asset is invalid")
+}
+
+func newPublicShareToken() (string, error) {
+	contents := make([]byte, 24)
+	if _, err := rand.Read(contents); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(contents), nil
+}
+
+func (app *application) recordingShareURL(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	userID, err := app.userID(r.Context())
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": signedURL, "expiresAt": expires, "asset": asset, "contentType": contentType, "durationMs": durationMS})
+	var mediaKind string
+	err = app.db.QueryRow(r.Context(), `SELECT media_kind FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).Scan(&mediaKind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	asset, err := normalizeShareAsset(r.URL.Query().Get("asset"), mediaKind)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	token, err := newPublicShareToken()
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	err = app.db.QueryRow(r.Context(), `
+		INSERT INTO recording_shares (id,user_id,recording_id,asset,token)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (recording_id,asset) WHERE revoked_at IS NULL
+		DO UPDATE SET recording_id=EXCLUDED.recording_id
+		RETURNING token`, uuid.New(), userID, recordingID, asset, token).Scan(&token)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":   app.cfg.PublicShareBaseURL + "/" + token,
+		"asset": asset,
+	})
+}
+
+func (app *application) publicRecordingShare(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.PathValue("token"))
+	if !publicShareTokenPattern.MatchString(token) {
+		http.NotFound(w, r)
+		return
+	}
+	var asset, mediaKind, audioObjectName, videoObjectName string
+	err := app.db.QueryRow(r.Context(), `
+		SELECT s.asset,r.media_kind,r.object_name,COALESCE(r.video_object_name,'')
+		FROM recording_shares s
+		JOIN recordings r ON r.id=s.recording_id AND r.user_id=s.user_id
+		WHERE s.token=$1 AND s.revoked_at IS NULL AND r.status='ready'`, token).
+		Scan(&asset, &mediaKind, &audioObjectName, &videoObjectName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	objectName := audioObjectName
+	if asset == "video" && mediaKind == "video" && videoObjectName != "" {
+		objectName = videoObjectName
+	} else if asset != "audio" {
+		http.NotFound(w, r)
+		return
+	}
+	signedURL, err := app.signedRecordingObjectURL(r.Context(), objectName, time.Now().Add(15*time.Minute), nil)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	http.Redirect(w, r, signedURL, http.StatusTemporaryRedirect)
+}
+
+func recordingDownloadFilename(recordedAt time.Time, blockTitle string, takeNumber int, asset, contentType string) string {
+	part := strings.Trim(downloadFilenamePartPattern.ReplaceAllString(strings.ToLower(strings.TrimSpace(blockTitle)), "-"), "-")
+	if part == "" {
+		part = "practice"
+	}
+	parts := []string{recordedAt.Format("2006-01-02"), part}
+	if takeNumber > 0 {
+		parts = append(parts, "take-"+strconv.Itoa(takeNumber))
+	}
+	if asset == "video" {
+		parts = append(parts, "video")
+	} else {
+		parts = append(parts, "audio")
+	}
+	return strings.Join(parts, "-") + "." + extensionFor(contentType)
 }
 
 func (app *application) updateRecording(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,7 @@ header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 
 @jazz_private {
     path /jazz /jazz/* /assets/jazz/*
+    not path /jazz/share/*
 }
 
 basic_auth @jazz_private bcrypt restricted {
@@ -39,5 +40,15 @@ handle_path /jazz/api/* {
         header_up Host {upstream_hostport}
         header_up X-Jazz-User {http.auth.user.id}
         header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+    }
+}
+
+# Permanent opaque share links are deliberately outside Basic Auth. The API
+# validates the bearer token and redirects each request to a fresh short-lived
+# private-storage URL; the recording bucket itself remains private.
+handle_path /jazz/share/* {
+    rewrite * /v1/public/recordings{http.request.uri.path}
+    reverse_proxy {$JAZZ_API_URL} {
+        header_up Host {upstream_hostport}
     }
 }

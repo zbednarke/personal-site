@@ -10,6 +10,11 @@ record with two private assets: a browser-playable video and a separate
 lossless 48 kHz / 24-bit WAV master. Both assets use resumable GCS uploads and
 the take becomes playable only after both have passed server-side verification.
 
+Authenticated users can create one permanent opaque share URL per recording
+asset. The public endpoint validates that bearer token and redirects to fresh
+short-lived GCS access. The bucket therefore stays private while the user-facing
+share URL does not expire.
+
 The service trusts only requests carrying both headers inserted by the Caddy
 gateway:
 
@@ -22,6 +27,7 @@ Runtime configuration:
 - `GATEWAY_KEY`
 - `GCS_BUCKET`
 - `GCP_SERVICE_ACCOUNT`
+- `PUBLIC_SHARE_BASE_URL` (defaults to `https://zachbednarke.com/jazz/share`)
 - `PORT` (defaults to `8080`)
 
 `JAZZ_ALLOW_INSECURE_LOCAL=1` is available only for local development.

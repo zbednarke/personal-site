@@ -386,6 +386,14 @@
       ["File size", formatBytes(state.currentAsset === "video" ? recording.videoSizeBytes : recording.sizeBytes)],
     ];
     $("#archive-player-metadata").innerHTML = rows.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("");
+    updateDownloadButton();
+  }
+
+  function updateDownloadButton() {
+    const button = $("#archive-download-take");
+    if (!button) return;
+    button.textContent = state.currentAsset === "video" ? "Download video" : "Download lossless audio";
+    button.disabled = !state.currentRecording;
   }
 
   async function loadPlayerAsset(asset, autoplay, retry = 0) {
@@ -541,6 +549,17 @@
       state.noteTimer = setTimeout(flushTakeNote, 700);
     });
     $("#archive-player-note").addEventListener("blur", flushTakeNote);
+    $("#archive-download-take").addEventListener("click", () => {
+      if (!state.currentRecording) return;
+      globalThis.JazzRecording?.download(state.currentRecording.id, state.currentAsset, $("#archive-download-take"))
+        .catch((error) => setPlayerState(`Download failed · ${error.message}`));
+    });
+    $("#archive-share-take").addEventListener("click", () => {
+      if (!state.currentRecording) return;
+      globalThis.JazzRecording?.share(state.currentRecording.id, state.currentAsset, $("#archive-share-take"))
+        .then(() => setPlayerState("Permanent share link copied"))
+        .catch((error) => setPlayerState(`Share failed · ${error.message}`));
+    });
     $("#archive-delete-take").addEventListener("click", () => deleteCurrentTake().catch((error) => setPlayerState(`Delete failed · ${error.message}`)));
     document.addEventListener("keydown", (event) => {
       if (visibleView() !== "archive" || event.code !== "Space" || event.target.matches("input,textarea,button,select")) return;
