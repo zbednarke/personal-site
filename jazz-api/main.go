@@ -126,6 +126,9 @@ type recordingInitRequest struct {
 	VideoWidth        int       `json:"videoWidth"`
 	VideoHeight       int       `json:"videoHeight"`
 	VideoFrameRate    float64   `json:"videoFrameRate"`
+	FxContentType     string    `json:"fxContentType"`
+	FxSizeBytes       int64     `json:"fxSizeBytes"`
+	FxPreset          string    `json:"fxPreset"`
 	WaveformPeaks     []float64 `json:"waveformPeaks"`
 }
 
@@ -169,6 +172,10 @@ type recordingRow struct {
 	VideoHeight      int       `json:"videoHeight,omitempty"`
 	VideoFrameRate   float64   `json:"videoFrameRate,omitempty"`
 	VideoObjectName  string    `json:"-"`
+	FxContentType    string    `json:"fxContentType,omitempty"`
+	FxSizeBytes      int64     `json:"fxSizeBytes,omitempty"`
+	FxPreset         string    `json:"fxPreset,omitempty"`
+	FxObjectName     string    `json:"-"`
 	WaveformPeaks    []float64 `json:"waveformPeaks,omitempty"`
 }
 
@@ -504,6 +511,20 @@ func validateRecordingMedia(input recordingInitRequest) (string, string, string,
 	return mediaKind, audioType, videoType, nil
 }
 
+// validateFxAsset checks the optional processed "FX mix" companion asset. The
+// dry lossless master stays the primary audio object; the FX mix is a second
+// audio object recorded through the live effects chain.
+func validateFxAsset(input recordingInitRequest) (string, error) {
+	if input.FxSizeBytes == 0 && strings.TrimSpace(input.FxContentType) == "" && strings.TrimSpace(input.FxPreset) == "" {
+		return "", nil
+	}
+	fxType := strings.ToLower(strings.TrimSpace(strings.Split(input.FxContentType, ";")[0]))
+	if !allowedAudioType(fxType) || input.FxSizeBytes < 1 || input.FxSizeBytes > maxAudioBytes || len(input.FxPreset) > 80 {
+		return "", errors.New("fx mix type, size, or preset is not allowed")
+	}
+	return fxType, nil
+}
+
 func normalizeWaveformPeaks(peaks []float64) ([]float64, error) {
 	if len(peaks) > 1200 {
 		return nil, errors.New("recording waveform is too large")
@@ -525,6 +546,11 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mediaKind, baseType, videoType, err := validateRecordingMedia(input)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	fxType, err := validateFxAsset(input)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -583,18 +609,25 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	if mediaKind == "video" {
 		videoObjectName = fmt.Sprintf("users/%s/%s/%s/video.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(videoType))
 	}
+	fxObjectName := ""
+	if fxType != "" {
+		fxObjectName = fmt.Sprintf("users/%s/%s/%s/fx-mix.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(fxType))
+	}
 	skillJSON, _ := json.Marshal(input.SkillIDs)
 	waveformJSON, _ := json.Marshal(waveformPeaks)
 	_, err = app.db.Exec(r.Context(), `
 		INSERT INTO recordings
 		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
-		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate,waveform_peaks)
+		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate,waveform_peaks,
+		 fx_object_name,fx_content_type,fx_expected_size_bytes,fx_preset)
 		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''),
-		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0),$27)`,
+		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0),$27,
+		 NULLIF($28,''),NULLIF($29,''),NULLIF($30,0),NULLIF($31,''))`,
 		recordingID, userID, clean(input.PracticeSessionID, 160), practiceBlockID, app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
 		input.DurationMS, input.SampleRate, input.Channels, recordedAt, clean(input.TuneID, 100), clean(input.MissionID, 100), skillJSON,
 		input.TakeNumber, clean(input.Notes, 500), mediaKind, videoObjectName, videoType, clean(input.VideoCodec, 120), input.VideoSizeBytes,
-		input.VideoWidth, input.VideoHeight, input.VideoFrameRate, waveformJSON)
+		input.VideoWidth, input.VideoHeight, input.VideoFrameRate, waveformJSON,
+		fxObjectName, fxType, input.FxSizeBytes, clean(input.FxPreset, 80))
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -615,6 +648,16 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		}
 		response["videoUploadUrl"] = videoUploadURL
 		response["videoObjectName"] = videoObjectName
+	}
+	if fxObjectName != "" {
+		fxUploadURL, fxErr := app.createResumableUpload(r.Context(), recordingID, userID, fxObjectName, fxType, input.FxSizeBytes, "fx", allowedUploadOrigin(r.Header.Get("Origin")))
+		if fxErr != nil {
+			_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
+			app.serverError(w, fxErr)
+			return
+		}
+		response["fxUploadUrl"] = fxUploadURL
+		response["fxObjectName"] = fxObjectName
 	}
 	writeJSON(w, http.StatusCreated, response)
 }
@@ -677,7 +720,7 @@ func (app *application) completeRecording(w http.ResponseWriter, r *http.Request
 	if asset == "" {
 		asset = "audio"
 	}
-	if asset != "audio" && asset != "video" {
+	if asset != "audio" && asset != "video" && asset != "fx" {
 		writeError(w, http.StatusUnprocessableEntity, "recording asset is invalid")
 		return
 	}
@@ -691,14 +734,15 @@ func (app *application) completeRecording(w http.ResponseWriter, r *http.Request
 		app.serverError(w, err)
 		return
 	}
-	var mediaKind, audioObjectName, videoObjectName, status string
-	var audioExpectedSize, videoExpectedSize int64
-	var audioUploaded, videoUploaded bool
+	var mediaKind, audioObjectName, videoObjectName, fxObjectName, status string
+	var audioExpectedSize, videoExpectedSize, fxExpectedSize int64
+	var audioUploaded, videoUploaded, fxUploaded bool
 	err = app.db.QueryRow(r.Context(), `
 		SELECT media_kind,object_name,expected_size_bytes,COALESCE(video_object_name,''),COALESCE(video_expected_size_bytes,0),
-		       uploaded_at IS NOT NULL,video_uploaded_at IS NOT NULL,status
+		       COALESCE(fx_object_name,''),COALESCE(fx_expected_size_bytes,0),
+		       uploaded_at IS NOT NULL,video_uploaded_at IS NOT NULL,fx_uploaded_at IS NOT NULL,status
 		FROM recordings WHERE id=$1 AND user_id=$2 AND status IN ('uploading','ready')`, recordingID, userID).
-		Scan(&mediaKind, &audioObjectName, &audioExpectedSize, &videoObjectName, &videoExpectedSize, &audioUploaded, &videoUploaded, &status)
+		Scan(&mediaKind, &audioObjectName, &audioExpectedSize, &videoObjectName, &videoExpectedSize, &fxObjectName, &fxExpectedSize, &audioUploaded, &videoUploaded, &fxUploaded, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -715,7 +759,14 @@ func (app *application) completeRecording(w http.ResponseWriter, r *http.Request
 		}
 		objectName, expectedSize = videoObjectName, videoExpectedSize
 	}
-	if (asset == "audio" && audioUploaded) || (asset == "video" && videoUploaded) {
+	if asset == "fx" {
+		if fxObjectName == "" || fxExpectedSize < 1 {
+			writeError(w, http.StatusUnprocessableEntity, "recording has no fx mix asset")
+			return
+		}
+		objectName, expectedSize = fxObjectName, fxExpectedSize
+	}
+	if (asset == "audio" && audioUploaded) || (asset == "video" && videoUploaded) || (asset == "fx" && fxUploaded) {
 		writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "asset": asset, "status": status})
 		return
 	}
@@ -729,17 +780,30 @@ func (app *application) completeRecording(w http.ResponseWriter, r *http.Request
 		return
 	}
 	checksum := fmt.Sprintf("crc32c:%08x", attrs.CRC32C)
-	if asset == "video" {
+	switch asset {
+	case "video":
 		_, err = app.db.Exec(r.Context(), `
-			UPDATE recordings SET video_size_bytes=$1,video_object_generation=$2,video_checksum=$3,video_uploaded_at=now(),
-			status=CASE WHEN uploaded_at IS NOT NULL THEN 'ready' ELSE 'uploading' END,updated_at=now()
+			UPDATE recordings SET video_size_bytes=$1,video_object_generation=$2,video_checksum=$3,video_uploaded_at=now(),updated_at=now()
 			WHERE id=$4 AND user_id=$5`, attrs.Size, attrs.Generation, checksum, recordingID, userID)
-	} else {
+	case "fx":
 		_, err = app.db.Exec(r.Context(), `
-			UPDATE recordings SET size_bytes=$1,object_generation=$2,checksum=$3,uploaded_at=now(),
-			status=CASE WHEN media_kind='video' AND video_uploaded_at IS NULL THEN 'uploading' ELSE 'ready' END,updated_at=now()
+			UPDATE recordings SET fx_size_bytes=$1,fx_object_generation=$2,fx_checksum=$3,fx_uploaded_at=now(),updated_at=now()
+			WHERE id=$4 AND user_id=$5`, attrs.Size, attrs.Generation, checksum, recordingID, userID)
+	default:
+		_, err = app.db.Exec(r.Context(), `
+			UPDATE recordings SET size_bytes=$1,object_generation=$2,checksum=$3,uploaded_at=now(),updated_at=now()
 			WHERE id=$4 AND user_id=$5`, attrs.Size, attrs.Generation, checksum, recordingID, userID)
 	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	// The take flips to ready only once every declared asset has verified.
+	_, err = app.db.Exec(r.Context(), `
+		UPDATE recordings SET status='ready',updated_at=now()
+		WHERE id=$1 AND user_id=$2 AND status='uploading' AND uploaded_at IS NOT NULL
+		  AND (video_object_name IS NULL OR video_uploaded_at IS NOT NULL)
+		  AND (fx_object_name IS NULL OR fx_uploaded_at IS NOT NULL)`, recordingID, userID)
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -764,7 +828,8 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),
 		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name,
 		COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_codec,''),COALESCE(r.video_size_bytes,r.video_expected_size_bytes,0),
-		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),r.waveform_peaks
+		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),
+		COALESCE(r.fx_content_type,''),COALESCE(r.fx_size_bytes,r.fx_expected_size_bytes,0),COALESCE(r.fx_preset,''),COALESCE(r.fx_object_name,''),r.waveform_peaks
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
 		LEFT JOIN practice_blocks pb ON pb.id = r.practice_block_id AND pb.user_id = r.user_id
@@ -782,7 +847,8 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&item.ID, &item.ContentType, &item.Codec, &item.SizeBytes, &item.DurationMS, &item.SampleRate, &item.Channels, &item.RecordedAt, &item.Status,
 			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID,
 			&item.BlockDate, &item.BlockKey, &item.BlockTitle, &item.BlockCategory, &item.BlockTrack, &item.ObjectName,
-			&item.MediaKind, &item.VideoContentType, &item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate, &item.VideoObjectName, &waveform); err != nil {
+			&item.MediaKind, &item.VideoContentType, &item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate, &item.VideoObjectName,
+			&item.FxContentType, &item.FxSizeBytes, &item.FxPreset, &item.FxObjectName, &waveform); err != nil {
 			app.serverError(w, err)
 			return
 		}
@@ -808,17 +874,18 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 		app.serverError(w, err)
 		return
 	}
-	var mediaKind, audioObjectName, audioContentType, videoObjectName, videoContentType, blockTitle string
+	var mediaKind, audioObjectName, audioContentType, videoObjectName, videoContentType, fxObjectName, fxContentType, blockTitle string
 	var durationMS int
 	var takeNumber int
 	var recordedAt time.Time
 	err = app.db.QueryRow(r.Context(), `
 		SELECT r.media_kind,r.object_name,r.content_type,COALESCE(r.video_object_name,''),COALESCE(r.video_content_type,''),
+		       COALESCE(r.fx_object_name,''),COALESCE(r.fx_content_type,''),
 		       COALESCE(r.duration_ms,0),COALESCE(pb.title,''),COALESCE(r.take_number,0),r.recorded_at
 		FROM recordings r
 		LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
 		WHERE r.id=$1 AND r.user_id=$2 AND r.status='ready'`, recordingID, userID).
-		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType, &durationMS, &blockTitle, &takeNumber, &recordedAt)
+		Scan(&mediaKind, &audioObjectName, &audioContentType, &videoObjectName, &videoContentType, &fxObjectName, &fxContentType, &durationMS, &blockTitle, &takeNumber, &recordedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -834,10 +901,9 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 	objectName, contentType := audioObjectName, audioContentType
 	if asset == "video" && mediaKind == "video" && videoObjectName != "" {
 		objectName, contentType = videoObjectName, videoContentType
-		asset = "video"
-	} else if asset == "audio" {
-		asset = "audio"
-	} else {
+	} else if asset == "fx" && fxObjectName != "" {
+		objectName, contentType = fxObjectName, fxContentType
+	} else if asset != "audio" {
 		writeError(w, http.StatusUnprocessableEntity, "recording asset is invalid")
 		return
 	}
@@ -879,12 +945,12 @@ func (app *application) signedRecordingObjectURL(ctx context.Context, objectName
 	})
 }
 
-func normalizeShareAsset(requested, mediaKind string) (string, error) {
+func normalizeShareAsset(requested, mediaKind string, hasFx bool) (string, error) {
 	asset := strings.ToLower(strings.TrimSpace(requested))
 	if asset == "" {
 		asset = mediaKind
 	}
-	if asset == "audio" || (asset == "video" && mediaKind == "video") {
+	if asset == "audio" || (asset == "video" && mediaKind == "video") || (asset == "fx" && hasFx) {
 		return asset, nil
 	}
 	return "", errors.New("recording asset is invalid")
@@ -910,7 +976,8 @@ func (app *application) recordingShareURL(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var mediaKind string
-	err = app.db.QueryRow(r.Context(), `SELECT media_kind FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).Scan(&mediaKind)
+	var hasFx bool
+	err = app.db.QueryRow(r.Context(), `SELECT media_kind,fx_object_name IS NOT NULL FROM recordings WHERE id=$1 AND user_id=$2 AND status='ready'`, recordingID, userID).Scan(&mediaKind, &hasFx)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -919,7 +986,7 @@ func (app *application) recordingShareURL(w http.ResponseWriter, r *http.Request
 		app.serverError(w, err)
 		return
 	}
-	asset, err := normalizeShareAsset(r.URL.Query().Get("asset"), mediaKind)
+	asset, err := normalizeShareAsset(r.URL.Query().Get("asset"), mediaKind, hasFx)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -951,13 +1018,13 @@ func (app *application) publicRecordingShare(w http.ResponseWriter, r *http.Requ
 		http.NotFound(w, r)
 		return
 	}
-	var asset, mediaKind, audioObjectName, videoObjectName string
+	var asset, mediaKind, audioObjectName, videoObjectName, fxObjectName string
 	err := app.db.QueryRow(r.Context(), `
-		SELECT s.asset,r.media_kind,r.object_name,COALESCE(r.video_object_name,'')
+		SELECT s.asset,r.media_kind,r.object_name,COALESCE(r.video_object_name,''),COALESCE(r.fx_object_name,'')
 		FROM recording_shares s
 		JOIN recordings r ON r.id=s.recording_id AND r.user_id=s.user_id
 		WHERE s.token=$1 AND s.revoked_at IS NULL AND r.status='ready'`, token).
-		Scan(&asset, &mediaKind, &audioObjectName, &videoObjectName)
+		Scan(&asset, &mediaKind, &audioObjectName, &videoObjectName, &fxObjectName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.NotFound(w, r)
 		return
@@ -969,6 +1036,8 @@ func (app *application) publicRecordingShare(w http.ResponseWriter, r *http.Requ
 	objectName := audioObjectName
 	if asset == "video" && mediaKind == "video" && videoObjectName != "" {
 		objectName = videoObjectName
+	} else if asset == "fx" && fxObjectName != "" {
+		objectName = fxObjectName
 	} else if asset != "audio" {
 		http.NotFound(w, r)
 		return
@@ -993,9 +1062,12 @@ func recordingDownloadFilename(recordedAt time.Time, blockTitle string, takeNumb
 	if takeNumber > 0 {
 		parts = append(parts, "take-"+strconv.Itoa(takeNumber))
 	}
-	if asset == "video" {
+	switch asset {
+	case "video":
 		parts = append(parts, "video")
-	} else {
+	case "fx":
+		parts = append(parts, "fx-mix")
+	default:
 		parts = append(parts, "audio")
 	}
 	return strings.Join(parts, "-") + "." + extensionFor(contentType)
@@ -1060,9 +1132,9 @@ func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	var objectName, videoObjectName string
-	err = app.db.QueryRow(r.Context(), `SELECT object_name,COALESCE(video_object_name,'') FROM recordings WHERE id=$1 AND user_id=$2 AND status <> 'deleted'`, recordingID, userID).
-		Scan(&objectName, &videoObjectName)
+	var objectName, videoObjectName, fxObjectName string
+	err = app.db.QueryRow(r.Context(), `SELECT object_name,COALESCE(video_object_name,''),COALESCE(fx_object_name,'') FROM recordings WHERE id=$1 AND user_id=$2 AND status <> 'deleted'`, recordingID, userID).
+		Scan(&objectName, &videoObjectName, &fxObjectName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "recording not found")
 		return
@@ -1071,7 +1143,7 @@ func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	for _, assetObjectName := range []string{objectName, videoObjectName} {
+	for _, assetObjectName := range []string{objectName, videoObjectName, fxObjectName} {
 		if assetObjectName == "" {
 			continue
 		}

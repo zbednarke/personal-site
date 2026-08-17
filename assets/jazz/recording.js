@@ -20,6 +20,8 @@
   let videoChunks = [];
   let videoContentType = "";
   let losslessRecorder = null;
+  let fxRecorder = null;
+  let activeFxPreset = "";
   let startedAt = 0;
   let recordedAt = "";
   let timerID = null;
@@ -460,6 +462,13 @@
       }
       losslessRecorder = new globalThis.JazzLosslessRecorder();
       await losslessRecorder.start(stream);
+      activeFxPreset = "";
+      if (globalThis.JazzFX?.enabled()) {
+        const fxCapture = await globalThis.JazzFX.start(stream);
+        fxRecorder = new globalThis.JazzLosslessRecorder();
+        await fxRecorder.start(fxCapture.stream);
+        activeFxPreset = fxCapture.preset;
+      }
       if (recordingCameraStream) startVideoRecording(stream, recordingCameraStream);
       recordedAt = new Date().toISOString();
       startedAt = performance.now();
@@ -472,14 +481,19 @@
       const stopButton = $("#stop-recording");
       if (startButton) startButton.disabled = true;
       if (stopButton) stopButton.disabled = false;
+      const fxSuffix = activeFxPreset ? " + live FX mix" : "";
       setRecorderState(recordingCameraStream
-        ? "Recording video + lossless 24-bit audio - play the take"
-        : "Recording lossless 24-bit audio - play the take", "recording");
+        ? `Recording video + lossless 24-bit audio${fxSuffix} - play the take`
+        : `Recording lossless 24-bit audio${fxSuffix} - play the take`, "recording");
     } catch (error) {
       const recorder = losslessRecorder;
       losslessRecorder = null;
+      const failedFxRecorder = fxRecorder;
+      fxRecorder = null;
       await Promise.all([
         recorder?.cancel?.().catch(() => {}),
+        failedFxRecorder?.cancel?.().catch(() => {}),
+        globalThis.JazzFX?.stop().catch(() => {}),
         discardVideoRecording().catch(() => {}),
       ]);
       stopCapture();
@@ -501,13 +515,20 @@
   async function finishRecording(automatic = false) {
     let result;
     let videoResult;
+    let fxResult = null;
     try {
-      [result, videoResult] = await Promise.all([
+      [result, videoResult, fxResult] = await Promise.all([
         losslessRecorder.stop(),
         finishVideoRecording(),
+        fxRecorder ? fxRecorder.stop() : Promise.resolve(null),
       ]);
     } catch (error) {
-      await discardVideoRecording().catch(() => {});
+      await Promise.all([
+        discardVideoRecording().catch(() => {}),
+        fxRecorder?.cancel?.().catch(() => {}),
+      ]);
+      fxRecorder = null;
+      await globalThis.JazzFX?.stop().catch(() => {});
       stopCapture();
       losslessRecorder = null;
       captureFinalizing = false;
@@ -516,6 +537,8 @@
       return;
     }
     losslessRecorder = null;
+    fxRecorder = null;
+    await globalThis.JazzFX?.stop().catch(() => {});
     recordedSampleRate = result.sampleRate;
     const { blob, durationMS, waveformPeaks } = result;
     const contentType = "audio/wav";
@@ -527,7 +550,7 @@
       preview.src = previewURL;
       preview.hidden = false;
     }
-    const capture = captureUpload(blob, durationMS, contentType, videoResult, waveformPeaks);
+    const capture = captureUpload(blob, durationMS, contentType, videoResult, waveformPeaks, fxResult);
     captureFinalizing = false;
     setRecorderState(automatic
       ? "Four-hour take captured - uploading in the background"
@@ -541,10 +564,14 @@
     captureFinalizing = true;
     const recorder = losslessRecorder;
     losslessRecorder = null;
+    const cancelledFxRecorder = fxRecorder;
+    fxRecorder = null;
     setRecorderState("Cancelling and discarding the take...", "cancelling");
     try {
       await Promise.allSettled([
         recorder.cancel(),
+        cancelledFxRecorder ? cancelledFxRecorder.cancel() : Promise.resolve(),
+        globalThis.JazzFX?.stop() || Promise.resolve(),
         discardVideoRecording(),
       ]);
     } finally {
@@ -556,7 +583,7 @@
     return true;
   }
 
-  function captureUpload(blob, durationMS, contentType, videoResult = null, waveformPeaks = []) {
+  function captureUpload(blob, durationMS, contentType, videoResult = null, waveformPeaks = [], fxResult = null) {
     const metadataForm = $("#recording-metadata");
     const metadata = metadataForm ? new FormData(metadataForm) : new FormData();
     const blockContext = activeBlockContext ? { ...activeBlockContext } : null;
@@ -565,6 +592,9 @@
       durationMS,
       contentType,
       mediaKind: videoResult ? "video" : "audio",
+      fxBlob: fxResult?.blob || null,
+      fxContentType: fxResult ? "audio/wav" : "",
+      fxPreset: fxResult ? activeFxPreset : "",
       videoBlob: videoResult?.blob || null,
       videoContentType: videoResult?.contentType || "",
       videoCodec: videoResult?.codec || "",
@@ -611,10 +641,13 @@
         videoWidth: capture.videoWidth,
         videoHeight: capture.videoHeight,
         videoFrameRate: capture.videoFrameRate,
+        fxContentType: capture.fxContentType || "",
+        fxSizeBytes: capture.fxBlob?.size || 0,
+        fxPreset: capture.fxPreset || "",
       }),
     });
     try {
-      const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0);
+      const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0) + (capture.fxBlob?.size || 0);
       const progressFor = (offset, assetBytes) => (percent) => {
         const uploaded = offset + ((percent / 100) * assetBytes);
         onProgress(totalBytes ? (uploaded / totalBytes) * 100 : 100);
@@ -629,6 +662,15 @@
           progressFor(capture.blob.size, capture.videoBlob.size),
         );
         await completeAsset(initialized.id, "video");
+      }
+      if (capture.fxBlob) {
+        await putBlob(
+          initialized.fxUploadUrl,
+          capture.fxBlob,
+          capture.fxContentType,
+          progressFor(capture.blob.size + (capture.videoBlob?.size || 0), capture.fxBlob.size),
+        );
+        await completeAsset(initialized.id, "fx");
       }
     } catch (error) {
       await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
@@ -768,9 +810,11 @@
           ? [formatPracticeDate(recording.practiceDate), track].filter(Boolean).join(" · ")
           : [sessionTitle, skill].filter(Boolean).join(" · ");
         const isVideo = recording.mediaKind === "video";
-        const format = isVideo
+        const hasFx = Boolean(recording.fxContentType);
+        const baseFormat = isVideo
           ? `${recording.videoWidth || ""}${recording.videoHeight ? `×${recording.videoHeight}` : ""} video + lossless WAV`
           : (recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType.replace("audio/", "").toUpperCase());
+        const format = hasFx ? `${baseFormat} + FX mix` : baseFormat;
         const ready = recording.status === "ready";
         const card = document.createElement("article");
         card.className = "recording-item";
@@ -784,10 +828,13 @@
           <div class="recording-item-actions">
             <button type="button" class="play-recording" data-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${ready ? (isVideo ? "Play video" : "Play") : "Uploading…"}</button>
             ${isVideo ? `<button type="button" class="play-audio-master" data-asset="audio" ${ready ? "" : "disabled"}>Lossless audio</button>` : ""}
+            ${hasFx ? `<button type="button" class="play-fx-mix" data-asset="fx" ${ready ? "" : "disabled"}>FX mix${recording.fxPreset ? ` · ${escapeHTML(recording.fxPreset)}` : ""}</button>` : ""}
             <button type="button" class="download-recording" data-download-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
             ${isVideo ? `<button type="button" class="download-recording" data-download-asset="audio" ${ready ? "" : "disabled"}>Download WAV</button>` : ""}
+            ${hasFx ? `<button type="button" class="download-recording" data-download-asset="fx" ${ready ? "" : "disabled"}>Download FX mix</button>` : ""}
             <button type="button" class="share-recording" data-share-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${isVideo ? "Share video" : "Copy share link"}</button>
             ${isVideo ? `<button type="button" class="share-recording" data-share-asset="audio" ${ready ? "" : "disabled"}>Share WAV</button>` : ""}
+            ${hasFx ? `<button type="button" class="share-recording" data-share-asset="fx" ${ready ? "" : "disabled"}>Share FX mix</button>` : ""}
             <button type="button" class="delete-recording">Delete</button>
             <button type="button" class="take-note-button" data-take-note-toggle aria-expanded="false">${recording.notes ? "Edit note" : "Take note"}</button>
           </div>

@@ -26,7 +26,10 @@ tests. It also brokers browser audio recordings into a dedicated private GCS
 bucket. Recording metadata stays in PostgreSQL; audio bytes stay in object
 storage. Practice sessions group session-wide notes, structured off-mic
 activities, and their associated recordings. New browser takes are captured as
-48 kHz / 24-bit mono lossless WAV files.
+48 kHz / 24-bit mono lossless WAV files. An optional live effects chain
+(reverb, delay, drive, auto-wah, harmonizer, autotune, auto-chord pad) runs in
+Web Audio during a take; when enabled, the take stores a second processed
+"FX mix" WAV alongside the untouched dry master.
 
 The recordings bucket remains private. Explicit per-asset share actions create
 permanent opaque bearer links on `zachbednarke.com`; each visit resolves through
