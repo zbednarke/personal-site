@@ -297,7 +297,8 @@ func (app *application) loadArchiveRecordings(ctx context.Context, userID uuid.U
 		COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),
 		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name,
 		COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_codec,''),COALESCE(r.video_size_bytes,r.video_expected_size_bytes,0),
-		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),r.waveform_peaks
+		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),
+		COALESCE(r.fx_content_type,''),COALESCE(r.fx_size_bytes,r.fx_expected_size_bytes,0),COALESCE(r.fx_preset,''),COALESCE(r.fx_object_name,''),r.waveform_peaks
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text=r.practice_session_id AND ps.user_id=r.user_id
 		LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
@@ -318,7 +319,7 @@ func (app *application) loadArchiveRecordings(ctx context.Context, userID uuid.U
 			&item.SessionID, &item.SessionTitle, &item.BlockID, &item.BlockDate, &item.BlockKey, &item.BlockTitle,
 			&item.BlockCategory, &item.BlockTrack, &item.ObjectName, &item.MediaKind, &item.VideoContentType,
 			&item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate,
-			&item.VideoObjectName, &waveform); err != nil {
+			&item.VideoObjectName, &item.FxContentType, &item.FxSizeBytes, &item.FxPreset, &item.FxObjectName, &waveform); err != nil {
 			return nil, err
 		}
 		if err := decodeSkills(skills, &item.SkillIDs); err != nil {

@@ -384,6 +384,15 @@
       <label class="audio-input-field" for="camera-select" data-video-option hidden><span>Camera</span><select id="camera-select"><option value="">Default camera</option></select></label>
       <label class="audio-input-field" for="video-resolution" data-video-option hidden><span>Video quality</span><select id="video-resolution"><option value="1080">1080p · 30 fps</option><option value="720">720p · 30 fps</option></select></label>
     </div>
+    <div class="fx-panel">
+      <label class="fx-toggle-field"><input type="checkbox" id="fx-enabled"><span>Live effects — record a second FX-mix WAV</span></label>
+      <div class="audio-device-grid">
+        <label class="audio-input-field" for="fx-preset" data-fx-option hidden><span>FX preset</span><select id="fx-preset"></select></label>
+        <label class="audio-input-field" for="fx-key" data-fx-option hidden><span>Key (harmony / pad)</span><select id="fx-key"></select></label>
+      </div>
+      <label class="fx-toggle-field" data-fx-option hidden><input type="checkbox" id="fx-monitor" checked><span>Monitor the wet mix in headphones while recording</span></label>
+      <p class="audio-monitor-status" id="fx-status" role="status"></p>
+    </div>
     <div class="camera-preview-shell" id="camera-preview-shell" hidden><video id="camera-preview" autoplay muted playsinline aria-label="Camera preview"></video><span>Camera preview · mirrored</span></div>
     <p class="audio-monitor-status" id="input-monitor-status" role="status">Start the preview to verify your input.</p>
     <div class="dialog-actions"><button class="button button-primary" id="toggle-input-monitor" type="button">Start preview &amp; tuner</button></div>
@@ -395,6 +404,7 @@
   <script src="../assets/jazz/app.js"></script>
   <script src="../assets/jazz/practice-session.js"></script>
   <script src="../assets/jazz/lossless-recorder.js"></script>
+  <script src="../assets/jazz/fx-chain.js"></script>
   <script src="../assets/jazz/audio-analysis.js"></script>
   <script src="../assets/jazz/recording-policy.js"></script>
   <script src="../assets/jazz/upload-queue.js"></script>

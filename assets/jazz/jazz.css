@@ -1193,6 +1193,14 @@ footer p[data-tone="offline"] { color: var(--red); }
 .audio-monitor-status[data-tone="live"] { color: var(--green); }
 .audio-monitor-status[data-tone="error"] { color: var(--red); }
 .audio-options-dialog .dialog-actions .button { border-radius: 2px; }
+.fx-panel { margin-top: 18px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 7px; background: rgba(8, 6, 15, 0.48); }
+.fx-panel .audio-device-grid { margin-top: 13px; }
+.fx-panel .audio-device-grid[hidden] { display: none; }
+.fx-toggle-field { display: flex; align-items: center; gap: 9px; color: var(--muted); font: 10px var(--mono); cursor: pointer; }
+.fx-toggle-field[hidden] { display: none; }
+.fx-toggle-field + .fx-toggle-field, .fx-panel .audio-device-grid + .fx-toggle-field { margin-top: 11px; }
+.fx-toggle-field input { accent-color: var(--brass); }
+.recording-item-actions .play-fx-mix { color: var(--brass-light); }
 .camera-preview-shell { position: relative; overflow: hidden; margin-top: 18px; border: 1px solid var(--line); background: #0b0b0b; }
 .camera-preview-shell[hidden] { display: none; }
 .camera-preview-shell video { display: block; width: 100%; max-height: 280px; object-fit: contain; transform: scaleX(-1); }
