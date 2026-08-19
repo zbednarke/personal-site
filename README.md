@@ -41,6 +41,13 @@ takes include an on-page waveform and concert-pitch chromatic tuner. A compact
 review area keeps recent session notes and playable recordings close to the
 daily guide.
 
+The Guide Tone Reflex tool uses the selected browser microphone to grade thirds
+and sevenths against a chord-only Blue Bossa roadmap. It supports written pitch
+for B-flat trumpet or concert pitch, learn-at-your-own-pace and tempo-following
+modes, and synchronized drill attempts. Time in the tool is attributed to the
+corresponding daily practice block and appears in the normal session and archive
+totals.
+
 The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
 `deploy/Caddyfile.jazz.example` documents the path matcher and privacy headers;
 the live configuration reuses the existing Portal credential hash and forwards

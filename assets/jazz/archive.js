@@ -108,16 +108,20 @@
   }
 
   function visibleView() {
-    return location.hash === "#archive" ? "archive" : "today";
+    if (location.hash === "#archive") return "archive";
+    if (location.hash === "#guide-tones") return "guide-tones";
+    return "today";
   }
 
   function route() {
     const view = visibleView();
     document.body.classList.toggle("virtuoso-today", view === "today");
     document.body.classList.toggle("virtuoso-archive", view === "archive");
+    document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
-    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : "Today";
+    $("#guide-tones").hidden = view !== "guide-tones";
+    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : (view === "guide-tones" ? "Guide tones" : "Today");
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;
       link.classList.toggle("active", active);
@@ -125,6 +129,7 @@
       else link.removeAttribute("aria-current");
     });
     if (view === "archive" && !state.initialized) initializeArchive();
+    document.dispatchEvent(new CustomEvent("jazz:view-change", { detail: { view } }));
   }
 
   async function initializeArchive() {

@@ -724,6 +724,144 @@ footer p[data-tone="offline"] { color: var(--red); }
   .data-actions { justify-content: flex-start; }
 }
 
+/* Guide-tone reflex practice tool */
+.virtuoso-guide-tones {
+  --bg: #131314;
+  --bg-raised: #171617;
+  --panel: #1c1b1c;
+  --panel-2: #242224;
+  --ink: #f3f3f2;
+  --text: #d8d5cf;
+  --muted: #9e9991;
+  --faint: #77716a;
+  --line: rgba(181, 147, 91, 0.2);
+  --line-strong: rgba(181, 147, 91, 0.42);
+  --brass: #b5935b;
+  --brass-light: #d2b77f;
+  --green: #a5c99f;
+  --red: #d38b82;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --serif: "Playfair Display", Georgia, serif;
+  background: var(--bg);
+  color: var(--text);
+}
+.virtuoso-guide-tones > .site-header,
+.virtuoso-guide-tones > main > .hero,
+.virtuoso-guide-tones > main > .stat-ribbon,
+.virtuoso-guide-tones > main > section:not(#guide-tones),
+.virtuoso-guide-tones > footer { display: none; }
+.virtuoso-guide-tones main { max-width: none; margin: 0 0 0 256px; }
+.virtuoso-guide-tones .virtuoso-nav {
+  position: fixed;
+  z-index: 40;
+  inset: 0 auto 0 0;
+  width: 256px;
+  display: flex;
+  flex-direction: column;
+  padding: 32px 24px 24px;
+  border-right: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+.virtuoso-guide-tones .virtuoso-mobile-header { display: none; }
+.guide-tone-screen[hidden] { display: none !important; }
+.guide-tone-screen { min-height: 100vh; padding: 46px clamp(30px, 4.2vw, 72px) 72px; background: var(--bg); }
+.guide-tone-screen-header { display: flex; align-items: end; justify-content: space-between; gap: 40px; padding-bottom: 31px; border-bottom: 1px solid var(--line); }
+.guide-tone-screen-header .eyebrow { margin: 0 0 8px; color: var(--brass); font: 600 9px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+.guide-tone-screen-header h1 { margin: 0; color: var(--ink); font: 600 clamp(42px, 4vw, 62px)/1.04 var(--serif); letter-spacing: -.035em; }
+.guide-tone-screen-header > div:first-child > p:last-child { max-width: 680px; margin: 11px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.guide-tone-session-summary { min-width: 190px; padding: 14px 17px; border: 1px solid var(--line); background: var(--panel); }
+.guide-tone-session-summary span,
+.guide-tone-session-summary small { display: block; color: var(--faint); font: 8px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.guide-tone-session-summary strong { display: block; margin: 6px 0 4px; color: var(--brass-light); font: 600 15px var(--mono); }
+.guide-tone-toolbar { display: grid; grid-template-columns: 1fr 1fr 1.3fr 1.4fr 1.4fr; gap: 1px; margin-top: 28px; border: 1px solid var(--line); background: var(--line); }
+.guide-tone-toolbar > label { min-width: 0; display: grid; gap: 8px; padding: 13px 14px; background: var(--panel); }
+.guide-tone-toolbar label > span:first-child { color: var(--faint); font: 7px var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+.guide-tone-toolbar select { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--ink); font: 10px var(--mono); }
+.guide-tone-toolbar select:focus-visible { outline: 1px solid var(--brass); outline-offset: 4px; }
+.guide-tone-tempo-control { display: flex; align-items: center; gap: 10px; }
+.guide-tone-tempo-control input { min-width: 80px; flex: 1; accent-color: var(--brass); }
+.guide-tone-tempo-control output { flex: none; color: var(--brass-light); font: 9px var(--mono); }
+.guide-tone-workspace { display: grid; grid-template-columns: minmax(560px, 8fr) minmax(340px, 4fr); gap: 24px; margin-top: 24px; align-items: start; }
+.guide-tone-chart-card,
+.guide-tone-stage { border: 1px solid var(--line); background: var(--panel); }
+.guide-tone-chart-card { padding: 24px; }
+.guide-tone-chart-card > header { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; }
+.guide-tone-chart-card header span,
+.guide-tone-chart-card header small { color: var(--faint); font: 7px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.guide-tone-chart-card h2 { margin: 5px 0 0; color: var(--ink); font: 600 22px var(--serif); }
+.guide-tone-chart { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+.guide-tone-bar { position: relative; min-height: 91px; padding: 13px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #171617; transition: background 140ms ease, box-shadow 140ms ease; }
+.guide-tone-bar > span { display: block; margin-bottom: 14px; color: var(--faint); font: 7px var(--mono); }
+.guide-tone-bar > div { display: flex; align-items: center; gap: 9px; color: var(--text); font: 600 17px var(--serif); }
+.guide-tone-bar > div i { height: 22px; border-left: 1px solid var(--line-strong); }
+.guide-tone-bar.current { z-index: 1; background: rgba(181, 147, 91, .11); box-shadow: inset 0 0 0 1px var(--brass); }
+.guide-tone-bar.correct { background: rgba(165, 201, 159, .09); }
+.guide-tone-bar.wrong { animation: guide-tone-wrong 260ms ease; }
+@keyframes guide-tone-wrong { 50% { background: rgba(211, 139, 130, .18); } }
+.guide-tone-chart-note { margin: 14px 0 0; color: var(--faint); font: 8px/1.5 var(--mono); }
+.guide-tone-stage { position: sticky; top: 24px; }
+.guide-tone-stage-top { display: flex; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--line); color: var(--faint); font: 8px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.guide-tone-prompt { min-height: 405px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 36px 24px 28px; text-align: center; }
+.guide-tone-prompt-label { color: var(--brass); font: 7px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+.guide-tone-chord { display: block; margin: 13px 0 5px; color: var(--ink); font: 600 clamp(64px, 7vw, 92px)/1 var(--serif); letter-spacing: -.05em; }
+.guide-tone-prompt > p { margin: 7px 0 24px; color: var(--muted); font: 13px var(--mono); }
+.guide-tone-prompt > p b { color: var(--brass-light); font: inherit; }
+.guide-tone-feedback { min-height: 104px; display: grid; justify-items: center; align-content: start; }
+.guide-tone-feedback > span { min-height: 46px; color: var(--muted); font: 600 39px/1 var(--serif); }
+.guide-tone-feedback > strong { margin-top: 7px; color: var(--text); font: 600 12px var(--mono); }
+.guide-tone-feedback > small { max-width: 290px; margin-top: 5px; color: var(--faint); font: 8px/1.5 var(--mono); }
+.guide-tone-feedback[data-tone="correct"] > span,
+.guide-tone-feedback[data-tone="correct"] > strong { color: var(--green); }
+.guide-tone-feedback[data-tone="wrong"] > span,
+.guide-tone-feedback[data-tone="wrong"] > strong { color: var(--red); }
+.guide-tone-signal { height: 3px; margin: 0 24px; overflow: hidden; background: #302e2b; }
+.guide-tone-signal span { display: block; width: 0; height: 100%; background: var(--green); transition: width 80ms linear; }
+.guide-tone-mic-status { min-height: 18px; margin: 9px 24px 0; color: var(--faint); font: 8px/1.5 var(--mono); text-align: center; }
+.guide-tone-mic-status[data-tone="error"] { color: var(--red); }
+.guide-tone-actions { display: grid; grid-template-columns: 1fr; padding: 14px 24px 24px; }
+.guide-tone-actions button { min-height: 43px; border: 1px solid var(--brass); border-radius: 2px; background: transparent; color: var(--brass-light); cursor: pointer; font: 600 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.guide-tone-actions button:hover { background: rgba(181, 147, 91, .1); }
+.guide-tone-actions .guide-tone-stop { border-color: rgba(211, 139, 130, .65); color: var(--red); }
+.guide-tone-actions button:disabled { cursor: wait; opacity: .5; }
+.guide-tone-stats { display: grid; grid-template-columns: repeat(4, 1fr); margin: 0; border-top: 1px solid var(--line); }
+.guide-tone-stats div { padding: 12px 8px; text-align: center; }
+.guide-tone-stats div + div { border-left: 1px solid var(--line); }
+.guide-tone-stats dt { color: var(--faint); font: 7px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.guide-tone-stats dd { margin: 5px 0 0; color: var(--ink); font: 11px var(--mono); }
+.section-tool-link { display: grid; gap: 3px; margin-top: 17px; padding: 12px 13px; border: 1px solid var(--line-strong); background: rgba(181, 147, 91, .05); color: inherit; text-decoration: none; }
+.section-tool-link span { color: var(--brass); font: 7px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.section-tool-link strong { color: var(--brass-light); font: 600 11px var(--mono); }
+.section-tool-link:hover { border-color: var(--brass); }
+
+@media (max-width: 1180px) {
+  .virtuoso-guide-tones main { margin-left: 218px; }
+  .virtuoso-guide-tones .virtuoso-nav { width: 218px; padding-left: 18px; padding-right: 18px; }
+  .guide-tone-toolbar { grid-template-columns: repeat(3, 1fr); }
+  .guide-tone-workspace { grid-template-columns: 1fr; }
+  .guide-tone-stage { position: static; }
+}
+
+@media (max-width: 720px) {
+  .virtuoso-guide-tones .virtuoso-nav { display: none; }
+  .virtuoso-guide-tones .virtuoso-mobile-header { position: sticky; z-index: 35; top: 0; height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid var(--line); background: rgba(19, 19, 20, .96); backdrop-filter: blur(12px); }
+  .virtuoso-guide-tones main { margin-left: 0; }
+  .guide-tone-screen { padding: 28px 16px 48px; }
+  .guide-tone-screen-header { display: block; }
+  .guide-tone-screen-header h1 { font-size: 38px; }
+  .guide-tone-session-summary { margin-top: 22px; }
+  .guide-tone-toolbar { grid-template-columns: 1fr; }
+  .guide-tone-chart-card { padding: 16px; }
+  .guide-tone-chart-card > header { align-items: start; flex-direction: column; gap: 7px; }
+  .guide-tone-bar { min-height: 72px; padding: 9px 8px; }
+  .guide-tone-bar > span { margin-bottom: 9px; }
+  .guide-tone-bar > div { gap: 5px; font-size: 13px; }
+  .guide-tone-prompt { min-height: 340px; }
+  .guide-tone-chord { font-size: 66px; }
+  .guide-tone-stats { grid-template-columns: repeat(2, 1fr); }
+  .guide-tone-stats div:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+  .guide-tone-stats div:nth-child(4) { border-top: 1px solid var(--line); }
+}
+
 /* Virtuoso Archive: Practice Atlas */
 .virtuoso-archive {
   --bg: #131314;

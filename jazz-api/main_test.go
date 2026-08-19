@@ -159,6 +159,61 @@ func TestNewPublicShareToken(t *testing.T) {
 	}
 }
 
+func TestNormalizeGuideToneDrill(t *testing.T) {
+	valid := createGuideToneDrillRequest{
+		TuneID: "blue-bossa", Instrument: "bb-trumpet", Mode: "learn", Tempo: 72,
+		StartedAt: "2026-08-18T18:00:00Z",
+	}
+	got, startedAt, err := normalizeGuideToneDrill(valid)
+	if err != nil || got.TuneID != "blue-bossa" || startedAt.IsZero() {
+		t.Fatalf("valid guide-tone drill rejected: input=%+v start=%v err=%v", got, startedAt, err)
+	}
+	invalid := []createGuideToneDrillRequest{
+		{TuneID: "other", Instrument: "bb-trumpet", Mode: "learn", Tempo: 72, StartedAt: valid.StartedAt},
+		{TuneID: "blue-bossa", Instrument: "alto", Mode: "learn", Tempo: 72, StartedAt: valid.StartedAt},
+		{TuneID: "blue-bossa", Instrument: "concert", Mode: "random", Tempo: 72, StartedAt: valid.StartedAt},
+		{TuneID: "blue-bossa", Instrument: "concert", Mode: "tempo", Tempo: 400, StartedAt: valid.StartedAt},
+	}
+	for _, input := range invalid {
+		if _, _, err := normalizeGuideToneDrill(input); err == nil {
+			t.Fatalf("invalid guide-tone drill accepted: %+v", input)
+		}
+	}
+}
+
+func TestValidateGuideToneAttempt(t *testing.T) {
+	playedMIDI, playedPitchClass, cents := 63, 3, -4.2
+	valid := createGuideToneAttemptRequest{
+		MeasureNumber: 1, ChordIndex: 0, ChordSymbol: "Cm7", TargetDegree: 3, ExpectedPitchClass: 3,
+		PlayedMIDI: &playedMIDI, PlayedPitchClass: &playedPitchClass, Cents: &cents, Correct: true,
+		ResponseMS: 840, OccurredAt: "2026-08-18T18:00:01Z",
+	}
+	if occurredAt, err := validateGuideToneAttempt(valid); err != nil || occurredAt.IsZero() {
+		t.Fatalf("valid guide-tone attempt rejected: occurred=%v err=%v", occurredAt, err)
+	}
+	missed := valid
+	missed.PlayedMIDI, missed.PlayedPitchClass, missed.Cents, missed.Correct = nil, nil, nil, false
+	if _, err := validateGuideToneAttempt(missed); err != nil {
+		t.Fatalf("missed guide-tone attempt rejected: %v", err)
+	}
+	incomplete := valid
+	incomplete.PlayedPitchClass = nil
+	if _, err := validateGuideToneAttempt(incomplete); err == nil {
+		t.Fatal("incomplete played pitch was accepted")
+	}
+	inconsistent := valid
+	inconsistent.PlayedPitchClass = &playedPitchClass
+	inconsistent.ExpectedPitchClass = 10
+	if _, err := validateGuideToneAttempt(inconsistent); err == nil {
+		t.Fatal("inconsistent correct result was accepted")
+	}
+	invalidDegree := valid
+	invalidDegree.TargetDegree = 5
+	if _, err := validateGuideToneAttempt(invalidDegree); err == nil {
+		t.Fatal("invalid target degree was accepted")
+	}
+}
+
 func TestRecordingSectionLimits(t *testing.T) {
 	if maxTakesPerBlock != 20 {
 		t.Fatalf("max takes per block = %d, want 20", maxTakesPerBlock)

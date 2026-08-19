@@ -140,6 +140,33 @@ globalThis.JAZZ_DATA = {
     ],
   },
 
+  tunes: [
+    {
+      id: "blue-bossa",
+      title: "Blue Bossa",
+      concertKey: "C minor",
+      meter: "4/4",
+      bars: [
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "F", quality: "m7", beats: 4 }],
+        [{ root: "F", quality: "m7", beats: 4 }],
+        [{ root: "D", quality: "m7b5", beats: 4 }],
+        [{ root: "G", quality: "7b9", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "Eb", quality: "m7", beats: 4 }],
+        [{ root: "Ab", quality: "7", beats: 4 }],
+        [{ root: "Db", quality: "maj7", beats: 4 }],
+        [{ root: "Db", quality: "maj7", beats: 4 }],
+        [{ root: "D", quality: "m7b5", beats: 4 }],
+        [{ root: "G", quality: "7b9", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "D", quality: "m7b5", beats: 2 }, { root: "G", quality: "7b9", beats: 2 }],
+      ],
+    },
+  ],
+
   skills: [
     {
       id: "sound",

@@ -117,6 +117,15 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 			  AND COALESCE(pb.practice_date,timezone('America/Los_Angeles',r.recorded_at)::date) BETWEEN b.from_date AND b.to_date
 			GROUP BY day
 		),
+		drill_days AS (
+			SELECT timezone('America/Los_Angeles',gtd.started_at)::date AS day,
+			       COALESCE(SUM(gtd.elapsed_ms),0)::bigint AS duration_ms,
+			       COUNT(*)::int AS drill_count
+			FROM guide_tone_drills gtd CROSS JOIN bounds b
+			WHERE gtd.user_id=$1 AND gtd.practice_block_id IS NULL
+			  AND timezone('America/Los_Angeles',gtd.started_at)::date BETWEEN b.from_date AND b.to_date
+			GROUP BY day
+		),
 		session_dates AS (
 			SELECT ps.id, timezone('America/Los_Angeles',ps.started_at)::date AS day
 			FROM practice_sessions ps CROSS JOIN bounds b
@@ -130,6 +139,11 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 			CROSS JOIN bounds b
 			WHERE r.user_id=$1 AND r.practice_block_id IS NULL AND r.status <> 'deleted'
 			  AND timezone('America/Los_Angeles',r.recorded_at)::date BETWEEN b.from_date AND b.to_date
+			UNION
+			SELECT gtd.practice_session_id,timezone('America/Los_Angeles',gtd.started_at)::date
+			FROM guide_tone_drills gtd CROSS JOIN bounds b
+			WHERE gtd.user_id=$1 AND gtd.practice_session_id IS NOT NULL
+			  AND timezone('America/Los_Angeles',gtd.started_at)::date BETWEEN b.from_date AND b.to_date
 		),
 		session_days AS (
 			SELECT sd.day,COUNT(DISTINCT sd.id)::int AS session_count,
@@ -146,17 +160,18 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 			  AND COALESCE(pb.practice_date,timezone('America/Los_Angeles',r.recorded_at)::date) BETWEEN b.from_date AND b.to_date
 		),
 		all_days AS (
-			SELECT day FROM block_days UNION SELECT day FROM orphan_days UNION SELECT day FROM recording_days
+			SELECT day FROM block_days UNION SELECT day FROM orphan_days UNION SELECT day FROM recording_days UNION SELECT day FROM drill_days
 			UNION SELECT day FROM session_days UNION SELECT day FROM note_days
 		)
 		SELECT ad.day::text,
-		       COALESCE(bd.duration_ms,0)+COALESCE(od.duration_ms,0),
-		       COALESCE(rd.recording_count,0),COALESCE(bd.section_count,0),COALESCE(sd.session_count,0),
+		       COALESCE(bd.duration_ms,0)+COALESCE(od.duration_ms,0)+COALESCE(dd.duration_ms,0),
+		       COALESCE(rd.recording_count,0),COALESCE(bd.section_count,0)+COALESCE(dd.drill_count,0),COALESCE(sd.session_count,0),
 		       COALESCE(sd.has_notes,false) OR nd.day IS NOT NULL
 		FROM all_days ad
 		LEFT JOIN block_days bd ON bd.day=ad.day
 		LEFT JOIN orphan_days od ON od.day=ad.day
 		LEFT JOIN recording_days rd ON rd.day=ad.day
+		LEFT JOIN drill_days dd ON dd.day=ad.day
 		LEFT JOIN session_days sd ON sd.day=ad.day
 		LEFT JOIN note_days nd ON nd.day=ad.day
 		ORDER BY ad.day`, userID, from.Format("2006-01-02"), to.Format("2006-01-02"))
@@ -218,6 +233,11 @@ func (app *application) loadArchiveDay(ctx context.Context, userID uuid.UUID, da
 				WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status <> 'deleted'
 				  AND COALESCE(pb.practice_date,timezone('America/Los_Angeles',r.recorded_at)::date)=$2::date
 			)
+			OR EXISTS (
+				SELECT 1 FROM guide_tone_drills gtd
+				WHERE gtd.user_id=ps.user_id AND gtd.practice_session_id=ps.id
+				  AND timezone('America/Los_Angeles',gtd.started_at)::date=$2::date
+			)
 		)
 		ORDER BY ps.started_at`, userID, dateKey)
 	if err != nil {
@@ -254,6 +274,14 @@ func (app *application) loadArchiveDay(ctx context.Context, userID uuid.UUID, da
 		for _, block := range session.Blocks {
 			session.TotalDurationMS += int64(block.ElapsedMS)
 		}
+		var drillDurationMS int64
+		if err := app.db.QueryRow(ctx, `
+			SELECT COALESCE(SUM(elapsed_ms),0)::bigint FROM guide_tone_drills
+			WHERE user_id=$1 AND practice_session_id=$2 AND practice_block_id IS NULL
+			  AND timezone('America/Los_Angeles',started_at)::date=$3::date`, userID, session.ID, dateKey).Scan(&drillDurationMS); err != nil {
+			return archiveDayResponse{}, err
+		}
+		session.TotalDurationMS += drillDurationMS
 		for _, recording := range response.Recordings {
 			if recording.SessionID == session.ID.String() {
 				session.RecordingCount++
