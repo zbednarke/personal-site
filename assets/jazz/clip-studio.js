@@ -13,6 +13,7 @@
     current: null,
     media: null,
     request: 0,
+    savePromise: Promise.resolve(),
   };
 
   async function api(path, options = {}) {
@@ -106,6 +107,8 @@
     try {
       const result = await api(`/studio/days/${state.date}/scan`, { method: "POST", body: "{}" });
       state.candidates = result.candidates || [];
+      state.current = null;
+      closePreview();
       render();
       setStatus(`Scanned ${result.scannedRecordings} take${result.scannedRecordings === 1 ? "" : "s"} · ${state.candidates.length} suggestions ready.`);
     } catch (error) {
@@ -152,8 +155,7 @@
       host.innerHTML = `<p class="clip-studio-empty">${state.recordings.length ? "Run an activity scan to create suggestions." : "Recordings from the selected day will appear here."}</p>`;
       return;
     }
-    const visibleCandidates = state.candidates.filter((candidate) => candidate.reviewStatus !== "rejected");
-    host.innerHTML = visibleCandidates.map((candidate, index) => {
+    host.innerHTML = state.candidates.map((candidate, index) => {
       const recording = recordingFor(candidate);
       const reasons = Array.isArray(candidate.reasons) ? candidate.reasons : [];
       return `<article class="clip-candidate ${candidate.reviewStatus}${state.current?.id === candidate.id ? " active" : ""}"><button class="clip-candidate-open" type="button" data-open-candidate="${candidate.id}"><span>${candidate.reviewStatus === "kept" ? "Kept" : candidate.reviewStatus === "rejected" ? "Rejected" : `Suggestion ${index + 1}`}</span><strong>${escapeHTML(titleFor(recording))} · ${escapeHTML(U.takeLabel(recording))}</strong><time>${formatClock(candidate.startMs)} — ${formatClock(candidate.endMs)}</time><em>${Math.round(Number(candidate.score || 0) * 100)}% activity confidence</em></button><div class="clip-candidate-reasons">${reasons.map((reason) => `<span>${escapeHTML(reason)}</span>`).join("")}</div></article>`;
@@ -213,14 +215,18 @@
 
   async function patchCurrent(payload, successMessage) {
     const candidate = state.current;
-    try {
-      const result = await api(`/studio/candidates/${candidate.id}`, { method: "PATCH", body: JSON.stringify(payload) });
-      Object.assign(candidate, result);
-      render();
-      setStatus(successMessage);
-    } catch (error) {
-      setStatus(`Could not save · ${error.message}`, "error");
-    }
+    if (!candidate) return;
+    state.savePromise = state.savePromise.catch(() => {}).then(async () => {
+      try {
+        const result = await api(`/studio/candidates/${candidate.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+        Object.assign(candidate, result);
+        render();
+        setStatus(successMessage);
+      } catch (error) {
+        setStatus(`Could not save · ${error.message}`, "error");
+      }
+    });
+    return state.savePromise;
   }
 
   function closePreview() {

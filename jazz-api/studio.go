@@ -91,7 +91,7 @@ func (app *application) clipCandidates(r *http.Request, userID uuid.UUID, date s
 		COALESCE(c.title,''),COALESCE(c.notes,''),c.analysis_version
 		FROM clip_candidates c JOIN recordings r ON r.id=c.recording_id
 		LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
-		WHERE c.user_id=$1 AND COALESCE(pb.practice_date,(r.recorded_at AT TIME ZONE 'America/Los_Angeles')::date)=$2::date
+		WHERE c.user_id=$1 AND r.status='ready' AND COALESCE(pb.practice_date,(r.recorded_at AT TIME ZONE 'America/Los_Angeles')::date)=$2::date
 		ORDER BY CASE c.review_status WHEN 'kept' THEN 0 WHEN 'suggested' THEN 1 ELSE 2 END,c.score DESC`, userID, date)
 	if err != nil {
 		return nil, err
@@ -124,14 +124,6 @@ func (app *application) scanClipStudioDay(w http.ResponseWriter, r *http.Request
 		app.serverError(w, err)
 		return
 	}
-	_, err = app.db.Exec(r.Context(), `
-		DELETE FROM clip_candidates c USING recordings rec
-		WHERE c.recording_id=rec.id AND c.user_id=$1 AND c.review_status='suggested' AND c.source='activity-scan'
-		AND COALESCE((SELECT pb.practice_date FROM practice_blocks pb WHERE pb.id=rec.practice_block_id AND pb.user_id=rec.user_id),(rec.recorded_at AT TIME ZONE 'America/Los_Angeles')::date)=$2::date`, userID, date)
-	if err != nil {
-		app.serverError(w, err)
-		return
-	}
 	type daySuggestion struct {
 		recordingID uuid.UUID
 		clipSuggestion
@@ -146,11 +138,25 @@ func (app *application) scanClipStudioDay(w http.ResponseWriter, r *http.Request
 	if len(daySuggestions) > 24 {
 		daySuggestions = daySuggestions[:24]
 	}
+	tx, err := app.db.Begin(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	_, err = tx.Exec(r.Context(), `
+		DELETE FROM clip_candidates c USING recordings rec
+		WHERE c.recording_id=rec.id AND c.user_id=$1 AND c.review_status='suggested' AND c.source='activity-scan'
+		AND COALESCE((SELECT pb.practice_date FROM practice_blocks pb WHERE pb.id=rec.practice_block_id AND pb.user_id=rec.user_id),(rec.recorded_at AT TIME ZONE 'America/Los_Angeles')::date)=$2::date`, userID, date)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
 	created := 0
 	for _, suggestion := range daySuggestions {
 		reasons, _ := json.Marshal(suggestion.Reasons)
 		breakdown, _ := json.Marshal(map[string]float64{"activityCoverage": suggestion.Coverage, "phraseContinuity": suggestion.Continuity})
-		result, execErr := app.db.Exec(r.Context(), `
+		result, execErr := tx.Exec(r.Context(), `
 				INSERT INTO clip_candidates (id,user_id,recording_id,start_ms,end_ms,score,reasons,score_breakdown)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 				ON CONFLICT (recording_id,start_ms,end_ms,analysis_version) DO UPDATE SET score=EXCLUDED.score,reasons=EXCLUDED.reasons,score_breakdown=EXCLUDED.score_breakdown,updated_at=now()`,
@@ -160,6 +166,10 @@ func (app *application) scanClipStudioDay(w http.ResponseWriter, r *http.Request
 			return
 		}
 		created += int(result.RowsAffected())
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		app.serverError(w, err)
+		return
 	}
 	candidates, err := app.clipCandidates(r, userID, date)
 	if err != nil {
