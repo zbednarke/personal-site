@@ -109,8 +109,8 @@ func scanWaveformForClips(peaks []float64, durationMS int) []clipSuggestion {
 		}
 	}
 	sort.Slice(suggestions, func(i, j int) bool { return suggestions[i].Score > suggestions[j].Score })
-	if len(suggestions) > 8 {
-		suggestions = suggestions[:8]
+	if len(suggestions) > 4 {
+		suggestions = suggestions[:4]
 	}
 	return suggestions
 }

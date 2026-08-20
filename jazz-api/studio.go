@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -123,22 +124,42 @@ func (app *application) scanClipStudioDay(w http.ResponseWriter, r *http.Request
 		app.serverError(w, err)
 		return
 	}
-	created := 0
+	_, err = app.db.Exec(r.Context(), `
+		DELETE FROM clip_candidates c USING recordings rec
+		WHERE c.recording_id=rec.id AND c.user_id=$1 AND c.review_status='suggested' AND c.source='activity-scan'
+		AND COALESCE((SELECT pb.practice_date FROM practice_blocks pb WHERE pb.id=rec.practice_block_id AND pb.user_id=rec.user_id),(rec.recorded_at AT TIME ZONE 'America/Los_Angeles')::date)=$2::date`, userID, date)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	type daySuggestion struct {
+		recordingID uuid.UUID
+		clipSuggestion
+	}
+	daySuggestions := make([]daySuggestion, 0)
 	for _, recording := range recordings {
 		for _, suggestion := range scanWaveformForClips(recording.WaveformPeaks, recording.DurationMS) {
-			reasons, _ := json.Marshal(suggestion.Reasons)
-			breakdown, _ := json.Marshal(map[string]float64{"activityCoverage": suggestion.Coverage, "phraseContinuity": suggestion.Continuity})
-			result, execErr := app.db.Exec(r.Context(), `
+			daySuggestions = append(daySuggestions, daySuggestion{recording.ID, suggestion})
+		}
+	}
+	sort.Slice(daySuggestions, func(i, j int) bool { return daySuggestions[i].Score > daySuggestions[j].Score })
+	if len(daySuggestions) > 24 {
+		daySuggestions = daySuggestions[:24]
+	}
+	created := 0
+	for _, suggestion := range daySuggestions {
+		reasons, _ := json.Marshal(suggestion.Reasons)
+		breakdown, _ := json.Marshal(map[string]float64{"activityCoverage": suggestion.Coverage, "phraseContinuity": suggestion.Continuity})
+		result, execErr := app.db.Exec(r.Context(), `
 				INSERT INTO clip_candidates (id,user_id,recording_id,start_ms,end_ms,score,reasons,score_breakdown)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 				ON CONFLICT (recording_id,start_ms,end_ms,analysis_version) DO UPDATE SET score=EXCLUDED.score,reasons=EXCLUDED.reasons,score_breakdown=EXCLUDED.score_breakdown,updated_at=now()`,
-				uuid.New(), userID, recording.ID, suggestion.StartMS, suggestion.EndMS, suggestion.Score, reasons, breakdown)
-			if execErr != nil {
-				app.serverError(w, execErr)
-				return
-			}
-			created += int(result.RowsAffected())
+			uuid.New(), userID, suggestion.recordingID, suggestion.StartMS, suggestion.EndMS, suggestion.Score, reasons, breakdown)
+		if execErr != nil {
+			app.serverError(w, execErr)
+			return
 		}
+		created += int(result.RowsAffected())
 	}
 	candidates, err := app.clipCandidates(r, userID, date)
 	if err != nil {

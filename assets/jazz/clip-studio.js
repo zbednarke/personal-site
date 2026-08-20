@@ -152,7 +152,8 @@
       host.innerHTML = `<p class="clip-studio-empty">${state.recordings.length ? "Run an activity scan to create suggestions." : "Recordings from the selected day will appear here."}</p>`;
       return;
     }
-    host.innerHTML = state.candidates.map((candidate, index) => {
+    const visibleCandidates = state.candidates.filter((candidate) => candidate.reviewStatus !== "rejected");
+    host.innerHTML = visibleCandidates.map((candidate, index) => {
       const recording = recordingFor(candidate);
       const reasons = Array.isArray(candidate.reasons) ? candidate.reasons : [];
       return `<article class="clip-candidate ${candidate.reviewStatus}${state.current?.id === candidate.id ? " active" : ""}"><button class="clip-candidate-open" type="button" data-open-candidate="${candidate.id}"><span>${candidate.reviewStatus === "kept" ? "Kept" : candidate.reviewStatus === "rejected" ? "Rejected" : `Suggestion ${index + 1}`}</span><strong>${escapeHTML(titleFor(recording))} · ${escapeHTML(U.takeLabel(recording))}</strong><time>${formatClock(candidate.startMs)} — ${formatClock(candidate.endMs)}</time><em>${Math.round(Number(candidate.score || 0) * 100)}% activity confidence</em></button><div class="clip-candidate-reasons">${reasons.map((reason) => `<span>${escapeHTML(reason)}</span>`).join("")}</div></article>`;
