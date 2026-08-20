@@ -500,7 +500,7 @@
       return `
         <article class="section-take" data-section-take="${recording.id}" data-duration-ms="${Number(recording.durationMs || 0)}">
           <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${isVideo ? " · Video" : ""}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
-          <div>
+          <div class="section-take-actions">
             <button type="button" data-section-play data-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Video" : "Play"}</button>
             ${isVideo ? `<button type="button" data-section-play data-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Audio</button>` : ""}
             <button class="take-download-button" type="button" data-section-download data-download-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
@@ -777,6 +777,66 @@
     saveTimerBlock(session, timer);
   }
 
+  function toolPracticeContext(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    const block = session ? guidedBlockFor(session) : null;
+    return session ? {
+      sectionID: session.id,
+      practiceBlockID: block?.id || "",
+      practiceSessionID: block?.practiceSessionId || "",
+      ready: Boolean(block),
+      recorderBusy: activeSectionRecordingPhase === "starting" || activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing",
+    } : null;
+  }
+
+  async function beginToolPractice(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    if (!session) throw new Error("The matching practice section is unavailable");
+    const context = toolPracticeContext(sectionID);
+    if (context?.recorderBusy) throw new Error("Finish the current take before starting the guide-tone trainer");
+    const timer = timerFor(session);
+    if (!timer.running) {
+      timer.running = true;
+      timer.startedAt = Date.now();
+    }
+    persistTimerState();
+    renderSessions();
+    updateWeekLive();
+    await saveTimerBlock(session, timer);
+    return toolPracticeContext(sectionID);
+  }
+
+  async function checkpointToolPractice(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    if (!session) return;
+    const timer = timerFor(session);
+    if (!timer.running) return;
+    timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, elapsedFor(timer));
+    timer.startedAt = Date.now();
+    persistTimerState();
+    await saveTimerBlock(session, timer);
+  }
+
+  async function endToolPractice(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    if (!session) return;
+    const timer = timerFor(session);
+    if (timer.running) {
+      timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, elapsedFor(timer));
+      timer.running = false;
+      timer.startedAt = 0;
+    }
+    if (!timer.completed && timer.elapsedMs >= session.minutes * 60 * 1000) {
+      timer.completed = true;
+      timer.completedAt = new Date().toISOString();
+    }
+    persistTimerState();
+    syncGuidedPracticeEntry(session);
+    await saveTimerBlock(session, timer);
+    renderAll();
+    await logGuidedBlockToCloud(session);
+  }
+
   function markGuidedGoalMet(session) {
     const timer = timerFor(session);
     if (timer.completed) return;
@@ -986,6 +1046,7 @@
           <h3>${escapeHTML(session.title)}</h3>
           <p>${escapeHTML(session.detail)}</p>
           ${session.win ? `<div class="selected-section-win"><span>Today’s win</span><strong>${escapeHTML(session.win)}</strong></div>` : ""}
+          ${session.id === "blue-bossa-guide-tones" ? '<a class="section-tool-link" href="#guide-tones"><span>Practice tool</span><strong>Open the Blue Bossa guide-tone trainer</strong></a>' : ""}
         </div>
         <span class="selected-section-target">${session.minutes}<small>min goal</small></span>
       </header>
@@ -1416,6 +1477,12 @@
   }
 
   renderRoadmap();
+  globalThis.JazzPracticeTimer = {
+    context: toolPracticeContext,
+    begin: beginToolPractice,
+    checkpoint: checkpointToolPractice,
+    end: endToolPractice,
+  };
   setupDialogs();
   setupPracticeSectionCreator();
   setupDataActions();

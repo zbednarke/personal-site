@@ -31,3 +31,20 @@ Runtime configuration:
 - `PORT` (defaults to `8080`)
 
 `JAZZ_ALLOW_INSECURE_LOCAL=1` is available only for local development.
+
+## Legacy WebM seek repair
+
+Browser recordings created with the old one-second MediaRecorder timeslice do
+not contain a duration or cue index. `cmd/repair-video-index` losslessly remuxes
+those objects, keeps each original beside it as
+`video.original-unindexed.webm`, verifies the packet-preserving output, and
+refreshes the recording's GCS metadata in Postgres. It is dry-run by default:
+
+```sh
+go run ./cmd/repair-video-index -all
+go run ./cmd/repair-video-index -id RECORDING_UUID -apply
+```
+
+`Dockerfile.repair` and `cloudbuild.repair.yaml` package the same command for
+the `jazz-video-index-repair` Cloud Run job so large archives can be repaired
+inside the bucket's region.

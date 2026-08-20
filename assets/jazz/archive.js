@@ -108,16 +108,20 @@
   }
 
   function visibleView() {
-    return location.hash === "#archive" ? "archive" : "today";
+    if (location.hash === "#archive") return "archive";
+    if (location.hash === "#guide-tones") return "guide-tones";
+    return "today";
   }
 
   function route() {
     const view = visibleView();
     document.body.classList.toggle("virtuoso-today", view === "today");
     document.body.classList.toggle("virtuoso-archive", view === "archive");
+    document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
-    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : "Today";
+    $("#guide-tones").hidden = view !== "guide-tones";
+    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : (view === "guide-tones" ? "Guide tones" : "Today");
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;
       link.classList.toggle("active", active);
@@ -125,6 +129,7 @@
       else link.removeAttribute("aria-current");
     });
     if (view === "archive" && !state.initialized) initializeArchive();
+    document.dispatchEvent(new CustomEvent("jazz:view-change", { detail: { view } }));
   }
 
   async function initializeArchive() {
@@ -433,6 +438,13 @@
   }
 
   function wireMedia(media, asset, retry) {
+    const syncNativeDuration = () => {
+      const nativeDuration = Number(media.duration);
+      if (!Number.isFinite(nativeDuration) || nativeDuration <= 0) return;
+      state.expectedDuration = nativeDuration;
+      $("#archive-player-seek").max = String(nativeDuration);
+      $("#archive-player-duration").textContent = U.formatPlaybackTime(nativeDuration);
+    };
     const update = () => {
       const current = Math.min(state.expectedDuration, Math.max(0, Number(media.currentTime || 0)));
       $("#archive-player-seek").value = String(current);
@@ -444,6 +456,10 @@
       else if (media.ended) setPlayerState("Finished");
     };
     ["play", "pause", "timeupdate", "seeking", "seeked", "ended", "volumechange"].forEach((event) => media.addEventListener(event, update));
+    ["loadedmetadata", "durationchange"].forEach((event) => media.addEventListener(event, () => {
+      syncNativeDuration();
+      update();
+    }));
     media.addEventListener("error", () => {
       if (media !== state.media) return;
       if (retry < 1 && state.currentRecording) {
@@ -453,6 +469,7 @@
         setPlayerState("Playback interrupted");
       }
     });
+    syncNativeDuration();
     update();
   }
 

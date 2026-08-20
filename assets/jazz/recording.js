@@ -8,7 +8,7 @@
   const RECORDING_MODE_STORAGE_KEY = "zach-jazz-recording-mode-v1";
   const VIDEO_RESOLUTION_STORAGE_KEY = "zach-jazz-video-resolution-v1";
   const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
-  const { MAX_TAKE_DURATION_MS, shouldAutoFinish } = globalThis.JazzRecordingPolicy;
+  const { MAX_TAKE_DURATION_MS, VIDEO_DATA_FLUSH_MS, preferredVideoType, shouldAutoFinish, supportsChunkFlush } = globalThis.JazzRecordingPolicy;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
@@ -17,6 +17,7 @@
   let recordingCameraStream = null;
   let videoRecordingStream = null;
   let videoRecorder = null;
+  let videoDataTimer = null;
   let videoChunks = [];
   let videoContentType = "";
   let losslessRecorder = null;
@@ -357,19 +358,8 @@
     if (stopButton) stopButton.disabled = true;
   }
 
-  function preferredVideoType() {
-    if (!globalThis.MediaRecorder) return "";
-    return [
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8,opus",
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/webm",
-      "video/mp4",
-    ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
-  }
-
   function startVideoRecording(audioStream, activeCameraStream) {
-    const mimeType = preferredVideoType();
+    const mimeType = preferredVideoType(globalThis.MediaRecorder?.isTypeSupported?.bind(globalThis.MediaRecorder));
     if (!mimeType) throw new Error("Video recording is not supported in this browser");
     videoRecordingStream = new MediaStream([
       ...activeCameraStream.getVideoTracks(),
@@ -386,12 +376,23 @@
     videoRecorder.addEventListener("dataavailable", (event) => {
       if (event.data?.size) videoChunks.push(event.data);
     });
-    videoRecorder.start(1000);
+    // Starting without a timeslice lets the recorder finalize a seekable
+    // container. Chromium's fragmented MP4 remains seekable across requestData
+    // drains, so long recordings can still release encoded data periodically.
+    // Its WebM muxer does not, so WebM fallbacks stay as one final chunk.
+    videoRecorder.start();
+    if (supportsChunkFlush(mimeType)) {
+      videoDataTimer = setInterval(() => {
+        if (videoRecorder?.state === "recording") videoRecorder.requestData();
+      }, VIDEO_DATA_FLUSH_MS);
+    }
   }
 
   function finishVideoRecording() {
     if (!videoRecorder) return Promise.resolve(null);
     const recorder = videoRecorder;
+    clearInterval(videoDataTimer);
+    videoDataTimer = null;
     const settings = recordingCameraStream?.getVideoTracks()[0]?.getSettings?.() || {};
     return new Promise((resolve, reject) => {
       recorder.addEventListener("error", (event) => reject(event.error || new Error("Video recording failed")), { once: true });
@@ -415,6 +416,8 @@
   }
 
   function discardVideoRecording() {
+    clearInterval(videoDataTimer);
+    videoDataTimer = null;
     if (!videoRecorder) {
       videoChunks = [];
       return Promise.resolve();

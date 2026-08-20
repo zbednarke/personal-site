@@ -30,6 +30,7 @@
     </a>
     <div class="virtuoso-nav-links">
       <a class="active" href="#today" data-jazz-view="today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
+      <a href="#guide-tones" data-jazz-view="guide-tones"><span aria-hidden="true">&#9835;</span>Guide tones</a>
       <a href="#archive" data-jazz-view="archive"><span aria-hidden="true">▱</span>Archive</a>
       <span class="disabled" title="Progress screen is coming later"><span aria-hidden="true">⌁</span>Progress</span>
     </div>
@@ -243,6 +244,60 @@
       </div>
     </section>
 
+    <section class="guide-tone-screen" id="guide-tones" aria-labelledby="guide-tone-title" hidden>
+      <header class="guide-tone-screen-header">
+        <div>
+          <p class="eyebrow">Practice tool 001</p>
+          <h1 id="guide-tone-title">Guide-tone reflex</h1>
+          <p>See the chord. Hear the landing spot. Play its third or seventh without a cheat sheet.</p>
+        </div>
+        <div class="guide-tone-session-summary" aria-live="polite">
+          <span>Synced history</span>
+          <strong id="guide-tone-history-accuracy">No attempts yet</strong>
+          <small id="guide-tone-history-detail">Blue Bossa</small>
+        </div>
+      </header>
+
+      <div class="guide-tone-toolbar" aria-label="Drill setup">
+        <label><span>Tune</span><select id="guide-tone-tune"><option value="blue-bossa">Blue Bossa</option></select></label>
+        <label><span>Instrument</span><select id="guide-tone-instrument"><option value="bb-trumpet">B&#9837; trumpet</option><option value="concert">Concert pitch</option></select></label>
+        <label><span>Mode</span><select id="guide-tone-mode"><option value="learn">Learn &middot; advance when correct</option><option value="tempo">Tempo &middot; follow the form</option></select></label>
+        <label class="guide-tone-tempo-field" for="guide-tone-tempo"><span>Tempo</span><span class="guide-tone-tempo-control"><input id="guide-tone-tempo" type="range" min="40" max="180" step="1" value="72"><output id="guide-tone-tempo-value" for="guide-tone-tempo">72 BPM</output></span></label>
+        <label><span>Microphone</span><select id="guide-tone-input"><option value="">Default microphone</option></select></label>
+      </div>
+
+      <div class="guide-tone-workspace">
+        <section class="guide-tone-chart-card" aria-labelledby="guide-tone-chart-title">
+          <header><div><span>Lead-sheet roadmap</span><h2 id="guide-tone-chart-title">Blue Bossa &middot; 16 bars</h2></div><small id="guide-tone-concert-note">Written pitch for B&#9837; trumpet</small></header>
+          <div class="guide-tone-chart" id="guide-tone-chart" aria-label="Blue Bossa chord form"></div>
+          <p class="guide-tone-chart-note">Chord symbols only&mdash;use your lead sheet for the copyrighted melody.</p>
+        </section>
+
+        <aside class="guide-tone-stage" aria-label="Current guide-tone prompt">
+          <div class="guide-tone-stage-top"><span id="guide-tone-location">Bar 1 of 16 &middot; Chorus 1</span><span id="guide-tone-clock">00:00</span></div>
+          <div class="guide-tone-prompt" id="guide-tone-prompt">
+            <span class="guide-tone-prompt-label">Current chord</span>
+            <strong class="guide-tone-chord" id="guide-tone-chord">Dm7</strong>
+            <p>Play the <b id="guide-tone-degree">3rd</b></p>
+            <div class="guide-tone-feedback" id="guide-tone-feedback" data-tone="idle" aria-live="polite">
+              <span id="guide-tone-detected-note">&mdash;</span>
+              <strong id="guide-tone-feedback-copy">Ready when you are</strong>
+              <small id="guide-tone-feedback-detail">The microphone grades pitch class in any octave.</small>
+            </div>
+          </div>
+          <div class="guide-tone-signal" aria-label="Microphone input level"><span id="guide-tone-signal-fill"></span></div>
+          <p class="guide-tone-mic-status" id="guide-tone-mic-status" role="status">Microphone is off.</p>
+          <div class="guide-tone-actions"><button class="guide-tone-start" id="guide-tone-start" type="button">Start drill</button><button class="guide-tone-stop" id="guide-tone-stop" type="button" hidden>Finish &amp; save</button></div>
+          <dl class="guide-tone-stats">
+            <div><dt>Accuracy</dt><dd id="guide-tone-accuracy">&mdash;</dd></div>
+            <div><dt>Streak</dt><dd id="guide-tone-streak">0</dd></div>
+            <div><dt>Response</dt><dd id="guide-tone-response">&mdash;</dd></div>
+            <div><dt>Attempts</dt><dd id="guide-tone-attempts">0</dd></div>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
     <section class="section mission-section" aria-labelledby="mission-title">
       <div class="section-heading compact">
         <div>
@@ -396,11 +451,13 @@
   <script src="../assets/jazz/practice-session.js"></script>
   <script src="../assets/jazz/lossless-recorder.js"></script>
   <script src="../assets/jazz/audio-analysis.js"></script>
+  <script src="../assets/jazz/guide-tone-engine.js"></script>
   <script src="../assets/jazz/recording-policy.js"></script>
   <script src="../assets/jazz/upload-queue.js"></script>
   <script src="../assets/jazz/media-playback.js"></script>
   <script src="../assets/jazz/recording.js"></script>
   <script src="../assets/jazz/archive-utils.js"></script>
   <script src="../assets/jazz/archive.js"></script>
+  <script src="../assets/jazz/guide-tone-trainer.js"></script>
 </body>
 </html>
