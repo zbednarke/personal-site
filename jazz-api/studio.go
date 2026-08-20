@@ -203,40 +203,60 @@ func (app *application) updateClipCandidate(w http.ResponseWriter, r *http.Reque
 		app.serverError(w, err)
 		return
 	}
-	var startMS, endMS, durationMS int
-	var status, title, notes string
-	err = app.db.QueryRow(r.Context(), `SELECT c.start_ms,c.end_ms,r.duration_ms,c.review_status,COALESCE(c.title,''),COALESCE(c.notes,'') FROM clip_candidates c JOIN recordings r ON r.id=c.recording_id WHERE c.id=$1 AND c.user_id=$2`, candidateID, userID).Scan(&startMS, &endMS, &durationMS, &status, &title, &notes)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "clip candidate not found")
+	if input.ReviewStatus != nil && *input.ReviewStatus != "suggested" && *input.ReviewStatus != "kept" && *input.ReviewStatus != "rejected" {
+		writeError(w, http.StatusUnprocessableEntity, "clip candidate update is invalid")
 		return
 	}
-	if err != nil {
-		app.serverError(w, err)
-		return
-	}
+	var startArg, endArg, statusArg any
 	if input.StartMS != nil {
-		startMS = *input.StartMS
+		startArg = *input.StartMS
 	}
 	if input.EndMS != nil {
-		endMS = *input.EndMS
+		endArg = *input.EndMS
 	}
 	if input.ReviewStatus != nil {
-		status = *input.ReviewStatus
+		statusArg = *input.ReviewStatus
 	}
+	title, notes := "", ""
 	if input.Title != nil {
 		title = clean(*input.Title, 120)
 	}
 	if input.Notes != nil {
 		notes = clean(*input.Notes, 2000)
 	}
-	if startMS < 0 || endMS <= startMS || endMS > durationMS || (status != "suggested" && status != "kept" && status != "rejected") {
-		writeError(w, http.StatusUnprocessableEntity, "clip candidate update is invalid")
+	var startMS, endMS int
+	var status, savedTitle, savedNotes string
+	var updatedAt time.Time
+	err = app.db.QueryRow(r.Context(), `
+		UPDATE clip_candidates c SET
+		start_ms=COALESCE($1,c.start_ms),end_ms=COALESCE($2,c.end_ms),review_status=COALESCE($3,c.review_status),
+		title=CASE WHEN $4 THEN NULLIF($5,'') ELSE c.title END,
+		notes=CASE WHEN $6 THEN NULLIF($7,'') ELSE c.notes END,updated_at=now()
+		FROM recordings rec
+		WHERE c.id=$8 AND c.user_id=$9 AND rec.id=c.recording_id AND rec.status='ready'
+		AND COALESCE($1,c.start_ms)>=0
+		AND COALESCE($2,c.end_ms)>COALESCE($1,c.start_ms)
+		AND COALESCE($2,c.end_ms)<=rec.duration_ms
+		RETURNING c.start_ms,c.end_ms,c.review_status,COALESCE(c.title,''),COALESCE(c.notes,''),c.updated_at`,
+		startArg, endArg, statusArg, input.Title != nil, title, input.Notes != nil, notes, candidateID, userID).
+		Scan(&startMS, &endMS, &status, &savedTitle, &savedNotes, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		checkErr := app.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM clip_candidates c JOIN recordings rec ON rec.id=c.recording_id WHERE c.id=$1 AND c.user_id=$2 AND rec.status='ready')`, candidateID, userID).Scan(&exists)
+		if checkErr != nil {
+			app.serverError(w, checkErr)
+			return
+		}
+		if exists {
+			writeError(w, http.StatusUnprocessableEntity, "clip candidate update is invalid")
+		} else {
+			writeError(w, http.StatusNotFound, "clip candidate not found")
+		}
 		return
 	}
-	_, err = app.db.Exec(r.Context(), `UPDATE clip_candidates SET start_ms=$1,end_ms=$2,review_status=$3,title=NULLIF($4,''),notes=NULLIF($5,''),updated_at=now() WHERE id=$6 AND user_id=$7`, startMS, endMS, status, title, notes, candidateID, userID)
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": candidateID, "startMs": startMS, "endMs": endMS, "reviewStatus": status, "title": title, "notes": notes, "updatedAt": time.Now()})
+	writeJSON(w, http.StatusOK, map[string]any{"id": candidateID, "startMs": startMS, "endMs": endMS, "reviewStatus": status, "title": savedTitle, "notes": savedNotes, "updatedAt": updatedAt})
 }
