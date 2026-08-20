@@ -110,6 +110,7 @@
   function visibleView() {
     if (location.hash === "#archive") return "archive";
     if (location.hash === "#guide-tones") return "guide-tones";
+    if (location.hash === "#studio") return "studio";
     return "today";
   }
 
@@ -118,10 +119,12 @@
     document.body.classList.toggle("virtuoso-today", view === "today");
     document.body.classList.toggle("virtuoso-archive", view === "archive");
     document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
+    document.body.classList.toggle("virtuoso-studio", view === "studio");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
     $("#guide-tones").hidden = view !== "guide-tones";
-    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : (view === "guide-tones" ? "Guide tones" : "Today");
+    $("#studio").hidden = view !== "studio";
+    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : (view === "guide-tones" ? "Guide tones" : (view === "studio" ? "Clip studio" : "Today"));
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;
       link.classList.toggle("active", active);
