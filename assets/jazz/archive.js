@@ -438,6 +438,13 @@
   }
 
   function wireMedia(media, asset, retry) {
+    const syncNativeDuration = () => {
+      const nativeDuration = Number(media.duration);
+      if (!Number.isFinite(nativeDuration) || nativeDuration <= 0) return;
+      state.expectedDuration = nativeDuration;
+      $("#archive-player-seek").max = String(nativeDuration);
+      $("#archive-player-duration").textContent = U.formatPlaybackTime(nativeDuration);
+    };
     const update = () => {
       const current = Math.min(state.expectedDuration, Math.max(0, Number(media.currentTime || 0)));
       $("#archive-player-seek").value = String(current);
@@ -449,6 +456,10 @@
       else if (media.ended) setPlayerState("Finished");
     };
     ["play", "pause", "timeupdate", "seeking", "seeked", "ended", "volumechange"].forEach((event) => media.addEventListener(event, update));
+    ["loadedmetadata", "durationchange"].forEach((event) => media.addEventListener(event, () => {
+      syncNativeDuration();
+      update();
+    }));
     media.addEventListener("error", () => {
       if (media !== state.media) return;
       if (retry < 1 && state.currentRecording) {
@@ -458,6 +469,7 @@
         setPlayerState("Playback interrupted");
       }
     });
+    syncNativeDuration();
     update();
   }
 
