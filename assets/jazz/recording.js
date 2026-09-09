@@ -22,6 +22,8 @@
   let videoContentType = "";
   let losslessRecorder = null;
   let startedAt = 0;
+  let pausedAt = null;
+  let pausedDuration = 0;
   let recordedAt = "";
   let timerID = null;
   let autoStopID = null;
@@ -50,7 +52,7 @@
     if (state) state.textContent = message;
     if (!notify) return;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
-      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
+      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry, paused: pausedAt !== null },
     }));
   }
 
@@ -74,7 +76,7 @@
   }
 
   function updateTimer() {
-    const elapsed = performance.now() - startedAt;
+    const elapsed = (pausedAt ?? performance.now()) - startedAt - pausedDuration;
     const timer = $("#recording-timer");
     if (timer) timer.textContent = formatTimer(elapsed);
     if (shouldAutoFinish(elapsed) && losslessRecorder && !captureFinalizing) stopRecording({ automatic: true });
@@ -343,6 +345,9 @@
   }
 
   function stopCapture() {
+    pausedAt = null;
+    pausedDuration = 0;
+    $("#pause-recording")?.setAttribute("hidden", "");
     clearInterval(timerID);
     timerID = null;
     clearTimeout(autoStopID);
@@ -469,7 +474,11 @@
       await losslessRecorder.start(stream);
       if (recordingCameraStream) startVideoRecording(stream, recordingCameraStream);
       recordedAt = new Date().toISOString();
+      pausedAt = null;
+      pausedDuration = 0;
       startedAt = performance.now();
+      const pauseButton = $("#pause-recording");
+      if (pauseButton) { pauseButton.hidden = false; pauseButton.textContent = "Pause"; pauseButton.disabled = false; }
       updateTimer();
       timerID = setInterval(updateTimer, 250);
       autoStopID = setTimeout(() => stopRecording({ automatic: true }), MAX_TAKE_DURATION_MS);
@@ -495,9 +504,48 @@
     }
   }
 
+  function togglePause() {
+    if (!losslessRecorder || captureFinalizing) return;
+    const resume = pausedAt !== null;
+    try {
+      // Video and its audio share one recorder. PCM receives the same transition
+      // in the same task; its partial buffer is preserved at each pause boundary.
+      if (videoRecorder) {
+        if (resume) videoRecorder.resume();
+        else videoRecorder.pause();
+      }
+      if (resume) {
+        losslessRecorder.resume();
+        pausedDuration += performance.now() - pausedAt;
+        pausedAt = null;
+        const remaining = MAX_TAKE_DURATION_MS - (performance.now() - startedAt - pausedDuration);
+        autoStopID = setTimeout(() => stopRecording({ automatic: true }), Math.max(0, remaining));
+      } else {
+        losslessRecorder.pause();
+        pausedAt = performance.now();
+        clearTimeout(autoStopID);
+        autoStopID = null;
+      }
+      updateTimer();
+      const button = $("#pause-recording");
+      if (button) button.textContent = resume ? "Pause" : "Resume";
+      $("#recording-light")?.classList.toggle("active", resume);
+      setMonitorStatus(resume ? "Recording with the selected microphone." : "Paused — preview and tuner remain live; nothing is being recorded.", resume ? "live" : "");
+      setRecorderState(resume ? "Recording resumed — play the take" : "Paused — not recording. Resume when ready, or finish this take.", "recording");
+    } catch (error) {
+      // Finish the captured media if a recorder cannot follow the transition.
+      setServiceStatus(`Pause/resume failed: ${error.message}. Finishing the captured take.`, "error");
+      stopRecording();
+    }
+  }
+
   function stopRecording(options = {}) {
     if (!losslessRecorder || captureFinalizing) return;
     captureFinalizing = true;
+    clearInterval(timerID);
+    clearTimeout(autoStopID);
+    const pauseButton = $("#pause-recording");
+    if (pauseButton) pauseButton.disabled = true;
     const stopButton = $("#stop-recording");
     if (stopButton) stopButton.disabled = true;
     const automatic = options.automatic === true;
@@ -1042,6 +1090,7 @@
   globalThis.JazzRecording = {
     startForBlock,
     stop: stopRecording,
+    togglePause,
     cancel: cancelRecording,
     retry: retryUpload,
     play: playRecording,
@@ -1107,6 +1156,7 @@
     event.returnValue = "";
   });
   $("#start-recording")?.addEventListener("click", startGeneralRecording);
+  $("#pause-recording")?.addEventListener("click", togglePause);
   $("#stop-recording")?.addEventListener("click", stopRecording);
   $("#refresh-recordings")?.addEventListener("click", loadRecordings);
   navigator.mediaDevices?.addEventListener?.("devicechange", () => updateMicrophones().catch(() => {}));

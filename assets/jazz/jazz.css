@@ -1636,3 +1636,5 @@ footer p[data-tone="offline"] { color: var(--red); }
  .practice-metronome {border-left:0;border-top:1px solid #414139;padding:12px 0 0}
  .audio-preflight .practice-tools-row .section-live-audio {grid-template-columns:minmax(65px,.4fr) minmax(0,1fr);align-items:center}
 }
+
+.section-recording-actions {flex-wrap:wrap;justify-content:flex-end}
