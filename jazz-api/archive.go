@@ -263,7 +263,7 @@ func (app *application) loadArchiveDay(ctx context.Context, userID uuid.UUID, da
 	}
 	for index := range response.Sessions {
 		session := &response.Sessions[index]
-		session.Blocks, err = app.loadPracticeBlocks(ctx, userID, session.ID, dateKey)
+		session.Blocks, err = app.loadPracticeBlocksForView(ctx, userID, session.ID, dateKey, true)
 		if err != nil {
 			return archiveDayResponse{}, err
 		}

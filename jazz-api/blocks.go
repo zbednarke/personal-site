@@ -215,7 +215,7 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 	err = app.db.QueryRow(r.Context(), `
 		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,
 		       COALESCE(notes,''),elapsed_ms,status,timer_started_at,completed_at,updated_at
-		FROM practice_blocks WHERE id=$1 AND user_id=$2`, blockID, userID).
+		FROM practice_blocks WHERE id=$1 AND user_id=$2 AND removed_at IS NULL`, blockID, userID).
 		Scan(&block.ID, &block.SessionID, &block.PracticeDate, &block.BlockKey, &block.Position, &block.Title, &block.Instructions, &block.Category,
 			&block.Track, &block.TargetMinutes, &block.Notes, &block.ElapsedMS, &block.Status, &block.TimerStartedAt, &block.CompletedAt, &block.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -293,8 +293,12 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 
 	err = app.db.QueryRow(r.Context(), `
 		UPDATE practice_blocks SET notes=NULLIF($1,''),elapsed_ms=$2,status=$3,timer_started_at=$4,completed_at=$5,updated_at=now()
-		WHERE id=$6 AND user_id=$7
+		WHERE id=$6 AND user_id=$7 AND removed_at IS NULL
 		RETURNING updated_at`, block.Notes, block.ElapsedMS, block.Status, block.TimerStartedAt, block.CompletedAt, block.ID, userID).Scan(&block.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "practice block not found")
+		return
+	}
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -303,6 +307,10 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 }
 
 func (app *application) loadPracticeBlocks(ctx context.Context, userID, sessionID uuid.UUID, practiceDate string) ([]practiceBlock, error) {
+	return app.loadPracticeBlocksForView(ctx, userID, sessionID, practiceDate, false)
+}
+
+func (app *application) loadPracticeBlocksForView(ctx context.Context, userID, sessionID uuid.UUID, practiceDate string, includeRemoved bool) ([]practiceBlock, error) {
 	var exists bool
 	if err := app.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM practice_sessions WHERE id=$1 AND user_id=$2)`, sessionID, userID).Scan(&exists); err != nil {
 		return nil, err
@@ -313,7 +321,7 @@ func (app *application) loadPracticeBlocks(ctx context.Context, userID, sessionI
 	rows, err := app.db.Query(ctx, `
 		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,
 		       COALESCE(notes,''),elapsed_ms,status,timer_started_at,completed_at,updated_at
-		FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 AND removed_at IS NULL ORDER BY position,id`, sessionID, userID, practiceDate)
+		FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 AND ($4 OR removed_at IS NULL) ORDER BY position,id`, sessionID, userID, practiceDate, includeRemoved)
 	if err != nil {
 		return nil, err
 	}
