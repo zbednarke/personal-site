@@ -134,11 +134,21 @@
 
           <section class="current-section-stage">
             <div class="workspace-label"><h2>Current section</h2><span id="current-section-state">Ready</span></div>
-            <section class="audio-preflight" id="audio-preflight" hidden aria-label="Live microphone signal">
-              <div class="audio-preflight-head"><span><em>Live input</em><strong id="active-input-name">Default microphone</strong></span><small id="input-signal-status" data-tone="waiting">Listening…</small></div>
+            <section class="audio-preflight" id="audio-preflight" aria-label="Practice audio tools">
+              <div class="audio-preflight-head"><span><em>Live input</em><strong id="active-input-name">Default microphone</strong></span><small id="input-signal-status" data-tone="waiting">Mic off</small></div>
               <video class="live-camera-preview" id="live-camera-preview" autoplay muted playsinline hidden aria-label="Live camera preview"></video>
               <div class="input-meter" aria-label="Microphone input level"><span id="input-meter-fill"></span></div>
+              <div class="practice-tools-row">
               <div class="section-live-audio"><canvas class="recording-waveform" data-waveform aria-label="Live microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong>Tuner</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>
+                <section class="practice-metronome" id="practice-metronome" aria-label="Metronome">
+                  <div class="metronome-heading"><strong>Metronome</strong><div id="metronome-beats" aria-hidden="true"></div></div>
+                  <div class="metronome-tempo-controls"><button id="metronome-slower" type="button" aria-label="Decrease tempo">−</button><label><input id="metronome-bpm" type="number" min="30" max="300" value="120" aria-label="Tempo in beats per minute"><span>BPM</span></label><button id="metronome-faster" type="button" aria-label="Increase tempo">+</button><button id="metronome-tap" type="button">Tap</button></div>
+                  <input id="metronome-tempo" type="range" min="30" max="300" value="120" aria-label="Tempo">
+                  <div class="metronome-options"><label>Beats <select id="metronome-meter" aria-label="Beats per bar"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option></select></label><label>Volume <input id="metronome-volume" type="range" min="0" max="100" value="35" aria-label="Click volume"></label></div>
+                  <div class="metronome-footer"><button id="metronome-toggle" class="button button-quiet" type="button" aria-pressed="false">Start</button><span id="metronome-status" role="status">Ready</span></div>
+                  <small class="metronome-hint">Headphones keep clicks out of takes.</small>
+                </section>
+              </div>
             </section>
             <div id="active-section-panel"></div>
           </section>
@@ -555,6 +565,7 @@
   <script src="../assets/jazz/upload-queue.js"></script>
   <script src="../assets/jazz/media-playback.js"></script>
   <script src="../assets/jazz/recording.js"></script>
+  <script src="../assets/jazz/metronome.js"></script>
   <script src="../assets/jazz/archive-utils.js"></script>
   <script src="../assets/jazz/archive.js"></script>
   <script src="../assets/jazz/clip-studio-model.js"></script>

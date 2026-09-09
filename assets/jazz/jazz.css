@@ -1603,3 +1603,36 @@ footer p[data-tone="offline"] { color: var(--red); }
 .detached-section-upload { display: grid; gap: 8px; border: 1px solid var(--brass); padding: 12px; margin-bottom: 12px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
 .detached-section-upload span { color: var(--muted); }
 .detached-section-upload button { justify-self: start; min-height: 44px; padding: 8px 12px; border: 1px solid var(--brass); color: var(--brass); background: transparent; border-radius: 6px; cursor: pointer; }
+/* Compact microphone check and independent practice metronome. */
+.practice-tools-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.45fr);gap:14px;margin-top:12px;align-items:start}
+.audio-preflight .practice-tools-row .section-live-audio {display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin:0}
+.audio-preflight .practice-tools-row .recording-waveform {height:19px;min-height:19px;width:100%}
+.practice-metronome {min-width:0;border-left:1px solid #414139;padding-left:14px;color:var(--text,#eee)}
+.metronome-heading,.metronome-tempo-controls,.metronome-options,.metronome-footer {display:flex;align-items:center;justify-content:space-between;gap:8px}
+.metronome-heading strong {font-size:12px;letter-spacing:.05em}
+#metronome-beats {display:flex;gap:5px}
+[data-metronome-beat] {width:7px;height:7px;border-radius:50%;background:#484b43}
+[data-metronome-beat].downbeat {box-shadow:0 0 0 1px #99b88d}
+[data-metronome-beat].active {background:#c7e3b6;box-shadow:0 0 9px #a5c99f80}
+.metronome-tempo-controls {margin:10px 0 4px}
+.metronome-tempo-controls button {min-width:30px;min-height:32px;border:1px solid #505247;background:#282b25;color:inherit;border-radius:3px;cursor:pointer}
+.metronome-tempo-controls label {display:flex;align-items:baseline;gap:4px;min-width:0}
+#metronome-bpm {width:63px;padding:0;border:0;background:transparent;color:inherit;font-size:26px;font-variant-numeric:tabular-nums;appearance:textfield}
+#metronome-bpm::-webkit-inner-spin-button {appearance:none}
+.metronome-tempo-controls label span,.metronome-options,.metronome-footer span,.metronome-hint {font-size:10px;color:#babfb1}
+#metronome-tempo {width:100%;margin:5px 0 10px}
+.practice-metronome input[type=range] {accent-color:#b4ce9d;cursor:pointer;min-width:0}
+.metronome-options label {display:flex;align-items:center;gap:5px;min-width:0}
+.metronome-options label:last-child {flex:1;justify-content:flex-end}
+#metronome-volume {width:65px;max-width:100%}
+#metronome-meter {background:#282b25;color:inherit;border:1px solid #505247;border-radius:3px;padding:4px}
+.metronome-footer {margin-top:10px;justify-content:flex-start}
+#metronome-toggle {min-width:66px;min-height:32px;padding:5px 12px}
+.metronome-running #metronome-toggle {background:#b4ce9d;color:#182013}
+.metronome-hint {display:block;margin-top:8px;font-size:9px;line-height:1.5}
+.practice-metronome :focus-visible {outline:2px solid #c7e3b6;outline-offset:3px}
+@media(max-width:600px) {
+ .practice-tools-row {grid-template-columns:1fr}
+ .practice-metronome {border-left:0;border-top:1px solid #414139;padding:12px 0 0}
+ .audio-preflight .practice-tools-row .section-live-audio {grid-template-columns:minmax(65px,.4fr) minmax(0,1fr);align-items:center}
+}

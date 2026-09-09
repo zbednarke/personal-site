@@ -157,7 +157,11 @@
 
   function setPreflightVisible(visible) {
     const preflight = $("#audio-preflight");
-    if (preflight) preflight.hidden = !visible;
+    if (preflight) preflight.hidden = false;
+    if (!visible) {
+      const status = $("#input-signal-status");
+      if (status) { status.textContent = "Mic off"; status.dataset.tone = "waiting"; }
+    }
   }
 
   function drawWaveforms(samples) {
