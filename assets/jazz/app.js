@@ -45,6 +45,7 @@
   const sectionUploadJobs = new Map();
   let recordingTimerSessionID = "";
   let selectedPracticeSectionID = "";
+  let practiceLayoutSaving = false;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -346,13 +347,12 @@
   }
 
   function guidedBlockFor(session) {
-    return guidedBlocks.get(session.id) || null;
+    return guidedBlocks.get(session?.id) || null;
   }
 
   function applyPracticeBlocks(blocks) {
     guidedBlocks = new Map((blocks || []).map((block) => [block.blockKey, block]));
-    if (!blocks?.length) return;
-    practiceSections = [...blocks]
+    practiceSections = [...(blocks || [])]
       .sort((a, b) => Number(a.position) - Number(b.position))
       .map((block) => {
         const curriculum = DATA.sessions.find((session) => session.id === block.blockKey) || {};
@@ -934,6 +934,49 @@
     setText("today-stage-minutes", practicedMinutes);
   }
 
+  async function changePracticeLayout(session, direction) {
+    if (practiceLayoutSaving) return;
+    const block = guidedBlockFor(session);
+    if (!block) return;
+    const removing = direction === 0;
+    if (removing && (activeSectionRecordingID === block.id || uploadJobsForBlock(block).length || timerFor(session).running)) {
+      showToast("Finish recording, uploads and the timer before deleting this section");
+      return;
+    }
+    const next = [...practiceSections];
+    const index = next.findIndex((item) => item.id === session.id);
+    if (index < 0) return;
+    if (removing) next.splice(index, 1);
+    else {
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return;
+      [next[index], next[target]] = [next[target], next[index]];
+    }
+    practiceLayoutSaving = true;
+    document.querySelectorAll("[data-plan-action], #add-practice-section").forEach((button) => { button.disabled = true; });
+    try {
+      if (removing) {
+        if (noteSaveDelays.has(session.id)) await saveBlockNote(session);
+        await (timerSaveChains.get(session.id) || Promise.resolve());
+      }
+      await globalThis.JazzPracticeSession.updateGuidedLayout(
+        block.practiceSessionId, block.practiceDate,
+        next.map((item) => guidedBlockFor(item).id), removing ? block.id : null,
+      );
+      practiceSections = next.map((item, position) => ({ ...item, position }));
+      practiceSections.forEach((item) => { guidedBlockFor(item).position = item.position; });
+      if (removing) guidedBlocks.delete(session.id);
+      showToast(removing ? "Section deleted from today's plan. Recordings kept in Previous work." : "Section order saved");
+    } catch (error) {
+      showToast(`Could not save the plan: ${error.message}`);
+    } finally {
+      practiceLayoutSaving = false;
+      renderSessions();
+      const card = [...document.querySelectorAll("#session-list [data-session-id]")].find((item) => item.dataset.sessionId === session.id);
+      (card?.querySelector(`[data-plan-action="${direction}"]:not(:disabled)`) || card?.querySelector(".practice-plan-select") || document.querySelector("#add-practice-section"))?.focus();
+    }
+  }
+
   function renderSessions() {
     const list = $("#session-list");
     const activePanel = $("#active-section-panel");
@@ -980,7 +1023,13 @@
           <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
           <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
           <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
-        </button>`;
+        </button>
+        <div class="practice-plan-actions" aria-label="Manage ${escapeHTML(session.title)}">
+          <button type="button" data-plan-action="-1" aria-label="Move ${escapeHTML(session.title)} up" ${!block || practiceLayoutSaving || index === 0 ? "disabled" : ""}>↑ Up</button>
+          <button type="button" data-plan-action="1" aria-label="Move ${escapeHTML(session.title)} down" ${!block || practiceLayoutSaving || index === practiceSections.length - 1 ? "disabled" : ""}>↓ Down</button>
+          <button type="button" data-plan-action="0" aria-label="Delete ${escapeHTML(session.title)} from today's plan" title="Delete section from this day; keep recordings in Previous work" ${!block || practiceLayoutSaving || recordingHere || uploadJobs.length || timer.running ? "disabled" : ""}>Delete</button>
+        </div>`;
+      card.querySelectorAll("[data-plan-action]").forEach((button) => button.addEventListener("click", () => changePracticeLayout(session, Number(button.dataset.planAction))));
       $(".practice-plan-select", card).addEventListener("click", () => {
         selectedPracticeSectionID = session.id;
         renderSessions();
@@ -992,14 +1041,19 @@
     renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
     const addButton = $("#add-practice-section");
     if (addButton) {
-      addButton.disabled = !guidedBlocksReady || practiceSections.length >= 20;
+      addButton.disabled = practiceLayoutSaving || !guidedBlocksReady || practiceSections.length >= 20;
       addButton.title = practiceSections.length >= 20 ? "Today’s plan already has 20 sections" : "Add a cloud-synced section";
     }
   }
 
   function renderActiveSection(session, block) {
     const panel = $("#active-section-panel");
-    if (!panel || !session) return;
+    if (!panel) return;
+    if (!session) {
+      panel.innerHTML = '<p class="section-empty">No sections in today’s plan. Use Add section to build your practice.</p>';
+      setText("current-section-state", "No sections");
+      return;
+    }
     const timer = timerFor(session);
     const complete = timer.completed;
     const takeCount = activeBlockTakeCount(block);

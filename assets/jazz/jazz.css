@@ -1560,3 +1560,10 @@ footer p[data-tone="offline"] { color: var(--red); }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Day-specific practice plan controls, visible for touch and keyboard users. */
+.practice-plan-actions { display: flex; gap: .35rem; padding: 0 .75rem .65rem; }
+.practice-plan-actions button { min-height: 36px; padding: .35rem .6rem; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: .875rem; cursor: pointer; }
+.practice-plan-actions button:last-child { margin-left: auto; }
+.practice-plan-actions button:disabled { opacity: .35; cursor: default; }
+.practice-plan-actions button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

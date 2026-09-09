@@ -295,6 +295,7 @@ func (app *application) routes() http.Handler {
 	mux.Handle("POST /v1/practice-sessions/{id}/activities", app.authenticate(http.HandlerFunc(app.createPracticeActivity)))
 	mux.Handle("GET /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.listPracticeBlocks)))
 	mux.Handle("POST /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.bootstrapPracticeBlocks)))
+	mux.Handle("PUT /v1/practice-sessions/{id}/blocks/layout", app.authenticate(http.HandlerFunc(app.updatePracticeBlockLayout)))
 	mux.Handle("PATCH /v1/practice-blocks/{id}", app.authenticate(http.HandlerFunc(app.updatePracticeBlock)))
 	mux.Handle("GET /v1/archive/calendar", app.authenticate(http.HandlerFunc(app.archiveCalendar)))
 	mux.Handle("GET /v1/archive/days/{date}", app.authenticate(http.HandlerFunc(app.archiveDay)))

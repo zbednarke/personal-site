@@ -231,6 +231,13 @@
     });
   }
 
+  async function updateGuidedLayout(sessionID, practiceDate, blockIDs, removeID) {
+    return api(`/practice-sessions/${sessionID}/blocks/layout`, {
+      method: "PUT",
+      body: JSON.stringify({ practiceDate, blockIds: blockIDs, ...(removeID ? { removeId: removeID } : {}) }),
+    });
+  }
+
   function escapeHTML(value) {
     const element = document.createElement("span");
     element.textContent = value;
@@ -242,6 +249,7 @@
     logGuidedActivity,
     ensureGuidedBlocks,
     updateGuidedBlock,
+    updateGuidedLayout,
     currentID: () => activeSession?.id || "",
     refresh: loadSessions,
   };

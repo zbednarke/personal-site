@@ -139,13 +139,19 @@ func (app *application) bootstrapPracticeBlocks(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// Serialize bootstrap and layout changes for the same session.
+	var lockedID uuid.UUID
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM practice_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE`, sessionID, userID).Scan(&lockedID); err != nil {
+		app.serverError(w, err)
+		return
+	}
 	for _, block := range input.Blocks {
 		_, err = tx.Exec(r.Context(), `
 			INSERT INTO practice_blocks
 			(id,session_id,user_id,practice_date,block_key,position,title,instructions,category,track,target_minutes)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11)
 			ON CONFLICT (session_id,practice_date,block_key) DO UPDATE SET
-			position=EXCLUDED.position,title=EXCLUDED.title,instructions=EXCLUDED.instructions,
+			title=EXCLUDED.title,instructions=EXCLUDED.instructions,
 			category=EXCLUDED.category,track=EXCLUDED.track,target_minutes=EXCLUDED.target_minutes,updated_at=now()`,
 			uuid.New(), sessionID, userID, input.PracticeDate, block.BlockKey, block.Position, block.Title, block.Instructions, block.Category, block.Track, block.TargetMinutes)
 		if err != nil {
@@ -307,7 +313,7 @@ func (app *application) loadPracticeBlocks(ctx context.Context, userID, sessionI
 	rows, err := app.db.Query(ctx, `
 		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,
 		       COALESCE(notes,''),elapsed_ms,status,timer_started_at,completed_at,updated_at
-		FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 ORDER BY position,id`, sessionID, userID, practiceDate)
+		FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 AND removed_at IS NULL ORDER BY position,id`, sessionID, userID, practiceDate)
 	if err != nil {
 		return nil, err
 	}
