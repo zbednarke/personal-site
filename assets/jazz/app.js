@@ -977,6 +977,12 @@
       $("p", captureNotice).textContent = activeSectionRecordingPhase === "processing" ? "Finishing your take. Its section was removed; the take will be saved in Previous work." : "This section was removed on another device. Your take is still active and will be saved in Previous work.";
       $("button", captureNotice).disabled = activeSectionRecordingPhase !== "recording";
     }
+    const detachedUploads = $("#detached-section-uploads");
+    if (detachedUploads) {
+      const blockIDs = new Set([...guidedBlocks.values()].map((block) => block.id));
+      detachedUploads.innerHTML = [...sectionUploadJobs.values()].filter((job) => !blockIDs.has(job.blockId) && job.phase !== "complete").map((job) => `<div class="detached-section-upload" data-upload-job="${escapeHTML(job.id)}"><strong>Take ${Number(job.takeNumber) || 1} · section removed</strong><span>${escapeHTML(job.message || "Saving to Previous work")}</span>${job.canRetry ? `<button type="button" data-retry-detached="${escapeHTML(job.id)}">Retry upload</button>` : ""}</div>`).join("");
+      detachedUploads.querySelectorAll("[data-retry-detached]").forEach((button) => button.addEventListener("click", () => globalThis.JazzRecording?.retry(button.dataset.retryDetached)));
+    }
     toggle.checked = Boolean(practiceLayoutDraft);
     toggle.disabled = practiceLayoutSaving || !guidedBlocksReady;
     $("#practice-edit-help").hidden = !practiceLayoutDraft;
@@ -1757,6 +1763,7 @@
     const detail = event.detail || {};
     if (!detail.id || !detail.blockId) return;
     sectionUploadJobs.set(detail.id, detail);
+    if (detail.phase === "complete" && ![...guidedBlocks.values()].some((block) => block.id === detail.blockId)) showToast(`Take ${detail.takeNumber || 1} saved in Previous work`);
     const existing = document.querySelector(`[data-upload-job="${detail.id}"]`);
     if (existing && detail.phase === "uploading") {
       const message = $("span", existing);

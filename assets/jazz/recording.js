@@ -1098,7 +1098,7 @@
   });
   uploadQueue = new globalThis.JazzUploadQueue(uploadRecording, handleUploadState);
   addEventListener("beforeunload", (event) => {
-    if (!uploadQueue.hasPending()) return;
+    if (!stream && !captureFinalizing && !uploadQueue.hasPending()) return;
     event.preventDefault();
     event.returnValue = "";
   });

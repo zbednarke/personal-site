@@ -1599,3 +1599,7 @@ footer p[data-tone="offline"] { color: var(--red); }
 .detached-section-recording:not([hidden]) { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--green); border-radius: 8px; margin-bottom: 12px; }
 .detached-section-recording p { font-size: 14px; line-height: 1.5; color: var(--text); margin: 0; }
 .detached-section-recording button { flex: none; min-height: 44px; padding: 8px; border: 1px solid var(--green); color: var(--green); background: transparent; border-radius: 6px; cursor: pointer; }
+
+.detached-section-upload { display: grid; gap: 8px; border: 1px solid var(--brass); padding: 12px; margin-bottom: 12px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
+.detached-section-upload span { color: var(--muted); }
+.detached-section-upload button { justify-self: start; min-height: 44px; padding: 8px 12px; border: 1px solid var(--brass); color: var(--brass); background: transparent; border-radius: 6px; cursor: pointer; }
