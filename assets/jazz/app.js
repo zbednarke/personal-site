@@ -943,6 +943,7 @@
       showToast("Finish recording, uploads and the timer before deleting this section");
       return;
     }
+    if (removing && !confirm(`Delete "${session.title}" from today's plan? Notes, recordings and practice history will stay in Previous work.`)) return;
     const next = [...practiceSections];
     const index = next.findIndex((item) => item.id === session.id);
     if (index < 0) return;
@@ -968,7 +969,8 @@
       if (removing) guidedBlocks.delete(session.id);
       showToast(removing ? "Section deleted from today's plan. Recordings kept in Previous work." : "Section order saved");
     } catch (error) {
-      showToast(`Could not save the plan: ${error.message}`);
+      if (error.status === 409) await hydrateGuidedBlocks();
+      showToast(error.status === 409 ? "The plan changed on another device. It is now refreshed; try again." : `Could not save the plan: ${error.message}`);
     } finally {
       practiceLayoutSaving = false;
       renderSessions();

@@ -150,7 +150,7 @@ func (app *application) createGuideToneDrill(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		var blockSessionID uuid.UUID
-		if queryErr := app.db.QueryRow(r.Context(), `SELECT session_id FROM practice_blocks WHERE id=$1 AND user_id=$2`, parsed, userID).Scan(&blockSessionID); queryErr != nil {
+		if queryErr := app.db.QueryRow(r.Context(), `SELECT session_id FROM practice_blocks WHERE id=$1 AND user_id=$2 AND removed_at IS NULL`, parsed, userID).Scan(&blockSessionID); queryErr != nil {
 			if errors.Is(queryErr, pgx.ErrNoRows) {
 				writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
 				return

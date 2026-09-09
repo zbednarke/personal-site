@@ -18,7 +18,11 @@
       },
     });
     const body = response.status === 204 ? null : await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body?.error || `Request failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(body?.error || `Request failed (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
     return body;
   }
 

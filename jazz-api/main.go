@@ -578,7 +578,7 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		var recordingCount int
 		queryErr := app.db.QueryRow(r.Context(), `
 			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready'))
-			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2`, blockID, userID).Scan(&blockSessionID, &recordingCount)
+			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2 AND pb.removed_at IS NULL`, blockID, userID).Scan(&blockSessionID, &recordingCount)
 		if errors.Is(queryErr, pgx.ErrNoRows) || (input.PracticeSessionID != "" && blockSessionID.String() != input.PracticeSessionID) {
 			writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
 			return

@@ -96,7 +96,26 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if _, err := isolated.Exec(ctx, `INSERT INTO recordings (id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,expected_size_bytes,duration_ms,recorded_at,status) VALUES ($1,$2,$3,$4,'test','test.wav','audio/wav',10,1000,now(),'ready')`, recordingID, userID, sessionID.String(), a); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET elapsed_ms=1000,status='running',timer_started_at=now()-interval '30 seconds' WHERE id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
 	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{b}, RemoveID: &a}, "layout-test", 204)
+	history, err := app.loadPracticeBlocksForView(ctx, userID, sessionID, definitions.PracticeDate, true)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("history lost sections: %v", err)
+	}
+	for _, block := range history {
+		if block.ID == a && (block.Status != "paused" || block.TimerStartedAt != nil || block.ElapsedMS < 31000) {
+			t.Fatalf("removed timer lost history: %+v", block)
+		}
+	}
+	patchRequest := httptest.NewRequest("PATCH", "/", bytes.NewBufferString(`{"status":"running"}`)).WithContext(ctx)
+	patchRequest.SetPathValue("id", a.String())
+	patchResponse := httptest.NewRecorder()
+	app.updatePracticeBlock(patchResponse, patchRequest)
+	if patchResponse.Code != 404 {
+		t.Fatalf("removed section accepted a stale write: %d", patchResponse.Code)
+	}
 	if got := bootstrap(); len(got) != 1 || got[0].ID != b {
 		t.Fatal("deleted default reappeared")
 	}

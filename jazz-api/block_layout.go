@@ -109,7 +109,7 @@ func (app *application) updatePracticeBlockLayout(w http.ResponseWriter, r *http
 	}
 	if input.RemoveID != nil {
 		// Keep notes, practice history and recording associations intact.
-		if _, err := tx.Exec(r.Context(), `UPDATE practice_blocks SET removed_at=now(),timer_started_at=NULL,status=CASE WHEN status='running' THEN 'paused' ELSE status END,updated_at=now() WHERE id=$1 AND user_id=$2`, *input.RemoveID, userID); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE practice_blocks SET removed_at=now(),elapsed_ms=CASE WHEN status='running' AND timer_started_at IS NOT NULL THEN LEAST($3::bigint, elapsed_ms::bigint + GREATEST(0, (EXTRACT(EPOCH FROM now()-timer_started_at)*1000)::bigint))::int ELSE elapsed_ms END,timer_started_at=NULL,status=CASE WHEN status='running' THEN 'paused' ELSE status END,updated_at=now() WHERE id=$1 AND user_id=$2`, *input.RemoveID, userID, maxBlockElapsedMS); err != nil {
 			app.serverError(w, err)
 			return
 		}
