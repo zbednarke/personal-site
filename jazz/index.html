@@ -114,6 +114,14 @@
       <div class="today-workspace">
         <section class="practice-plan" aria-labelledby="practice-plan-title">
           <div class="workspace-label"><h2 id="practice-plan-title">Practice plan</h2><span>Recording drives practice time</span></div>
+          <div id="detached-section-recording" class="detached-section-recording" role="status" hidden><p></p><button id="finish-detached-recording" type="button">Stop recording</button></div>
+          <div id="detached-section-uploads" aria-live="polite"></div>
+          <div class="practice-edit-bar">
+            <label class="practice-edit-toggle"><input id="edit-practice-sections" type="checkbox" role="switch" aria-describedby="practice-edit-status"><span class="practice-edit-switch" aria-hidden="true"></span><span>Edit sections</span></label>
+            <button id="cancel-section-edits" type="button" hidden>Cancel edits</button>
+          </div>
+          <p id="practice-edit-status" class="practice-edit-status" role="status"></p>
+          <p id="practice-edit-help" class="practice-edit-help" hidden>Drag a handle to reorder, or focus it and use the arrow keys. Delete marks a section for removal; Undo brings it back.</p>
           <div class="session-list" id="session-list" aria-live="polite"></div>
           <button class="add-practice-section" id="add-practice-section" type="button"><span aria-hidden="true">＋</span>Add section</button>
         </section>
@@ -537,6 +545,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="../assets/jazz/data.js"></script>
+  <script src="../assets/jazz/practice-layout.js"></script>
   <script src="../assets/jazz/app.js"></script>
   <script src="../assets/jazz/practice-session.js"></script>
   <script src="../assets/jazz/lossless-recorder.js"></script>

@@ -46,6 +46,9 @@
   let recordingTimerSessionID = "";
   let selectedPracticeSectionID = "";
   let practiceLayoutSaving = false;
+  let practiceLayoutDraft = null;
+  let practiceLayoutScope = "";
+  let practiceDrag = null;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -351,6 +354,13 @@
   }
 
   function applyPracticeBlocks(blocks) {
+    practiceDrag?.cancel?.();
+    const scope = blocks?.length ? `${blocks[0].practiceSessionId}/${blocks[0].practiceDate}` : practiceLayoutScope;
+    if (practiceLayoutDraft && practiceLayoutScope && scope !== practiceLayoutScope) {
+      practiceLayoutDraft = null;
+      showToast("The practice day changed. The previous day's edits were not applied to this day.");
+    }
+    if (practiceLayoutDraft) practiceLayoutScope = scope;
     guidedBlocks = new Map((blocks || []).map((block) => [block.blockKey, block]));
     practiceSections = [...(blocks || [])]
       .sort((a, b) => Number(a.position) - Number(b.position))
@@ -370,6 +380,7 @@
           win: curriculum.win || "",
         };
       });
+    if (practiceLayoutDraft) practiceLayoutDraft = globalThis.JazzPracticeLayout.reconcile(practiceLayoutDraft, practiceSections.map((session) => session.id));
   }
 
   async function hydrateGuidedBlocks() {
@@ -394,6 +405,13 @@
         if (!block) return;
         const timer = timerFor(session);
         const targetMs = session.minutes * 60 * 1000;
+        // A refresh must not stop a local capture or pause another device's timer.
+        if (timer.running) return;
+        if (block.status === "running") {
+          timer.elapsedMs = Math.max(Number(timer.elapsedMs || 0), Number(block.elapsedMs || 0));
+          timer.startedAt = 0;
+          return;
+        }
         const localElapsed = Math.max(0, Number(timer.elapsedMs || 0));
         const cloudHasProgress = block.status !== "pending" || Number(block.elapsedMs) > 0;
         if (!cloudHasProgress && localElapsed > 0) {
@@ -417,7 +435,6 @@
         timer.running = false;
         timer.startedAt = 0;
         timer.completedAt = block.completedAt || timer.completedAt || "";
-        if (block.status === "running") saveTimerBlock(session, timer);
       });
       guidedBlocksReady = true;
       persistTimerState();
@@ -612,6 +629,10 @@
     if (recordButton) recordButton.addEventListener("click", () => {
       if (activeSectionRecordingID === block?.id) {
         if (activeSectionRecordingPhase === "recording") globalThis.JazzRecording?.stop();
+        return;
+      }
+      if (practiceLayoutSaving || practiceLayoutDraft?.removed.includes(session.id)) {
+        showToast("Finish saving or undo this section's deletion before recording");
         return;
       }
       if (!block || !globalThis.JazzRecording?.startForBlock) {
@@ -934,52 +955,214 @@
     setText("today-stage-minutes", practicedMinutes);
   }
 
-  async function changePracticeLayout(session, direction) {
-    if (practiceLayoutSaving) return;
+  function sectionDeleteReason(session) {
     const block = guidedBlockFor(session);
-    if (!block) return;
-    const removing = direction === 0;
-    if (removing && (activeSectionRecordingID === block.id || uploadJobsForBlock(block).length || timerFor(session).running)) {
-      showToast("Finish recording, uploads and the timer before deleting this section");
+    if (!block) return "Waiting for this section to sync";
+    if (activeSectionRecordingID === block.id) return "Finish or cancel this take first";
+    const jobs = uploadJobsForBlock(block).filter((job) => job.phase !== "complete");
+    if (jobs.some((job) => job.phase === "failed")) return "Retry the failed upload before deleting this section";
+    if (jobs.length || (block.recordings || []).some((take) => take.status === "uploading")) return "Wait for this section's uploads to finish";
+    if (timerFor(session).running) return "Stop this section's timer first";
+    if (block.status === "running" && Date.now() - new Date(block.timerStartedAt).getTime() < 90000) return "Recording on another device; finish the take there first";
+    return "";
+  }
+
+  function renderSectionEditor() {
+    const toggle = $("#edit-practice-sections");
+    if (!toggle) return;
+    const detached = Boolean(activeSectionRecordingID && ![...guidedBlocks.values()].some((block) => block.id === activeSectionRecordingID));
+    const captureNotice = $("#detached-section-recording");
+    if (captureNotice) {
+      captureNotice.hidden = !detached;
+      $("p", captureNotice).textContent = activeSectionRecordingPhase === "processing" ? "Finishing your take. Its section was removed; the take will be saved in Previous work." : "This section was removed on another device. Your take is still active and will be saved in Previous work.";
+      $("button", captureNotice).disabled = activeSectionRecordingPhase !== "recording";
+    }
+    const detachedUploads = $("#detached-section-uploads");
+    if (detachedUploads) {
+      const blockIDs = new Set([...guidedBlocks.values()].map((block) => block.id));
+      detachedUploads.innerHTML = [...sectionUploadJobs.values()].filter((job) => !blockIDs.has(job.blockId) && job.phase !== "complete").map((job) => `<div class="detached-section-upload" data-upload-job="${escapeHTML(job.id)}"><strong>Take ${Number(job.takeNumber) || 1} · section removed</strong><span>${escapeHTML(job.message || "Saving to Previous work")}</span>${job.canRetry ? `<button type="button" data-retry-detached="${escapeHTML(job.id)}">Retry upload</button>` : ""}</div>`).join("");
+      detachedUploads.querySelectorAll("[data-retry-detached]").forEach((button) => button.addEventListener("click", () => globalThis.JazzRecording?.retry(button.dataset.retryDetached)));
+    }
+    toggle.checked = Boolean(practiceLayoutDraft);
+    toggle.disabled = practiceLayoutSaving || !guidedBlocksReady;
+    $("#practice-edit-help").hidden = !practiceLayoutDraft;
+    $("#cancel-section-edits").hidden = !practiceLayoutDraft;
+    $("#cancel-section-edits").disabled = practiceLayoutSaving;
+    $("#session-list").classList.toggle("editing-sections", Boolean(practiceLayoutDraft));
+    $("#practice-edit-status").textContent = practiceLayoutSaving ? "Saving changes…" : practiceLayoutDraft ? (globalThis.JazzPracticeLayout.dirty(practiceLayoutDraft) ? "Unsaved changes · switch off to save" : "Drag to reorder · switch off when done") : "";
+  }
+
+  async function finishSectionEdits() {
+    if (!practiceLayoutDraft || practiceLayoutSaving) return;
+    const model = globalThis.JazzPracticeLayout;
+    if (!model.dirty(practiceLayoutDraft)) {
+      practiceLayoutDraft = null;
+      renderSessions({ planOnly: true });
       return;
     }
-    if (removing && !confirm(`Delete "${session.title}" from today's plan? Notes, recordings and practice history will stay in Previous work.`)) return;
-    const next = [...practiceSections];
-    const index = next.findIndex((item) => item.id === session.id);
-    if (index < 0) return;
-    if (removing) next.splice(index, 1);
-    else {
-      const target = index + direction;
-      if (target < 0 || target >= next.length) return;
-      [next[index], next[target]] = [next[target], next[index]];
+    const removedSections = practiceLayoutDraft.removed.map((id) => practiceSections.find((item) => item.id === id)).filter(Boolean);
+    const blocked = removedSections.find((session) => sectionDeleteReason(session));
+    if (blocked) {
+      showToast(`${blocked.title}: ${sectionDeleteReason(blocked)}. Undo its deletion or finish the take, then save.`);
+      renderSessions({ planOnly: true });
+      return;
     }
     practiceLayoutSaving = true;
-    document.querySelectorAll("[data-plan-action], #add-practice-section").forEach((button) => { button.disabled = true; });
+    const lockedNotes = removedSections.some((session) => session.id === selectedPracticeSectionID) ? $("#active-section-panel [data-section-notes]") : null;
+    if (lockedNotes) lockedNotes.readOnly = true;
+    renderSessions({ planOnly: true });
     try {
-      if (removing) {
-        if (noteSaveDelays.has(session.id)) await saveBlockNote(session);
+      for (const session of removedSections) {
+        const block = guidedBlockFor(session);
+        clearTimeout(noteSaveDelays.get(session.id));
+        noteSaveDelays.delete(session.id);
         await (timerSaveChains.get(session.id) || Promise.resolve());
+        await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, { notes: block.notes || "" });
       }
-      await globalThis.JazzPracticeSession.updateGuidedLayout(
-        block.practiceSessionId, block.practiceDate,
-        next.map((item) => guidedBlockFor(item).id), removing ? block.id : null,
-      );
-      practiceSections = next.map((item, position) => ({ ...item, position }));
-      practiceSections.forEach((item) => { guidedBlockFor(item).position = item.position; });
-      if (removing) guidedBlocks.delete(session.id);
-      showToast(removing ? "Section deleted from today's plan. Recordings kept in Previous work." : "Section order saved");
+      const kept = model.kept(practiceLayoutDraft);
+      const anchor = guidedBlockFor(practiceSections[0]);
+      await globalThis.JazzPracticeSession.updateGuidedLayout(anchor.practiceSessionId, anchor.practiceDate,
+        kept.map((id) => guidedBlocks.get(id).id), removedSections.map((session) => guidedBlockFor(session).id));
+      practiceSections = kept.map((id, position) => ({ ...practiceSections.find((session) => session.id === id), position }));
+      removedSections.forEach((session) => guidedBlocks.delete(session.id));
+      practiceSections.forEach((session) => { guidedBlockFor(session).position = session.position; });
+      practiceLayoutDraft = null;
+      showToast(removedSections.length ? "Sections saved. Removed sections' notes and takes remain in Previous work." : "Section order saved");
     } catch (error) {
-      if (error.status === 409) await hydrateGuidedBlocks();
-      showToast(error.status === 409 ? "The plan changed on another device. It is now refreshed; try again." : `Could not save the plan: ${error.message}`);
+      // Keep the draft on errors; reconcile server changes without losing local edits.
+      if (error.status === 409 || error.status === 404) await hydrateGuidedBlocks();
+      showToast(`Changes not saved: ${error.message}. Your edits are still open.`);
     } finally {
       practiceLayoutSaving = false;
-      renderSessions();
-      const card = [...document.querySelectorAll("#session-list [data-session-id]")].find((item) => item.dataset.sessionId === session.id);
-      (card?.querySelector(`[data-plan-action="${direction}"]:not(:disabled)`) || card?.querySelector(".practice-plan-select") || document.querySelector("#add-practice-section"))?.focus();
+      if (lockedNotes) lockedNotes.readOnly = false;
+      renderSessions({ planOnly: practiceSections.some((session) => session.id === selectedPracticeSectionID) });
     }
   }
 
-  function renderSessions() {
+  function stageSectionDeletion(session) {
+    if (!practiceLayoutDraft || practiceLayoutSaving) return;
+    const undoing = practiceLayoutDraft.removed.includes(session.id);
+    const reason = !undoing && sectionDeleteReason(session);
+    if (reason) { showToast(reason); return; }
+    practiceLayoutDraft = globalThis.JazzPracticeLayout.remove(practiceLayoutDraft, session.id);
+    renderSessions({ planOnly: true });
+    $(`[data-session-id="${session.id}"] [data-section-delete]`, $("#session-list"))?.focus();
+  }
+
+  function wireSectionDrag(handle, session) {
+    handle.addEventListener("keydown", (event) => {
+      if (!practiceLayoutDraft || practiceLayoutSaving || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const index = practiceLayoutDraft.order.indexOf(session.id);
+      const target = event.key === "Home" ? 0 : event.key === "End" ? practiceLayoutDraft.order.length - 1 : index + (event.key === "ArrowUp" ? -1 : 1);
+      practiceLayoutDraft = globalThis.JazzPracticeLayout.move(practiceLayoutDraft, session.id, target);
+      renderSessions({ planOnly: true });
+      $(`[data-session-id="${session.id}"] [data-section-drag]`, $("#session-list"))?.focus();
+      showToast(`${session.title} moved to position ${practiceLayoutDraft.order.indexOf(session.id) + 1}`);
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !practiceLayoutDraft || practiceLayoutSaving || handle.disabled) return;
+      const card = handle.closest(".plan-card");
+      const bounds = card.getBoundingClientRect();
+      const drag = { card, handle, id: session.id, pointerID: event.pointerId, startY: event.clientY, y: event.clientY, offsetY: event.clientY - bounds.top, bounds, ghost: null, frame: null };
+      practiceDrag = drag;
+      const captureTarget = $("#session-list");
+      captureTarget.setPointerCapture(event.pointerId);
+      $("#edit-practice-sections").disabled = true;
+      $("#cancel-section-edits").disabled = true;
+      $("#add-practice-section").disabled = true;
+      const place = () => {
+        if (!drag.ghost) return;
+        drag.ghost.style.transform = `translateY(${drag.y - drag.offsetY}px)`;
+        const others = [...$("#session-list").children].filter((item) => item !== card);
+        const index = globalThis.JazzPracticeLayout.insertionIndex(drag.y, others.map((item) => item.getBoundingClientRect()));
+        const before = others[index] || null;
+        if (card.nextElementSibling !== before) {
+          const positions = others.map((item) => [item, item.getBoundingClientRect().top]);
+          $("#session-list").insertBefore(card, before);
+          if (!matchMedia("(prefers-reduced-motion: reduce)").matches) positions.forEach(([item, top]) => {
+            const delta = top - item.getBoundingClientRect().top;
+            if (delta) item.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: 140, easing: "ease-out" });
+          });
+        }
+      };
+      const autoScroll = () => {
+        if (practiceDrag !== drag) return;
+        if (drag.ghost) {
+          const speed = drag.y < 80 ? -Math.min(14, (80 - drag.y) / 4) : drag.y > innerHeight - 80 ? Math.min(14, (drag.y - innerHeight + 80) / 4) : 0;
+          if (speed) { window.scrollBy(0, speed); place(); }
+        }
+        drag.frame = requestAnimationFrame(autoScroll);
+      };
+      const move = (moveEvent) => {
+        if (moveEvent.pointerId !== drag.pointerID) return;
+        drag.y = moveEvent.clientY;
+        if (!drag.ghost && Math.abs(drag.y - drag.startY) >= 5) {
+          drag.ghost = card.cloneNode(true);
+          drag.ghost.className = "plan-card section-drag-ghost";
+          drag.ghost.removeAttribute("data-session-id");
+          drag.ghost.setAttribute("aria-hidden", "true");
+          drag.ghost.inert = true;
+          Object.assign(drag.ghost.style, { width: `${bounds.width}px`, left: `${bounds.left}px` });
+          document.body.appendChild(drag.ghost);
+          card.classList.add("section-drop-placeholder");
+          document.body.classList.add("dragging-practice-section");
+        }
+        place();
+      };
+      const end = (endEvent) => {
+        if (endEvent.pointerId !== undefined && endEvent.pointerId !== drag.pointerID) return;
+        const cancelled = endEvent.type === "pointercancel" || endEvent.type === "keydown" || endEvent.type === "lostpointercapture";
+        const index = [...$("#session-list").children].indexOf(card);
+        if (drag.ghost && !cancelled) practiceLayoutDraft = globalThis.JazzPracticeLayout.move(practiceLayoutDraft, session.id, index);
+        cancelAnimationFrame(drag.frame);
+        drag.ghost?.remove();
+        document.body.classList.remove("dragging-practice-section");
+        captureTarget.removeEventListener("pointermove", move);
+        captureTarget.removeEventListener("pointerup", end);
+        captureTarget.removeEventListener("pointercancel", end);
+        captureTarget.removeEventListener("lostpointercapture", end);
+        document.removeEventListener("keydown", escape);
+        practiceDrag = null;
+        if (captureTarget.hasPointerCapture(drag.pointerID)) captureTarget.releasePointerCapture(drag.pointerID);
+        renderSessions({ planOnly: true });
+        $(`[data-session-id="${session.id}"] [data-section-drag]`, $("#session-list"))?.focus();
+        if (drag.ghost && !cancelled) showToast(`${session.title} moved to position ${index + 1}`);
+      };
+      drag.cancel = () => end({ type: "pointercancel" });
+      const escape = (keyEvent) => { if (keyEvent.key === "Escape") { keyEvent.preventDefault(); end(keyEvent); } };
+      captureTarget.addEventListener("pointermove", move);
+      captureTarget.addEventListener("pointerup", end);
+      captureTarget.addEventListener("pointercancel", end);
+      captureTarget.addEventListener("lostpointercapture", end);
+      document.addEventListener("keydown", escape);
+      drag.frame = requestAnimationFrame(autoScroll);
+    });
+  }
+
+  function setupPracticeSectionEditor() {
+    $("#finish-detached-recording")?.addEventListener("click", () => globalThis.JazzRecording?.stop());
+    $("#edit-practice-sections")?.addEventListener("change", (event) => {
+      if (event.target.checked) {
+        const block = guidedBlockFor(practiceSections[0]);
+        practiceLayoutScope = block ? `${block.practiceSessionId}/${block.practiceDate}` : "";
+        practiceLayoutDraft = globalThis.JazzPracticeLayout.create(practiceSections.map((session) => session.id));
+        renderSessions({ planOnly: true });
+      } else finishSectionEdits();
+    });
+    $("#cancel-section-edits")?.addEventListener("click", () => {
+      practiceLayoutDraft = null;
+      renderSessions({ planOnly: true });
+      $("#edit-practice-sections")?.focus();
+    });
+    addEventListener("beforeunload", (event) => {
+      if (practiceLayoutDraft && globalThis.JazzPracticeLayout.dirty(practiceLayoutDraft)) { event.preventDefault(); event.returnValue = ""; }
+    });
+  }
+
+
+  function renderSessions({ planOnly = false } = {}) {
+    if (practiceDrag) return;
     const list = $("#session-list");
     const activePanel = $("#active-section-panel");
     if (!list || !activePanel) return;
@@ -1003,7 +1186,10 @@
     setText("today-total-takes", totalTakes);
     setText("today-stage-takes", totalTakes);
 
-    practiceSections.forEach((session, index) => {
+    const planSections = practiceLayoutDraft ? practiceLayoutDraft.order.map((id) => practiceSections.find((session) => session.id === id)).filter(Boolean) : practiceSections;
+    planSections.forEach((session, index) => {
+      const removed = practiceLayoutDraft?.removed.includes(session.id);
+      const deleteReason = sectionDeleteReason(session);
       const timer = timerFor(session);
       const complete = timer.completed;
       const block = guidedBlockFor(session);
@@ -1018,20 +1204,20 @@
       const elapsedMs = elapsedFor(timer);
       const card = document.createElement("article");
       card.dataset.sessionId = session.id;
-      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${recordingHere ? " recording-owner" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}`;
+      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${recordingHere ? " recording-owner" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}${removed ? " section-pending-delete" : ""}`;
       card.innerHTML = `
+        ${practiceLayoutDraft ? `<button class="section-drag-handle" data-section-drag type="button" aria-label="Reorder ${escapeHTML(session.title)}" aria-describedby="practice-edit-help" ${removed || practiceLayoutSaving ? "disabled" : ""}><span aria-hidden="true">⠿</span></button>` : ""}
         <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(session.title)}">
           <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
           <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
           <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
           <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
         </button>
-        <div class="practice-plan-actions" aria-label="Manage ${escapeHTML(session.title)}">
-          <button type="button" data-plan-action="-1" aria-label="Move ${escapeHTML(session.title)} up" ${!block || practiceLayoutSaving || index === 0 ? "disabled" : ""}>↑ Up</button>
-          <button type="button" data-plan-action="1" aria-label="Move ${escapeHTML(session.title)} down" ${!block || practiceLayoutSaving || index === practiceSections.length - 1 ? "disabled" : ""}>↓ Down</button>
-          <button type="button" data-plan-action="0" aria-label="Delete ${escapeHTML(session.title)} from today's plan" title="Delete section from this day; keep recordings in Previous work" ${!block || practiceLayoutSaving || recordingHere || uploadJobs.length || timer.running ? "disabled" : ""}>Delete</button>
-        </div>`;
-      card.querySelectorAll("[data-plan-action]").forEach((button) => button.addEventListener("click", () => changePracticeLayout(session, Number(button.dataset.planAction))));
+        ${practiceLayoutDraft ? `<div class="practice-plan-actions"><button type="button" data-section-delete aria-label="${removed ? "Undo deletion of" : "Delete"} ${escapeHTML(session.title)}" ${practiceLayoutSaving || (!removed && deleteReason) ? "disabled" : ""}>${removed ? "Undo" : "Delete"}</button></div>
+          ${removed ? '<p class="section-edit-note">Will be removed when you save. Notes and takes stay in Previous work.</p>' : deleteReason ? `<p class="section-edit-note">${escapeHTML(deleteReason)}</p>` : ""}` : ""}`;
+      $("[data-section-delete]", card)?.addEventListener("click", () => stageSectionDeletion(session));
+      const dragHandle = $("[data-section-drag]", card);
+      if (dragHandle) wireSectionDrag(dragHandle, session);
       $(".practice-plan-select", card).addEventListener("click", () => {
         selectedPracticeSectionID = session.id;
         renderSessions();
@@ -1040,7 +1226,8 @@
     });
 
     const selectedSession = practiceSections.find((session) => session.id === selectedPracticeSectionID) || practiceSections[0];
-    renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
+    if (!planOnly) renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
+    renderSectionEditor();
     const addButton = $("#add-practice-section");
     if (addButton) {
       addButton.disabled = practiceLayoutSaving || !guidedBlocksReady || practiceSections.length >= 20;
@@ -1541,6 +1728,7 @@
   };
   setupDialogs();
   setupPracticeSectionCreator();
+  setupPracticeSectionEditor();
   setupDataActions();
   addEventListener("jazz:activity-logged", (event) => {
     const activity = event.detail;
@@ -1575,6 +1763,7 @@
     const detail = event.detail || {};
     if (!detail.id || !detail.blockId) return;
     sectionUploadJobs.set(detail.id, detail);
+    if (detail.phase === "complete" && ![...guidedBlocks.values()].some((block) => block.id === detail.blockId)) showToast(`Take ${detail.takeNumber || 1} saved in Previous work`);
     const existing = document.querySelector(`[data-upload-job="${detail.id}"]`);
     if (existing && detail.phase === "uploading") {
       const message = $("span", existing);

@@ -1561,9 +1561,45 @@ footer p[data-tone="offline"] { color: var(--red); }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
 
-/* Day-specific practice plan controls, visible for touch and keyboard users. */
-.practice-plan-actions { display: flex; gap: .35rem; padding: 0 .75rem .65rem; }
-.practice-plan-actions button { min-height: 36px; padding: .35rem .6rem; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: .875rem; cursor: pointer; }
-.practice-plan-actions button:last-child { margin-left: auto; }
-.practice-plan-actions button:disabled { opacity: .35; cursor: default; }
-.practice-plan-actions button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+/* Section editing is opt-in; the normal practice plan stays uncluttered. */
+.practice-edit-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; }
+.practice-edit-toggle { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; cursor: pointer; position: relative; }
+.practice-edit-toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.practice-edit-switch { width: 38px; height: 22px; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--panel-2); transition: background 160ms; }
+.practice-edit-switch::after { content: ""; display: block; width: 16px; height: 16px; margin: 2px; border-radius: 50%; background: var(--muted); transition: transform 160ms, background 160ms; }
+.practice-edit-toggle input:checked + .practice-edit-switch { background: var(--brass); border-color: var(--brass); }
+.practice-edit-toggle input:checked + .practice-edit-switch::after { transform: translateX(16px); background: var(--bg); }
+.practice-edit-toggle input:focus-visible + .practice-edit-switch { outline: 2px solid var(--ink); outline-offset: 4px; }
+.practice-edit-toggle input:disabled + .practice-edit-switch { opacity: .45; }
+#cancel-section-edits { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; text-decoration: underline; cursor: pointer; min-height: 44px; }
+.practice-edit-status, .practice-edit-help { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 12px; }
+.practice-edit-status:empty { display: none; }
+.editing-sections .plan-card { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; border-radius: 8px; }
+.editing-sections .practice-plan-select { padding: 14px 8px; grid-template-columns: 26px minmax(0, 1fr); gap: 0 8px; }
+.editing-sections .plan-status { grid-column: 2; font-size: 12px; margin-top: 4px; }
+.section-drag-handle { display: grid; place-items: center; width: 34px; min-height: 48px; border: 0; background: transparent; color: var(--muted); font-size: 26px; cursor: grab; touch-action: none; user-select: none; }
+.section-drag-handle:hover { color: var(--brass); }
+.section-drag-handle:focus-visible, .practice-plan-actions button:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; border-radius: 5px; }
+.practice-plan-actions { padding: 8px; }
+.practice-plan-actions button { min-height: 40px; min-width: 54px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 5px; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+.practice-plan-actions button:hover { color: var(--red); border-color: var(--red); }
+.practice-plan-actions button:disabled, .section-drag-handle:disabled { opacity: .35; cursor: default; }
+.section-pending-delete { border-style: dashed; }
+.section-pending-delete .plan-copy strong { text-decoration: line-through; opacity: .55; }
+.section-pending-delete .practice-plan-actions button { color: var(--brass); border-color: var(--brass); }
+.section-edit-note { grid-column: 2 / -1; color: var(--muted); margin: 0 10px 12px 8px; font-size: 13px; line-height: 1.45; }
+.section-drop-placeholder { background: rgba(242, 173, 92, .08) !important; outline: 2px dashed var(--brass); outline-offset: -2px; }
+.section-drop-placeholder > * { opacity: .12; }
+.section-drag-ghost { position: fixed; top: 0; z-index: 10000; pointer-events: none; opacity: .95; border: 1px solid var(--brass); box-shadow: 0 14px 36px #0008; border-radius: 8px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; }
+.section-drag-ghost .practice-plan-select { padding: 14px 8px; grid-template-columns: 26px minmax(0,1fr); gap: 0 8px; }
+.section-drag-ghost .plan-status { grid-column: 2; }
+.dragging-practice-section, .dragging-practice-section * { cursor: grabbing !important; user-select: none !important; }
+@media (prefers-reduced-motion: reduce) { .practice-edit-switch, .practice-edit-switch::after { transition: none; } }
+
+.detached-section-recording:not([hidden]) { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--green); border-radius: 8px; margin-bottom: 12px; }
+.detached-section-recording p { font-size: 14px; line-height: 1.5; color: var(--text); margin: 0; }
+.detached-section-recording button { flex: none; min-height: 44px; padding: 8px; border: 1px solid var(--green); color: var(--green); background: transparent; border-radius: 6px; cursor: pointer; }
+
+.detached-section-upload { display: grid; gap: 8px; border: 1px solid var(--brass); padding: 12px; margin-bottom: 12px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
+.detached-section-upload span { color: var(--muted); }
+.detached-section-upload button { justify-self: start; min-height: 44px; padding: 8px 12px; border: 1px solid var(--brass); color: var(--brass); background: transparent; border-radius: 6px; cursor: pointer; }

@@ -616,6 +616,7 @@
         videoFrameRate: capture.videoFrameRate,
       }),
     });
+    capture.sectionRemoved = Boolean(initialized.sectionRemoved);
     try {
       const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0);
       const progressFor = (offset, assetBytes) => (percent) => {
@@ -642,7 +643,7 @@
   function uploadMessage(job) {
     if (job.status === "queued") return "Take queued for private upload";
     if (job.status === "uploading") return `Uploading privately - ${job.progress}%`;
-    if (job.status === "complete") return "Uploaded privately";
+    if (job.status === "complete") return job.payload.sectionRemoved ? "Saved in Previous work; its section was removed" : "Uploaded privately";
     return `Take is safe in this tab. Upload failed: ${job.error}`;
   }
 
@@ -1097,7 +1098,7 @@
   });
   uploadQueue = new globalThis.JazzUploadQueue(uploadRecording, handleUploadState);
   addEventListener("beforeunload", (event) => {
-    if (!uploadQueue.hasPending()) return;
+    if (!stream && !captureFinalizing && !uploadQueue.hasPending()) return;
     event.preventDefault();
     event.returnValue = "";
   });

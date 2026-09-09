@@ -4,14 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/oauth2"
 )
+
+type layoutTestTransport func(*http.Request) (*http.Response, error)
+
+func (transport layoutTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
 
 func TestPracticeLayoutPersistence(t *testing.T) {
 	url := os.Getenv("JAZZ_LAYOUT_TEST_DATABASE_URL")
@@ -99,6 +109,26 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET elapsed_ms=1000,status='running',timer_started_at=now()-interval '30 seconds' WHERE id=$1`, a); err != nil {
 		t.Fatal(err)
 	}
+	// Saving multiple removals must be all-or-nothing when any section is busy.
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{a, b}}, "layout-test", 409)
+	var removedCount int
+	if err := isolated.QueryRow(ctx, `SELECT COUNT(*) FROM practice_blocks WHERE removed_at IS NOT NULL`).Scan(&removedCount); err != nil || removedCount != 0 {
+		t.Fatal("busy save partially removed sections")
+	}
+	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET status='paused',timer_started_at=NULL,elapsed_ms=31000 WHERE id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := isolated.Exec(ctx, `UPDATE recordings SET status='uploading' WHERE id=$1`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{a, b}}, "layout-test", 409)
+	if _, err := isolated.Exec(ctx, `UPDATE recordings SET status='ready' WHERE id=$1`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	// A crashed tab's expired heartbeat must not block deletion forever.
+	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET status='running',timer_started_at=now()-interval '5 minutes' WHERE id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
 	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{b}, RemoveID: &a}, "layout-test", 204)
 	history, err := app.loadPracticeBlocksForView(ctx, userID, sessionID, definitions.PracticeDate, true)
 	if err != nil || len(history) != 2 {
@@ -123,6 +153,29 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if err := isolated.QueryRow(ctx, `SELECT practice_block_id FROM recordings WHERE id=$1 AND status='ready'`, recordingID).Scan(&retained); err != nil || retained != a {
 		t.Fatalf("recording was not retained: %v", err)
 	}
+	// A take captured on another device before removal can still upload to history.
+	app.cfg.Bucket = "test-bucket"
+	app.tokenSource = oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-only"})
+	app.httpClient = &http.Client{Transport: layoutTestTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{"Location": []string{"https://storage.example.test/upload"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	capture, _ := json.Marshal(map[string]any{"contentType": "audio/wav", "sizeBytes": 100, "durationMs": 5000, "recordedAt": "2026-09-08T12:00:00Z", "practiceSessionId": sessionID.String(), "practiceBlockId": a.String()})
+	captureRequest := httptest.NewRequest("POST", "/", bytes.NewReader(capture)).WithContext(ctx)
+	captureResponse := httptest.NewRecorder()
+	app.initRecording(captureResponse, captureRequest)
+	if captureResponse.Code != 201 {
+		t.Fatalf("late capture lost: %d %s", captureResponse.Code, captureResponse.Body.String())
+	}
+	var captureResult struct {
+		ID             uuid.UUID `json:"id"`
+		SectionRemoved bool      `json:"sectionRemoved"`
+	}
+	if err := json.Unmarshal(captureResponse.Body.Bytes(), &captureResult); err != nil || !captureResult.SectionRemoved {
+		t.Fatal("late capture was not marked archived")
+	}
+	if err := isolated.QueryRow(ctx, `SELECT practice_block_id FROM recordings WHERE id=$1`, captureResult.ID).Scan(&retained); err != nil || retained != a {
+		t.Fatal("late capture lost section context")
+	}
 	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{a, b}}, "layout-test", 409)
 	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveID: &b}, "layout-test", 204)
 	if got := bootstrap(); len(got) != 0 {
@@ -131,5 +184,11 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	definitions.Blocks = []blockDefinition{{BlockKey: "custom-new", Title: "New section", Category: "technique", Track: "trumpet", TargetMinutes: 5}}
 	if got := bootstrap(); len(got) != 1 || got[0].BlockKey != "custom-new" {
 		t.Fatal("could not add to empty plan")
+	}
+	definitions.Blocks = append(definitions.Blocks, blockDefinition{BlockKey: "custom-second", Position: 1, Title: "Second", Category: "technique", Track: "trumpet", TargetMinutes: 5})
+	finalBlocks := bootstrap()
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{finalBlocks[0].ID, finalBlocks[1].ID}}, "layout-test", 204)
+	if got := bootstrap(); len(got) != 0 {
+		t.Fatal("batch deletion failed")
 	}
 }

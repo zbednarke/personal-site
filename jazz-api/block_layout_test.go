@@ -13,6 +13,9 @@ func TestBlockLayoutRequiresExactMembership(t *testing.T) {
 		current []uuid.UUID
 		valid   bool
 	}{
+		{"batch removal", blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{a, b}}, []uuid.UUID{a, b}, true},
+		{"duplicate batch", blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{a, a}}, []uuid.UUID{a, b}, false},
+		{"overlapping formats", blockLayoutRequest{BlockIDs: []uuid.UUID{b}, RemoveIDs: []uuid.UUID{a}, RemoveID: &a}, []uuid.UUID{a, b}, false},
 		{"reorder", blockLayoutRequest{BlockIDs: []uuid.UUID{b, a}}, []uuid.UUID{a, b}, true},
 		{"explicit removal", blockLayoutRequest{BlockIDs: []uuid.UUID{b}, RemoveID: &a}, []uuid.UUID{a, b}, true},
 		{"remove last", blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveID: &a}, []uuid.UUID{a}, true},
