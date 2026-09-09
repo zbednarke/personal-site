@@ -41,6 +41,7 @@
   const takeNoteSaveChains = new Map();
   let activeSectionRecordingID = "";
   let activeSectionRecordingMessage = "";
+  let activeSectionRecordingPaused = false;
   let activeSectionRecordingPhase = "";
   const sectionUploadJobs = new Map();
   let recordingTimerSessionID = "";
@@ -449,10 +450,14 @@
   async function saveTimerBlock(session, timer) {
     const block = guidedBlockFor(session);
     if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
+    // A paused take still owns the recorder. Keep the existing server lease
+    // alive without advancing elapsed practice time; other clients do not
+    // extrapolate cloud timers.
+    const held = activeSectionRecordingPaused && activeSectionRecordingID === block.id;
     const snapshot = {
       elapsedMs: Math.min(MAX_SECTION_PRACTICE_MS, Math.round(timer.elapsedMs)),
-      status: timer.running ? "running" : (timer.completed ? "completed" : (timer.elapsedMs > 0 ? "paused" : "pending")),
-      timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
+      status: (timer.running || held) ? "running" : (timer.completed ? "completed" : (timer.elapsedMs > 0 ? "paused" : "pending")),
+      timerStartedAt: held ? new Date().toISOString() : timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
       completedAt: timer.completed && !timer.running ? (timer.completedAt || new Date().toISOString()) : "",
     };
     const previous = timerSaveChains.get(session.id) || Promise.resolve();
@@ -625,6 +630,10 @@
       notes.addEventListener("input", () => queueBlockNoteSave(session, notes.value));
       notes.addEventListener("blur", () => saveBlockNote(session));
     }
+    $("[data-section-pause]", card)?.addEventListener("click", () => {
+      globalThis.JazzRecording?.togglePause();
+      $("#active-section-panel [data-section-pause]")?.focus({ preventScroll: true });
+    });
     const recordButton = $("[data-section-record]", card);
     if (recordButton) recordButton.addEventListener("click", () => {
       if (activeSectionRecordingID === block?.id) {
@@ -788,6 +797,11 @@
   }
 
   function checkpointRecordingPractice() {
+    if (activeSectionRecordingPaused) {
+      const held = sessionForRecording(activeSectionRecordingID);
+      if (held) saveTimerBlock(held, timerFor(held));
+      return;
+    }
     const session = practiceSections.find((candidate) => candidate.id === recordingTimerSessionID);
     if (!session) return;
     const timer = timerFor(session);
@@ -1198,7 +1212,7 @@
       const selected = session.id === selectedPracticeSectionID;
       const recordingHere = activeSectionRecordingID === block?.id;
       const recordingStatus = recordingHere
-        ? (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording")
+        ? (activeSectionRecordingPhase === "processing" ? "Processing" : (activeSectionRecordingPaused ? "Paused" : "Recording"))
         : (uploadJobs.some((job) => job.phase === "failed") ? "Upload failed" : (uploadJobs.length ? "Uploading" : ""));
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
@@ -1256,7 +1270,7 @@
     const targetMs = session.minutes * 60 * 1000;
     const elapsedMs = elapsedFor(timer);
     const stateLabel = recordingHere
-      ? (activeSectionRecordingPhase === "recording" ? "Recording now" : "Processing take")
+      ? (activeSectionRecordingPhase === "recording" ? (activeSectionRecordingPaused ? "Paused — not recording" : "Recording now") : "Processing take")
       : (failedHere ? "Upload needs attention" : (uploadJobs.length ? "Uploading in background" : (complete ? "Goal met" : (elapsedMs > 0 ? "In progress" : "Ready"))));
     setText("current-section-state", stateLabel);
 
@@ -1265,7 +1279,7 @@
       const banner = document.createElement("aside");
       banner.className = "background-recording-banner";
       banner.innerHTML = `
-        <span><em>${activeSectionRecordingPhase === "processing" ? "Processing" : "Recording continues"}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
+        <span><em>${activeSectionRecordingPhase === "processing" ? "Processing" : (activeSectionRecordingPaused ? "Paused — not recording" : "Recording continues")}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
         <div><button type="button" data-return-to-recording>Return to recorder</button>${activeSectionRecordingPhase === "recording" ? '<button type="button" class="cancel-background-recording" data-cancel-background-recording>Cancel take</button><button type="button" class="stop-background-recording" data-stop-background-recording>Stop take</button>' : ""}</div>`;
       $("[data-return-to-recording]", banner).addEventListener("click", () => {
         selectedPracticeSectionID = recordingOwner.id;
@@ -1300,7 +1314,7 @@
       <div class="section-recording-panel">
         <div class="section-recording-head">
           <span><strong>Section takes</strong><em>${takeCount} / ${MAX_TAKES_PER_SECTION}</em></span>
-          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= MAX_TAKES_PER_SECTION && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? `<button class="section-cancel-button" data-section-pause type="button">${activeSectionRecordingPaused ? 'Resume' : 'Pause'}</button><button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>` : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" && !activeSectionRecordingPaused ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= MAX_TAKES_PER_SECTION && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Finish take") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
         </div>
         ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
         ${sectionUploadMarkup(block)}
@@ -1748,9 +1762,15 @@
   });
   addEventListener("jazz:recording-state", (event) => {
     const detail = event.detail || {};
-    if (detail.phase === "recording" && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
+    const wasPaused = activeSectionRecordingPaused;
+    activeSectionRecordingPaused = detail.phase === "recording" && Boolean(detail.paused);
+    if (wasPaused && detail.phase !== "recording") {
+      const held = sessionForRecording(activeSectionRecordingID);
+      if (held) saveTimerBlock(held, timerFor(held));
+    }
+    if (detail.phase === "recording" && !detail.paused && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
       beginRecordingPractice(detail.blockId);
-    } else if (detail.phase !== "recording" && recordingTimerSessionID) {
+    } else if ((detail.phase !== "recording" || detail.paused) && recordingTimerSessionID) {
       endRecordingPractice(detail.blockId);
     }
     if (!detail.blockId) return;
