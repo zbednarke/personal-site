@@ -567,6 +567,15 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Capture data may finish uploading after another device removed its section.
+	// Retain the association in history; never discard an already captured take.
+	recordingTx, err := app.db.Begin(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer recordingTx.Rollback(r.Context())
+	sectionRemoved := false
 	var practiceBlockID *uuid.UUID
 	if input.PracticeBlockID != "" {
 		blockID, parseErr := uuid.Parse(input.PracticeBlockID)
@@ -576,9 +585,9 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		}
 		var blockSessionID uuid.UUID
 		var recordingCount int
-		queryErr := app.db.QueryRow(r.Context(), `
-			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready'))
-			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2 AND pb.removed_at IS NULL`, blockID, userID).Scan(&blockSessionID, &recordingCount)
+		queryErr := recordingTx.QueryRow(r.Context(), `
+			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready')),pb.removed_at IS NOT NULL
+			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2 FOR UPDATE OF pb`, blockID, userID).Scan(&blockSessionID, &recordingCount, &sectionRemoved)
 		if errors.Is(queryErr, pgx.ErrNoRows) || (input.PracticeSessionID != "" && blockSessionID.String() != input.PracticeSessionID) {
 			writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
 			return
@@ -600,7 +609,7 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	}
 	skillJSON, _ := json.Marshal(input.SkillIDs)
 	waveformJSON, _ := json.Marshal(waveformPeaks)
-	_, err = app.db.Exec(r.Context(), `
+	_, err = recordingTx.Exec(r.Context(), `
 		INSERT INTO recordings
 		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
 		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate,waveform_peaks)
@@ -614,13 +623,17 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
+	if err := recordingTx.Commit(r.Context()); err != nil {
+		app.serverError(w, err)
+		return
+	}
 	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes, "audio", allowedUploadOrigin(r.Header.Get("Origin")))
 	if err != nil {
 		_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
 		app.serverError(w, err)
 		return
 	}
-	response := map[string]any{"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName}
+	response := map[string]any{"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName, "sectionRemoved": sectionRemoved}
 	if mediaKind == "video" {
 		videoUploadURL, videoErr := app.createResumableUpload(r.Context(), recordingID, userID, videoObjectName, videoType, input.VideoSizeBytes, "video", allowedUploadOrigin(r.Header.Get("Origin")))
 		if videoErr != nil {
