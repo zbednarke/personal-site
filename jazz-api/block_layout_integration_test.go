@@ -52,6 +52,9 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if err := migrate(ctx, isolated); err != nil {
 		t.Fatal(err)
 	}
+	if err := migrate(ctx, isolated); err != nil {
+		t.Fatalf("repeat startup migration: %v", err)
+	}
 	app := &application{db: isolated, logger: slog.Default()}
 	userID, err := app.userID(ctx)
 	if err != nil {
