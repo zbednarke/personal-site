@@ -191,4 +191,55 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if got := bootstrap(); len(got) != 0 {
 		t.Fatal("batch deletion failed")
 	}
+	// An empty previous day must remain empty, including across skipped dates.
+	definitions.PracticeDate = "2026-09-10"
+	definitions.Mode = "initialize"
+	definitions.Blocks = []blockDefinition{{BlockKey: "factory", Title: "Factory", Category: "technique", Track: "trumpet", TargetMinutes: 10}}
+	if got := bootstrap(); len(got) != 0 {
+		t.Fatal("empty previous day restored defaults")
+	}
+	definitions.Mode = "add"
+	definitions.Blocks = []blockDefinition{
+		{BlockKey: "custom-long", Title: "Long tones", Instructions: "My instructions", Category: "technique", Track: "trumpet", TargetMinutes: 20},
+		{BlockKey: "custom-next", Title: "Next", Category: "technique", Track: "trumpet", TargetMinutes: 7},
+		{BlockKey: "appointment", Title: "Transcription", Category: "repertoire", Track: "musician", TargetMinutes: 20, DayOnly: true},
+	}
+	added := bootstrap()
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{added[1].ID, added[0].ID, added[2].ID}}, "layout-test", 204)
+	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET notes='Yesterday only',elapsed_ms=9000,status='completed',completed_at=now() WHERE id=$1`, added[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	oldSession := sessionID
+	if _, err := isolated.Exec(ctx, `UPDATE practice_sessions SET status='completed',ended_at=now() WHERE id=$1`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	sessionID = uuid.New()
+	if _, err := isolated.Exec(ctx, `INSERT INTO practice_sessions(id,user_id,title,started_at,status) VALUES ($1,$2,'Tomorrow',now(),'active')`, sessionID, userID); err != nil {
+		t.Fatal(err)
+	}
+	definitions.PracticeDate = "2026-09-12"
+	definitions.Mode = "initialize"
+	definitions.Blocks = []blockDefinition{{BlockKey: "factory", Title: "Factory", Category: "technique", Track: "trumpet", TargetMinutes: 10}}
+	inherited := bootstrap()
+	if len(inherited) != 2 || inherited[0].BlockKey != "custom-next" || inherited[1].Title != "Long tones" || inherited[1].TargetMinutes != 20 || inherited[1].Instructions != "My instructions" {
+		t.Fatalf("wrong inheritance: %+v", inherited)
+	}
+	if inherited[1].ID == added[0].ID || inherited[1].Notes != "" || inherited[1].ElapsedMS != 0 || inherited[1].Status != "pending" || len(inherited[1].Recordings) != 0 {
+		t.Fatal("copied historical progress")
+	}
+	if got := bootstrap(); len(got) != 2 || got[1].ID != inherited[1].ID {
+		t.Fatal("reload duplicated or replaced blocks")
+	}
+	var oldNotes string
+	if err := isolated.QueryRow(ctx, `SELECT notes FROM practice_blocks WHERE session_id=$1 AND id=$2`, oldSession, added[0].ID).Scan(&oldNotes); err != nil || oldNotes != "Yesterday only" {
+		t.Fatal("previous day was altered")
+	}
+	definitions.Blocks = append(definitions.Blocks, blockDefinition{BlockKey: "today-only", Title: "Lesson", Category: "repertoire", Track: "musician", TargetMinutes: 15, DayOnly: true})
+	if got := bootstrap(); len(got) != 3 {
+		t.Fatal("dated addition not included")
+	}
+	if got := bootstrap(); len(got) != 3 {
+		t.Fatal("dated addition duplicated")
+	}
+
 }

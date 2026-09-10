@@ -398,6 +398,7 @@
         category: session.category,
         track: session.track,
         targetMinutes: session.minutes,
+        dayOnly: Boolean(session.practiceDate),
       }));
       const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), definitions);
       applyPracticeBlocks(result.blocks || []);
@@ -1041,7 +1042,7 @@
       removedSections.forEach((session) => guidedBlocks.delete(session.id));
       practiceSections.forEach((session) => { guidedBlockFor(session).position = session.position; });
       practiceLayoutDraft = null;
-      showToast(removedSections.length ? "Sections saved. Removed sections' notes and takes remain in Previous work." : "Section order saved");
+      showToast(removedSections.length ? "Sections saved. Removed sections' notes and takes remain in Previous work." : "Section order saved; this layout carries into the next practice day");
     } catch (error) {
       // Keep the draft on errors; reconcile server changes without losing local edits.
       if (error.status === 409 || error.status === 404) await hydrateGuidedBlocks();
@@ -1666,7 +1667,7 @@
           category: preset.category,
           track: preset.track,
           targetMinutes: minutes,
-        }]);
+        }], "add");
         applyPracticeBlocks(result.blocks || []);
         selectedPracticeSectionID = blockKey;
         form.reset();
