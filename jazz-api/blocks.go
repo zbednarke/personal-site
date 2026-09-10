@@ -48,6 +48,7 @@ type blockRecordingSummary struct {
 }
 
 type blockDefinition struct {
+	DayOnly       bool   `json:"dayOnly,omitempty"`
 	BlockKey      string `json:"blockKey"`
 	Position      int    `json:"position"`
 	Title         string `json:"title"`
@@ -58,6 +59,7 @@ type blockDefinition struct {
 }
 
 type bootstrapBlocksRequest struct {
+	Mode         string            `json:"mode,omitempty"`
 	PracticeDate string            `json:"practiceDate"`
 	Blocks       []blockDefinition `json:"blocks"`
 }
@@ -81,6 +83,10 @@ func (app *application) bootstrapPracticeBlocks(w http.ResponseWriter, r *http.R
 	var input bootstrapBlocksRequest
 	if err := readJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if input.Mode != "" && input.Mode != "initialize" && input.Mode != "add" {
+		writeError(w, 422, "invalid practice block mode")
 		return
 	}
 	filteredBlocks := make([]blockDefinition, 0, len(input.Blocks))
@@ -145,19 +151,9 @@ func (app *application) bootstrapPracticeBlocks(w http.ResponseWriter, r *http.R
 		app.serverError(w, err)
 		return
 	}
-	for _, block := range input.Blocks {
-		_, err = tx.Exec(r.Context(), `
-			INSERT INTO practice_blocks
-			(id,session_id,user_id,practice_date,block_key,position,title,instructions,category,track,target_minutes)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11)
-			ON CONFLICT (session_id,practice_date,block_key) DO UPDATE SET
-			title=EXCLUDED.title,instructions=EXCLUDED.instructions,
-			category=EXCLUDED.category,track=EXCLUDED.track,target_minutes=EXCLUDED.target_minutes,updated_at=now()`,
-			uuid.New(), sessionID, userID, input.PracticeDate, block.BlockKey, block.Position, block.Title, block.Instructions, block.Category, block.Track, block.TargetMinutes)
-		if err != nil {
-			app.serverError(w, err)
-			return
-		}
+	if err := app.seedPracticeDay(r.Context(), tx, userID, sessionID, input); err != nil {
+		app.serverError(w, err)
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		app.serverError(w, err)

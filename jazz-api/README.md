@@ -71,3 +71,12 @@ go run ./cmd/repair-video-index -id RECORDING_UUID -apply
 the `jazz-video-index-repair` Cloud Run job so large recordings can be repaired
 inside the bucket's region. Run the job periodically with `-all -apply`; it
 selects only recordings whose `video_playback_optimized` flag is false.
+
+## Rolling practice sections
+
+The first load of a practice day copies the latest earlier day’s active recurring
+sections, including custom titles, instructions, targets and order. It creates
+fresh blocks without copying notes, recordings, timers or completion. Empty
+plans remain empty. Date-specific appointments use `dayOnly: true` and are not
+carried forward. Bootstrap mode `initialize` never overwrites saved settings;
+mode `add` explicitly adds a section. Existing open tabs remain compatible.

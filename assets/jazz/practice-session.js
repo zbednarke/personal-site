@@ -217,13 +217,13 @@
     return activity;
   }
 
-  async function ensureGuidedBlocks(practiceDate, definitions) {
+  async function ensureGuidedBlocks(practiceDate, definitions, mode = "initialize") {
     if (initialSessionLoad) await initialSessionLoad;
     await rollSessionForward(practiceDate);
     const session = await ensureActive();
     const result = await api(`/practice-sessions/${session.id}/blocks`, {
       method: "POST",
-      body: JSON.stringify({ practiceDate, blocks: definitions }),
+      body: JSON.stringify({ practiceDate, blocks: definitions, mode }),
     });
     return { session, blocks: result.blocks || [] };
   }
