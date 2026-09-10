@@ -34,3 +34,15 @@ test("drop positions use variable row midpoints and handle either end", () => {
   assert.equal(layout.insertionIndex(220, rows), 2);
   assert.equal(layout.insertionIndex(100, []), 0);
 });
+
+test("renames are drafts, survive reconciliation and can be undone", () => {
+ const base=layout.create(["a","b"]);
+ let draft=layout.rename(base,"a","Original"," New name ");
+ assert.equal(layout.dirty(draft),true);
+ assert.deepEqual(base.renames,{});
+ draft=layout.reconcile(draft,["a","b","c"]);
+ assert.deepEqual(draft.renames.a,{from:"Original",to:"New name"});
+ draft=layout.rename(draft,"a","Original","Original");
+ assert.equal(layout.dirty(draft),false);
+ assert.deepEqual(layout.reconcile(layout.rename(base,"a","Original","New"),["b"]).renames,{});
+});
