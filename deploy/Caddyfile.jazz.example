@@ -54,3 +54,9 @@ handle_path /jazz/share/* {
         header_up Host {upstream_hostport}
     }
 }
+
+# Finished films persist across static releases and inherit Jazz authentication.
+handle_path /jazz/films/* {
+    root * /srv/zachbednarke.com/films
+    file_server
+}
