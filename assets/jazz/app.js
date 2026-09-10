@@ -24,7 +24,7 @@
 
   let state = loadState();
   let activeTrack = "all";
-  let practiceSections = DATA.sessions.map((session, position) => ({ ...session, position }));
+  let practiceSections = DATA.sessionsForDate(localDateKey()).map((session, position) => ({ ...session, position }));
   let activeSkillId = null;
   let toastTimer = null;
   let syncRevision = loadSyncRevision();
@@ -366,7 +366,7 @@
     practiceSections = [...(blocks || [])]
       .sort((a, b) => Number(a.position) - Number(b.position))
       .map((block) => {
-        const curriculum = DATA.sessions.find((session) => session.id === block.blockKey) || {};
+        const curriculum = [...DATA.sessions, ...DATA.scheduledSessions].find((session) => session.id === block.blockKey) || {};
         const minutes = Number(block.targetMinutes || curriculum.minutes || 10);
         return {
           ...curriculum,
@@ -390,7 +390,7 @@
       return;
     }
     try {
-      const definitions = DATA.sessions.map((session, position) => ({
+      const definitions = DATA.sessionsForDate(localDateKey()).map((session, position) => ({
         blockKey: session.id,
         position,
         title: session.title,
@@ -1324,6 +1324,15 @@
         <span><strong>Section notes</strong><em data-section-sync data-tone="saved">${block ? "Cloud synced" : "Waiting for cloud"}</em></span>
         <textarea data-section-notes maxlength="4000" rows="5" ${block ? "" : "disabled"} placeholder="What did you work on during ${session.title.toLowerCase()}?">${escapeHTML(block?.notes || "")}</textarea>
       </label>`;
+    if (session.sourceURL && /^https:\/\//.test(session.sourceURL)) {
+      const reference = document.createElement("a");
+      reference.className = "section-tool-link";
+      reference.href = session.sourceURL;
+      reference.target = "_blank";
+      reference.rel = "noopener noreferrer";
+      reference.textContent = session.sourceLabel || "Open practice reference";
+      $(".selected-section-head > div", card).appendChild(reference);
+    }
     panel.appendChild(card);
     wireSectionTools(card, session, block);
   }

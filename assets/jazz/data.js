@@ -541,3 +541,27 @@ globalThis.JAZZ_DATA = {
     { title: "Clave unlocked", detail: "Join or sub with a Latin band." },
   ],
 };
+
+// Date-specific additions are included when that local practice day opens.
+globalThis.JAZZ_DATA.scheduledSessions = [{
+  practiceDate: "2026-09-10",
+  after: "horn-down-listening",
+  id: "easy-to-love-transcription-2026-09-10",
+  time: "20 min",
+  minutes: 20,
+  track: "language",
+  category: "transcription",
+  title: "Easy to Love: transcribe and play",
+  detail: "Start the solo from the Reddit performance, identified by its poster as Easy to Love from Cannonball Adderley's Nippon Soul. Listen and sing one short phrase (3 min). Loop roughly 2 bars, slow it down if needed, and find the rhythm and notes by ear (10 min). Play along slowly, matching articulation and phrasing (5 min). Record your phrase and note the next timestamp to learn (2 min). If 2 bars feel dense, learn just one musical gesture. Reference: https://www.reddit.com/r/trumpet/s/rGEuwj9NE2",
+  win: "One short phrase you can sing and play; a recording and a clear starting point for next time.",
+  sourceURL: "https://www.reddit.com/r/trumpet/s/rGEuwj9NE2",
+  sourceLabel: "Open the solo on Reddit",
+}];
+globalThis.JAZZ_DATA.sessionsForDate = function (practiceDate) {
+  const sessions = [...this.sessions];
+  for (const session of this.scheduledSessions.filter(item => item.practiceDate === practiceDate)) {
+    const index = sessions.findIndex(item => item.id === session.after);
+    sessions.splice(index < 0 ? sessions.length : index + 1, 0, session);
+  }
+  return sessions;
+};
