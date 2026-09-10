@@ -82,6 +82,48 @@
     localStorage.setItem(projectStorageKey(), JSON.stringify(state.project));
   }
 
+  globalThis.JazzClipStudioLocal = {
+    restorePrevious() {
+      const saved = localStorage.getItem(`${projectStorageKey()}:before-local-draft`);
+      if (!saved) throw new Error("There is no previous local-draft timeline for this day");
+      state.project = Model.normalizeProject(JSON.parse(saved), state.date);
+      persistProject(); $("#studio-output-title").value = state.project.title; renderOutputTimeline();
+    },
+    async snapshot() {
+      if (!state.initialized || state.loadingDay) throw new Error("Open Clip Studio and wait for the day to load");
+      const date = state.date;
+      const candidates = state.candidates.filter(c => c.reviewStatus !== "rejected").map(c => ({ ...c }));
+      if (!candidates.length) throw new Error("Add manual moments or scan for suggestions first");
+      const ids = new Set(candidates.map(c => c.recordingId));
+      const recordings = state.recordings.filter(r => ids.has(r.id)).map(r => ({ ...r }));
+      const sources = [];
+      for (const r of recordings) {
+        const audio = await api(`/recordings/${r.id}/playback-url?asset=audio`, { method: "POST", body: "{}" });
+        const video = r.mediaKind === "video" ? await api(`/recordings/${r.id}/playback-url?asset=video`, { method: "POST", body: "{}" }) : null;
+        sources.push({ id: r.id, title: titleFor(r), durationMs: r.durationMs, audioUrl: audio.url, videoUrl: video?.url || null });
+      }
+      return { date, candidates, recordings: sources };
+    },
+    importDraft({ date, project }) {
+      if (state.date !== date) throw new Error(`Select ${date} in Clip Studio, then open the draft again`);
+      const normalized = Model.normalizeProject(project, date);
+      if (!normalized.clips.length || normalized.clips.length !== project?.clips?.length) throw new Error("Invalid draft timeline");
+      for (const clip of normalized.clips) {
+        const candidate = state.candidates.find(c => c.id === clip.candidateId && c.reviewStatus !== "rejected");
+        if (!candidate || candidate.recordingId !== clip.recordingId || clip.startMs < candidate.startMs || clip.endMs > candidate.endMs) throw new Error("A candidate changed or was rejected. Generate a new draft using the latest moments.");
+      }
+      if (JSON.stringify(state.project) === JSON.stringify(normalized)) return;
+      const backupKey = `${projectStorageKey()}:before-local-draft`;
+      localStorage.setItem(`${backupKey}:${Date.now()}`, JSON.stringify(state.project));
+      localStorage.setItem(backupKey, JSON.stringify(state.project));
+      state.project = normalized;
+      persistProject();
+      $("#studio-output-title").value = normalized.title;
+      renderOutputTimeline();
+
+    },
+  };
+
   function initialize() {
     if (state.initialized) return;
     state.initialized = true;
