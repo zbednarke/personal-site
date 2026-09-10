@@ -112,6 +112,17 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET elapsed_ms=1000,status='running',timer_started_at=now()-interval '30 seconds' WHERE id=$1`, a); err != nil {
 		t.Fatal(err)
 	}
+	// A running section can be renamed, even to another section's title.
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{b, a}, Renames: []blockRename{{BlockID: a, PreviousTitle: "Warmup", Title: "Tune"}}}, "layout-test", 204)
+	gotRenamed := bootstrap()
+	if gotRenamed[1].ID != a || gotRenamed[1].Title != "Tune" || gotRenamed[1].Status != "running" || len(gotRenamed[1].Recordings) != 1 || gotRenamed[1].Recordings[0].ID != recordingID {
+		t.Fatal("rename changed recording identity or progress")
+	}
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{a, b}, Renames: []blockRename{{BlockID: a, PreviousTitle: "Warmup", Title: "Stale"}}}, "layout-test", 409)
+	if got := bootstrap(); got[0].ID != b || got[1].Title != "Tune" {
+		t.Fatal("conflicted rename partially reordered")
+	}
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{b, a}, Renames: []blockRename{{BlockID: a, PreviousTitle: "Tune", Title: "  "}}}, "layout-test", 422)
 	// Saving multiple removals must be all-or-nothing when any section is busy.
 	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{a, b}}, "layout-test", 409)
 	var removedCount int

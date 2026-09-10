@@ -1015,6 +1015,7 @@
       renderSessions({ planOnly: true });
       return;
     }
+    if (Object.values(practiceLayoutDraft.renames || {}).some(change => !change.to.trim() || [...change.to].length > 160)) { showToast("Use section names from 1 to 160 characters"); renderSectionEditor(); return; }
     const removedSections = practiceLayoutDraft.removed.map((id) => practiceSections.find((item) => item.id === id)).filter(Boolean);
     const blocked = removedSections.find((session) => sectionDeleteReason(session));
     if (blocked) {
@@ -1037,12 +1038,19 @@
       const kept = model.kept(practiceLayoutDraft);
       const anchor = guidedBlockFor(practiceSections[0]);
       await globalThis.JazzPracticeSession.updateGuidedLayout(anchor.practiceSessionId, anchor.practiceDate,
-        kept.map((id) => guidedBlocks.get(id).id), removedSections.map((session) => guidedBlockFor(session).id));
+        kept.map((id) => guidedBlocks.get(id).id), removedSections.map((session) => guidedBlockFor(session).id),
+        kept.filter(id => practiceLayoutDraft.renames?.[id]).map(id => ({ blockId: guidedBlocks.get(id).id, previousTitle: practiceLayoutDraft.renames[id].from, title: practiceLayoutDraft.renames[id].to })));
+      for (const id of kept) {
+        const change = practiceLayoutDraft.renames?.[id];
+        if (change) { practiceSections.find(s => s.id === id).title = change.to; guidedBlocks.get(id).title = change.to; }
+      }
+      const selectedHeading = $("#active-section-panel .selected-section-head h3");
+      if (selectedHeading) selectedHeading.textContent = practiceSections.find(s => s.id === selectedPracticeSectionID)?.title || selectedHeading.textContent;
       practiceSections = kept.map((id, position) => ({ ...practiceSections.find((session) => session.id === id), position }));
       removedSections.forEach((session) => guidedBlocks.delete(session.id));
       practiceSections.forEach((session) => { guidedBlockFor(session).position = session.position; });
       practiceLayoutDraft = null;
-      showToast(removedSections.length ? "Sections saved. Removed sections' notes and takes remain in Previous work." : "Section order saved; this layout carries into the next practice day");
+      showToast(removedSections.length ? "Sections saved. Removed sections' notes and takes remain in Previous work." : "Section changes saved; recurring sections carry into the next practice day");
     } catch (error) {
       // Keep the draft on errors; reconcile server changes without losing local edits.
       if (error.status === 409 || error.status === 404) await hydrateGuidedBlocks();
@@ -1204,6 +1212,7 @@
     const planSections = practiceLayoutDraft ? practiceLayoutDraft.order.map((id) => practiceSections.find((session) => session.id === id)).filter(Boolean) : practiceSections;
     planSections.forEach((session, index) => {
       const removed = practiceLayoutDraft?.removed.includes(session.id);
+      const displayTitle = practiceLayoutDraft?.renames?.[session.id]?.to || session.title;
       const deleteReason = sectionDeleteReason(session);
       const timer = timerFor(session);
       const complete = timer.completed;
@@ -1221,16 +1230,36 @@
       card.dataset.sessionId = session.id;
       card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${recordingHere ? " recording-owner" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}${removed ? " section-pending-delete" : ""}`;
       card.innerHTML = `
-        ${practiceLayoutDraft ? `<button class="section-drag-handle" data-section-drag type="button" aria-label="Reorder ${escapeHTML(session.title)}" aria-describedby="practice-edit-help" ${removed || practiceLayoutSaving ? "disabled" : ""}><span aria-hidden="true">⠿</span></button>` : ""}
-        <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(session.title)}">
+        ${practiceLayoutDraft ? `<button class="section-drag-handle" data-section-drag type="button" aria-label="Reorder ${escapeHTML(displayTitle)}" aria-describedby="practice-edit-help" ${removed || practiceLayoutSaving ? "disabled" : ""}><span aria-hidden="true">⠿</span></button>` : ""}
+        <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(displayTitle)}">
           <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
-          <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
+          <span class="plan-copy"><strong>${escapeHTML(displayTitle)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
           <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
-          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
+          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(displayTitle)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
         </button>
-        ${practiceLayoutDraft ? `<div class="practice-plan-actions"><button type="button" data-section-delete aria-label="${removed ? "Undo deletion of" : "Delete"} ${escapeHTML(session.title)}" ${practiceLayoutSaving || (!removed && deleteReason) ? "disabled" : ""}>${removed ? "Undo" : "Delete"}</button></div>
+        ${practiceLayoutDraft ? `<div class="practice-plan-actions"><button type="button" data-section-rename aria-label="Rename ${escapeHTML(displayTitle)}" ${removed || practiceLayoutSaving ? "disabled" : ""}>Rename</button><button type="button" data-section-delete aria-label="${removed ? "Undo deletion of" : "Delete"} ${escapeHTML(displayTitle)}" ${practiceLayoutSaving || (!removed && deleteReason) ? "disabled" : ""}>${removed ? "Undo" : "Delete"}</button></div>
           ${removed ? '<p class="section-edit-note">Will be removed when you save. Notes and takes stay in Previous work.</p>' : deleteReason ? `<p class="section-edit-note">${escapeHTML(deleteReason)}</p>` : ""}` : ""}`;
       $("[data-section-delete]", card)?.addEventListener("click", () => stageSectionDeletion(session));
+      if (practiceLayoutDraft && !removed) {
+        const nameField = document.createElement("label");
+        nameField.className = "section-rename-field";
+        nameField.hidden = true;
+        const label = document.createElement("span");
+        label.textContent = "Section name";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 160;
+        input.value = displayTitle;
+        input.disabled = practiceLayoutSaving;
+        input.setAttribute("aria-label", `Section name for ${session.title}`);
+        input.addEventListener("input", () => {
+          practiceLayoutDraft = globalThis.JazzPracticeLayout.rename(practiceLayoutDraft, session.id, session.title, input.value);
+          renderSectionEditor();
+        });
+        nameField.append(label, input);
+        card.appendChild(nameField);
+        $("[data-section-rename]", card)?.addEventListener("click", () => { nameField.hidden = false; input.focus(); input.select(); });
+      }
       const dragHandle = $("[data-section-drag]", card);
       if (dragHandle) wireSectionDrag(dragHandle, session);
       $(".practice-plan-select", card).addEventListener("click", () => {

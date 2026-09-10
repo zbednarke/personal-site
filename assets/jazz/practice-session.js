@@ -235,10 +235,10 @@
     });
   }
 
-  async function updateGuidedLayout(sessionID, practiceDate, blockIDs, removeIDs = []) {
+  async function updateGuidedLayout(sessionID, practiceDate, blockIDs, removeIDs = [], renames = []) {
     return api(`/practice-sessions/${sessionID}/blocks/layout`, {
       method: "PUT",
-      body: JSON.stringify({ practiceDate, blockIds: blockIDs, removeIds: removeIDs }),
+      body: JSON.stringify({ practiceDate, blockIds: blockIDs, removeIds: removeIDs, renames }),
     });
   }
 

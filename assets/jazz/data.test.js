@@ -27,7 +27,8 @@ test("scheduled transcription is included only on its day without changing the d
   const index = tomorrow.findIndex(s => s.id === "easy-to-love-transcription-2026-09-10");
   assert.equal(tomorrow[index - 1].id, "horn-down-listening");
   assert.equal(tomorrow[index].minutes, 20);
-  assert.equal(tomorrow[index].sourceURL, "https://www.reddit.com/r/trumpet/s/rGEuwj9NE2");
+  assert.equal(tomorrow[index].title, "Prelude to a Kiss: transcribe and play");
+  assert.equal(tomorrow[index].sourceURL, undefined);
   assert.deepEqual(data.sessions.map(s => s.id), originalIDs);
   assert.equal(new Set(tomorrow.map(s => s.id)).size, tomorrow.length);
 });
