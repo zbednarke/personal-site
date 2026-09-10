@@ -169,6 +169,7 @@
     setAddClipMode(false);
     loadProject();
     $("#studio-date").value = date;
+    document.dispatchEvent(new CustomEvent("jazz:studio-date-change", { detail: { date } }));
     setStatus("Loading lossless masters");
     setScanState("checking", "Checking analysis", "Loading this day’s analysis state…");
     try {

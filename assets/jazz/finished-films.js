@@ -15,11 +15,13 @@
     if (text) node.textContent = text;
     return node;
   };
-  fetch('../assets/jazz/finished-films.json', { cache: 'no-store' }).then(r => {
-    if (!r.ok) throw new Error('Films unavailable');
-    return r.json();
-  }).then(films => {
+  let films = [];
+  function renderDay() {
+    const date = document.querySelector('#studio-date')?.value;
+    shelf.querySelectorAll('video').forEach(player => player.pause());
+    shelf.replaceChildren();
     for (const film of films) {
+      if (!date || film.date !== date) continue;
       if (!/^\/jazz\/films\/[a-zA-Z0-9_-]+\.mp4$/.test(film.video) || !/^\/jazz\/films\/[a-zA-Z0-9_-]+\.jpg$/.test(film.poster)) continue;
       const card = el('article', 'finished-film');
       const copy = el('div', 'finished-film-copy');
@@ -36,6 +38,14 @@
       card.append(copy, player, footer); shelf.append(card);
     }
     shelf.hidden = !shelf.childElementCount;
+  }
+  document.addEventListener('jazz:studio-date-change', renderDay);
+  fetch('../assets/jazz/finished-films.json', { cache: 'no-store' }).then(r => {
+    if (!r.ok) throw new Error('Films unavailable');
+    return r.json();
+  }).then(result => {
+    films = Array.isArray(result) ? result : [];
+    renderDay();
   }).catch(() => {});
   document.addEventListener('jazz:view-change', event => {
     if (event.detail?.view !== 'studio') shelf.querySelectorAll('video').forEach(player => player.pause());
