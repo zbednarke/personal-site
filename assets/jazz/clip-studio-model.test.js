@@ -73,3 +73,13 @@ test("manual source clip placement ignores rejected clips and returns null witho
   assert.equal(model.placeDefaultSourceClip(25000, 30000, [{ startMs: 0, endMs: 12000 }, { startMs: 18000, endMs: 30000 }]), null);
   assert.equal(model.placeDefaultSourceClip(200, 400, []), null);
 });
+
+test("individual download snapshots only the requested clip and its current boundaries", () => {
+  const candidate = {recordingId:'take-one', startMs:1234, endMs:9876};
+  const payload = model.clipDownloadPayload('Today clip',candidate,10000);
+  candidate.startMs=5000;
+  assert.deepEqual(payload,{title:'Today clip',clips:[{recordingId:'take-one',startMs:1234,endMs:9876}]});
+  for (const [startMs,endMs] of [[-1,1000],[0,499],[0,10001],[NaN,2000]]) {
+    assert.throws(()=>model.clipDownloadPayload('Clip',{recordingId:'r',startMs,endMs},10000));
+  }
+});

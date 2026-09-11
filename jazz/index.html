@@ -324,7 +324,7 @@
                 <label><span>In · seconds</span><input id="studio-start" type="number" min="0" step="0.1"></label>
                 <label><span>Out · seconds</span><input id="studio-end" type="number" min="0" step="0.1"></label>
               </div>
-              <div class="studio-clip-actions"><button type="button" id="studio-split-clip" disabled>Split at playhead</button><button class="studio-add-output" type="button" id="studio-add-output">Add to Output</button></div>
+              <div class="studio-clip-actions"><button type="button" class="clip-download-button" data-download-current>↓ Download clip</button><button type="button" id="studio-split-clip" disabled>Split at playhead</button><button class="studio-add-output" type="button" id="studio-add-output">Add to Output</button></div>
               <label class="clip-studio-notes"><span>Editor note</span><textarea id="studio-candidate-notes" rows="4" maxlength="2000" placeholder="Why is this worth keeping? What needs trimming?"></textarea></label>
               <div class="clip-studio-review-actions">
                 <button type="button" id="studio-like" aria-pressed="false">♡ Like clip</button>
@@ -572,6 +572,7 @@
   <script src="../assets/jazz/archive.js"></script>
   <script src="../assets/jazz/clip-studio-model.js"></script>
   <script src="../assets/jazz/clip-studio.js"></script>
+  <script src="../assets/jazz/clip-download.js"></script>
   <script src="../assets/jazz/highlight-local.js"></script>
   <script src="../assets/jazz/finished-films.js"></script>
   <script src="../assets/jazz/guide-tone-trainer.js"></script>

@@ -98,6 +98,14 @@
       .map(({ startMs, endMs }) => ({ startMs, endMs }))[0] || null;
   }
 
+  function clipDownloadPayload(title, candidate, durationMS) {
+    const startMs = candidate?.startMs, endMs = candidate?.endMs;
+    if (!candidate?.recordingId || !Number.isInteger(startMs) || !Number.isInteger(endMs)
+      || startMs < 0 || endMs - startMs < MIN_SOURCE_CLIP_MS || endMs > durationMS
+      || endMs - startMs > MAX_DURATION_MS) throw new Error('Choose a clip between half a second and ten minutes within its recording.');
+    return { title: String(title).slice(0, 120), clips: [{ recordingId: candidate.recordingId, startMs, endMs }] };
+  }
+
   function renderPayload(project) {
     if (!project.clips.length) throw new Error("Add at least one clip before rendering.");
     if (!String(project.title || "").trim()) throw new Error("Give the output a project title.");
@@ -107,7 +115,7 @@
     };
   }
 
-  const api = { DEFAULT_SOURCE_CLIP_MS, MIN_SOURCE_CLIP_MS, MAX_CLIPS, MAX_DURATION_MS, addClip, candidateIsLiked, createProject, defaultTitle, estimatedRenderMS, moveClip, nextLikeStatus, normalizeProject, placeDefaultSourceClip, removeClip, renderPayload, totalDurationMS };
+  const api = { clipDownloadPayload, DEFAULT_SOURCE_CLIP_MS, MIN_SOURCE_CLIP_MS, MAX_CLIPS, MAX_DURATION_MS, addClip, candidateIsLiked, createProject, defaultTitle, estimatedRenderMS, moveClip, nextLikeStatus, normalizeProject, placeDefaultSourceClip, removeClip, renderPayload, totalDurationMS };
   globalThis.JazzClipStudioModel = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
