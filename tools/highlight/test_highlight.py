@@ -119,3 +119,21 @@ class WorkerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class TargetLengthTests(unittest.TestCase):
+    def test_default_and_requested_length(self):
+        self.assertEqual(snapshot(fixture())['targetSeconds'], 120)
+        value = fixture(); value['targetSeconds'] = 300
+        self.assertEqual(snapshot(value)['targetSeconds'], 300)
+        for target in (True, 0, 601, '300', 120.5):
+            value['targetSeconds'] = target
+            with self.assertRaises(ValueError): snapshot(value)
+
+    def test_five_minute_plan_allowed_only_for_longer_target(self):
+        manifest = dict(targetSeconds=300, candidates=[dict(id='a', recordingId='r', startMs=0, endMs=400000, manual=True, liked=True)])
+        plan = dict(title='Long film', reviews=[dict(candidateId='a',reason='User selection')], clips=[dict(candidateId='a',startMs=0,endMs=300000)])
+        self.assertEqual(validate_plan(plan, manifest),300000)
+        manifest['targetSeconds']=120
+        with self.assertRaises(ValueError): validate_plan(plan,manifest)
+        manifest['targetSeconds']=300;plan['clips'][0]['endMs']=316000
+        with self.assertRaises(ValueError): validate_plan(plan,manifest)
