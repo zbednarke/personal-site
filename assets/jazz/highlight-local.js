@@ -18,7 +18,18 @@
     try { globalThis.JazzClipStudioLocal.restorePrevious(); status('Previous timeline restored.'); }
     catch (e) { status(e.message); }
   });
-  const status = message => { document.querySelector('#studio-render-status').textContent = message; };
+  const localStatus = document.createElement('span');
+  localStatus.id = 'studio-magic-status';
+  localStatus.setAttribute('role', 'status');
+  localStatus.setAttribute('aria-label', 'Magic film status');
+  localStatus.hidden = true;
+  anchor.parentElement.append(localStatus);
+  button.setAttribute('aria-describedby', localStatus.id);
+  restore.setAttribute('aria-describedby', localStatus.id);
+  const status = message => {
+    localStatus.textContent = `Magic film · ${message}`;
+    localStatus.hidden = !message;
+  };
   button.addEventListener('click', () => {
     if (!globalThis.JazzClipStudioLocal) return;
     sent = false;
