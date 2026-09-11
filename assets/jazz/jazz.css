@@ -1651,3 +1651,8 @@ footer p[data-tone="offline"] { color: var(--red); }
 .section-rename-field input { width: 100%; min-width: 0; padding: 10px; background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: 5px; font: inherit; font-size: 16px; }
 
 .studio-render-controls>.studio-magic-length{grid-area:length;display:flex;align-items:center;gap:10px}.studio-magic-length select{background:#131314;color:var(--muted);border:1px solid var(--line);padding:5px 8px;font:10px var(--mono)}
+
+.clip-candidate-toolbar{flex-wrap:wrap}.clip-candidate-toolbar>span{margin-right:auto}
+.clip-download-button{padding:7px 9px;border:1px solid var(--line);background:transparent;color:var(--brass-light);font:10px var(--mono);cursor:pointer}.clip-download-button:disabled{opacity:.5;cursor:wait}
+.clip-downloads{margin:16px 0;padding:16px;border:1px solid var(--line);background:var(--bg-raised)}.clip-downloads[hidden]{display:none}.clip-downloads h2{margin:0 0 10px;font:18px var(--serif)}
+.clip-download-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 0;font:11px/1.5 var(--mono)}.clip-download-row strong{flex:1 1 220px;overflow-wrap:anywhere}.clip-download-row span{color:var(--muted)}.clip-download-row a{color:var(--green);padding:8px;border:1px solid var(--line)}

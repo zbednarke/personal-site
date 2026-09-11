@@ -82,6 +82,16 @@
     localStorage.setItem(projectStorageKey(), JSON.stringify(state.project));
   }
 
+  globalThis.JazzClipStudioDownloads = {
+    selection(id) {
+      const candidate = id ? state.candidates.find(c => c.id === id) : (state.currentMode === 'candidate' ? state.current : null);
+      const recording = recordingFor(candidate);
+      if (state.loadingDay || !candidate || !recording) throw new Error('Choose a clip after this day finishes loading.');
+      const title = `${state.date} ${titleFor(recording)} ${U.takeLabel(recording)} ${formatClock(candidate.startMs)}-${formatClock(candidate.endMs)}`;
+      return Model.clipDownloadPayload(title, candidate, recording.durationMs);
+    },
+  };
+
   globalThis.JazzClipStudioLocal = {
     restorePrevious() {
       const saved = localStorage.getItem(`${projectStorageKey()}:before-local-draft`);
@@ -364,7 +374,7 @@
       const label = candidate.reviewStatus === "rejected" ? "Rejected" : (manual ? "Manual clip" : `Suggestion ${index + 1}`);
       const source = manual ? "Placed manually" : `${Math.round(Number(candidate.score || 0) * 100)}% activity confidence`;
       const liked = Model.candidateIsLiked(candidate);
-      return `<article class="clip-candidate ${candidate.reviewStatus}${state.current?.id === candidate.id ? " active" : ""}"><div class="clip-candidate-toolbar"><span>${label}</span><button class="clip-candidate-like" type="button" data-like-candidate="${candidate.id}" aria-label="${liked ? "Unlike" : "Like"} ${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))}" aria-pressed="${liked}"${candidate.likePending ? " disabled" : ""}>♥ <b>${liked ? "Liked" : "Like"}</b></button></div><button class="clip-candidate-open" type="button" data-open-candidate="${candidate.id}"><strong>${escapeHTML(titleFor(recording))} · ${escapeHTML(U.takeLabel(recording))}</strong><time>${formatClock(candidate.startMs)} — ${formatClock(candidate.endMs)}</time><em>${source}</em></button><div class="clip-candidate-reasons">${reasons.map((reason) => `<span>${escapeHTML(reason)}</span>`).join("")}</div></article>`;
+      return `<article class="clip-candidate ${candidate.reviewStatus}${state.current?.id === candidate.id ? " active" : ""}"><div class="clip-candidate-toolbar"><span>${label}</span><button type="button" class="clip-download-button" data-download-candidate="${candidate.id}" aria-label="Download clip ${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))} ${formatClock(candidate.startMs)} to ${formatClock(candidate.endMs)}">↓ Download clip</button><button class="clip-candidate-like" type="button" data-like-candidate="${candidate.id}" aria-label="${liked ? "Unlike" : "Like"} ${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))}" aria-pressed="${liked}"${candidate.likePending ? " disabled" : ""}>♥ <b>${liked ? "Liked" : "Like"}</b></button></div><button class="clip-candidate-open" type="button" data-open-candidate="${candidate.id}"><strong>${escapeHTML(titleFor(recording))} · ${escapeHTML(U.takeLabel(recording))}</strong><time>${formatClock(candidate.startMs)} — ${formatClock(candidate.endMs)}</time><em>${source}</em></button><div class="clip-candidate-reasons">${reasons.map((reason) => `<span>${escapeHTML(reason)}</span>`).join("")}</div></article>`;
     }).join("");
     host.querySelectorAll("[data-open-candidate]").forEach((button) => button.addEventListener("click", () => selectCandidate(button.dataset.openCandidate)));
     host.querySelectorAll("[data-like-candidate]").forEach((button) => button.addEventListener("click", () => {
