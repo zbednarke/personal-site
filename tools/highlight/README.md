@@ -37,3 +37,9 @@ node --test assets/jazz/*.test.js
 ```
 
 Manual release checks: real Astra-medium invocation, source boundary validation, actual FFmpeg render/decode, audio-only slate, popup handoff, saved draft retrieval, cancellation and stale-candidate rejection.
+
+## Automatic site publication
+
+`start.ps1` also starts a separate publisher on this PC. It watches completed jobs, uploads verified video/poster files through the existing Google Cloud CLI login and IAP connection, then atomically updates `/srv/zachbednarke.com/films/index.json`. The private Jazz site serves this persistent index independently of static deployments. Each job has a unique film name and retains its original practice date; previous films are preserved. Clip Studio refreshes the shelf every 20 seconds while visible, without interrupting playback. Local development receives a matching index and local media links.
+
+The publisher requires an authenticated `gcloud` installation with access to the site VM. It does not upload to YouTube. Upload failures leave the completed local draft intact and retry after five minutes. Per-job `publication.json` records upload status; publisher logs live in `.local/highlights`. Run `python tools/highlight/publish.py` to attach publishing to an already-running worker without restarting it. A loopback lock prevents duplicate publishers. The PC and publisher must remain running until upload completes.

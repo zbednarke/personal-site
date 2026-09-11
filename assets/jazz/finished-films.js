@@ -16,6 +16,7 @@
     return node;
   };
   let films = [];
+  let renderedFilms = '';
   function renderDay() {
     const date = document.querySelector('#studio-date')?.value;
     shelf.querySelectorAll('video').forEach(player => player.pause());
@@ -38,15 +39,29 @@
       card.append(copy, player, footer); shelf.append(card);
     }
     shelf.hidden = !shelf.childElementCount;
+    renderedFilms = JSON.stringify(films.filter(f => f.date === date));
   }
   document.addEventListener('jazz:studio-date-change', renderDay);
-  fetch('../assets/jazz/finished-films.json', { cache: 'no-store' }).then(r => {
-    if (!r.ok) throw new Error('Films unavailable');
-    return r.json();
-  }).then(result => {
-    films = Array.isArray(result) ? result : [];
-    renderDay();
-  }).catch(() => {});
+  let refreshing = false;
+  async function refreshFilms() {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      let response = await fetch('./films/index.json', { cache: 'no-store' });
+      if (!response.ok) response = await fetch('../assets/jazz/finished-films.json', { cache: 'no-store' });
+      if (!response.ok) return;
+      const result = await response.json();
+      if (!Array.isArray(result)) return;
+      const date = document.querySelector('#studio-date')?.value;
+      const changed = renderedFilms !== JSON.stringify(result.filter(f => f.date === date));
+      films = result;
+      // Polling must not interrupt a film that is already playing.
+      if (changed && !Array.from(shelf.querySelectorAll('video')).some(p => !p.paused)) renderDay();
+    } catch {} finally { refreshing = false; }
+  }
+  refreshFilms();
+  setInterval(() => { if (!document.hidden && !document.querySelector('#studio').hidden) refreshFilms(); }, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshFilms(); });
   document.addEventListener('jazz:view-change', event => {
     if (event.detail?.view !== 'studio') shelf.querySelectorAll('video').forEach(player => player.pause());
   });
