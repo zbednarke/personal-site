@@ -18,6 +18,9 @@ def media_url(value):
 def snapshot(payload):
     if not isinstance(payload, dict) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(payload.get('date', ''))):
         raise ValueError('Choose a practice date')
+    target = payload.get('targetSeconds', 120)
+    if not number(target) or target != int(target) or not 60 <= target <= 600:
+        raise ValueError('Choose a target length from 1 to 10 minutes')
     candidates, recordings = payload.get('candidates'), payload.get('recordings')
     if not isinstance(candidates, list) or not 1 <= len(candidates) <= 500 or not isinstance(recordings, list) or len(recordings) > 100:
         raise ValueError('Provide 1–500 existing candidate moments')
@@ -51,7 +54,7 @@ def snapshot(payload):
         raise ValueError('No eligible candidates; add or scan moments in Clip Studio first')
     result.sort(key=lambda c: (not (c['manual'] or c['liked']), not c['liked'], c['recordingId'], c['startMs']))
     used = {c['recordingId'] for c in result}
-    return dict(date=payload['date'], candidates=result, recordings=[r for r in sources.values() if r['id'] in used])
+    return dict(date=payload['date'], targetSeconds=int(target), candidates=result, recordings=[r for r in sources.values() if r['id'] in used])
 
 
 def validate_plan(plan, manifest):
@@ -64,8 +67,8 @@ def validate_plan(plan, manifest):
     if any(not isinstance(r.get('reason'), str) or not r['reason'].strip() for r in reviewed):
         raise ValueError('Candidate reviews need explanations')
     clips = plan.get('clips', [])
-    if not 1 <= len(clips) <= 24:
-        raise ValueError('Edit must have 1–24 clips')
+    if not 1 <= len(clips) <= 60:
+        raise ValueError('Edit must have 1–60 clips')
     total, intervals = 0, {}
     for clip in clips:
         c = candidates.get(clip.get('candidateId'))
@@ -76,8 +79,9 @@ def validate_plan(plan, manifest):
             raise ValueError('Edit repeats overlapping source material')
         intervals.setdefault(c['recordingId'], []).append((start, end))
         total += end-start
-    if total > 135000:
-        raise ValueError('Highlight must be at most 2:15')
+    target = manifest.get('targetSeconds', 120)
+    if total > (target + 15) * 1000:
+        raise ValueError('Highlight exceeds the requested length plus 15 seconds')
     if priority and not any(c['candidateId'] in priority for c in clips):
         raise ValueError('Edit must include a manual or liked moment when available')
     if not isinstance(plan.get('title'), str) or not plan['title'].strip():

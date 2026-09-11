@@ -20,7 +20,7 @@ The worker binds only to `127.0.0.1:8765`. It does not expose a public API or re
 - No new highlight scan: only supplied suggested/manual candidates are eligible.
 - Review every manual or liked candidate; include at least one when available.
 - Whole candidates or trims inside their bounds; no repeated overlapping source time.
-- Target 105–135 seconds, allowing a shorter film when the material is insufficient; maximum 24 clips.
+- Choose a 1, 2, 3, 5, or 10 minute target in Clip Studio. The editor aims within 15 seconds of that target, allowing a shorter film when eligible material is insufficient; maximum 60 clips. Each generation gets a separate job and film, so several versions can coexist on the same practice day.
 - Astra receives notes, labels, activity bins and representative frames. It does not directly hear the music; energy is not a musical-quality score. User curation is the strongest taste signal.
 - Video uses its embedded audio to preserve the shared recorder clock, especially for paused takes. Audio-only clips use WAV audio with a simple title slate. MP4 audio is AAC; this is a shareable export, not a new lossless master.
 - No generated music, speech, pitch correction, speed changes or automatic publication.

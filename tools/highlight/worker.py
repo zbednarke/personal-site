@@ -56,7 +56,7 @@ class Worker:
             jid = str(uuid4())
             folder = self.root / jid
             folder.mkdir()
-            job = dict(id=jid, date=manifest['date'], phase='preparing', message='Preparing candidate moments', model=MODEL, effort='medium')
+            job = dict(id=jid, date=manifest['date'], targetSeconds=manifest.get('targetSeconds', 120), phase='preparing', message='Preparing candidate moments', model=MODEL, effort='medium')
             self.jobs[jid] = job
             self.active = jid
             self.cancelled = threading.Event()
@@ -163,6 +163,8 @@ class Worker:
         else:
             executable = [codex]
         prompt = (HERE / 'editor-prompt.md').read_text(encoding='utf-8')
+        target = manifest.get('targetSeconds', 120)
+        prompt = prompt.replace('{{TARGET_SECONDS}}', str(target)).replace('{{MIN_SECONDS}}', str(target-15)).replace('{{MAX_SECONDS}}', str(target+15))
         prompt += '\n\nThe full candidate manifest is attached below. Read this supplied data directly; filesystem access is not required.\n<candidate_manifest>\n'
         prompt += (evidence / 'candidates.json').read_text(encoding='utf-8') + '\n</candidate_manifest>\n'
         args = executable + ['exec', '--ignore-user-config', '--skip-git-repo-check', '--ephemeral',
