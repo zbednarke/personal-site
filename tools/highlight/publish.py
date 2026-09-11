@@ -37,7 +37,7 @@ def metadata(job):
         raise ValueError('Invalid duration')
     film_id = date + '-' + jid
     return dict(id=film_id, jobId=jid, date=date, title=job['project']['title'][:120],
-                description=job.get('summary', '')[:1000], duration=f'{seconds//60}:{seconds%60:02d}',
+                description=f"{len(job['project'].get('clips', []))} moments from the practice room, brought together in one film.", duration=f'{seconds//60}:{seconds%60:02d}',
                 video=f'/jazz/films/{film_id}.mp4', poster=f'/jazz/films/{film_id}.jpg')
 
 def checksum(path):
