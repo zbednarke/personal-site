@@ -285,6 +285,7 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 func (app *application) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", app.health)
+	app.trumpetRoutes(mux)
 	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
@@ -322,7 +323,7 @@ func (app *application) routes() http.Handler {
 func (app *application) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providedKey := r.Header.Get("X-Jazz-Gateway-Key")
-		if !app.cfg.AllowInsecureLocal && subtle.ConstantTimeCompare([]byte(providedKey), []byte(app.cfg.GatewayKey)) != 1 {
+		if !app.cfg.AllowInsecureLocal && (app.cfg.GatewayKey == "" || subtle.ConstantTimeCompare([]byte(providedKey), []byte(app.cfg.GatewayKey)) != 1) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -1174,7 +1175,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, destination any) error {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Trumpet Observatory · Private collection</title>
+    <link rel="stylesheet" href="/assets/trumpets/trumpets.css" />
+    <script defer src="/assets/trumpets/model.js"></script>
+    <script defer src="/assets/trumpets/app.js"></script>
+  </head>
+  <body>
+    <main>
+      <header class="masthead">
+        <a href="/jazz/" class="wordmark">ZB <span>/ THE JAZZ PROJECT</span></a
+        ><span class="private"><i></i> PRIVATE COLLECTION</span>
+      </header>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">INSTRUMENT RESEARCH / BB TRUMPETS</p>
+          <h1>Trumpet<br /><em>Observatory.</em></h1>
+          <p class="lede">
+            Interesting horns. Unusual engineering. A market memory.
+          </p>
+        </div>
+        <div class="intro-aside">
+          <span class="issue">EST. 2026 <b>01 / BRASS</b></span>
+          <p>
+            A living field notebook for the instruments worth paying attention
+            to.
+          </p>
+          <button id="refresh" class="quiet">↻ Refresh board</button>
+        </div>
+      </section>
+      <div id="message" role="status" aria-live="polite"></div>
+      <section class="telemetry" aria-label="Search health">
+        <div>
+          <span>LAST SUCCESSFUL SEARCH</span
+          ><strong id="last-search">Not run yet</strong>
+        </div>
+        <div>
+          <span>LAST SUCCESSFUL RECHECK</span
+          ><strong id="last-recheck">Not run yet</strong>
+        </div>
+        <div>
+          <span>ACTIVE / NEED CHECK</span><strong id="active-count">—</strong>
+        </div>
+        <div>
+          <span>LATEST SOURCE COVERAGE</span
+          ><strong id="source-count">—</strong>
+        </div>
+      </section>
+      <nav class="view-nav" aria-label="Board views">
+        <button id="today" class="selected" aria-pressed="true">
+          Today <span id="today-count">0</span></button
+        ><button id="all" aria-pressed="false">
+          All tracked <span id="all-count">0</span></button
+        ><span class="day-note">DAILY SIGNAL / UTC</span>
+      </nav>
+      <details class="coverage">
+        <summary>
+          Source coverage <span id="run-state">No search submitted</span>
+        </summary>
+        <div id="coverage-list"></div>
+        <p id="run-error"></p>
+      </details>
+      <form id="filters" class="filters" aria-label="Filter listings">
+        <label class="search-label"
+          ><span>SEARCH / FINISH / FEATURES</span
+          ><input
+            name="query"
+            type="search"
+            placeholder="Raw brass, OIRAM, engraving…"
+        /></label>
+        <button
+          id="filter-toggle"
+          class="filter-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="filter-options"
+        >
+          Filters &amp; sort
+        </button>
+        <div id="filter-options" class="filter-options">
+          <label
+            ><span>MAKER</span
+            ><select name="maker">
+              <option value="">All makers</option>
+            </select></label
+          >
+          <label
+            ><span>SOURCE</span
+            ><select name="source">
+              <option value="">All sources</option>
+            </select></label
+          >
+          <label
+            ><span>STATUS</span
+            ><select name="status">
+              <option value="">All statuses</option>
+            </select></label
+          >
+          <label
+            ><span>INTEREST</span
+            ><select name="interest">
+              <option value="">All interest</option>
+            </select></label
+          >
+          <label
+            ><span>SORT</span
+            ><select name="sort">
+              <option value="newest">Newest</option>
+              <option value="rating">My rating</option>
+              <option value="score">Search score</option>
+              <option value="drop">Biggest drop (%)</option>
+              <option value="changed">Recently changed</option>
+              <option value="unchecked">Oldest unchecked</option>
+              <option value="price">Price (by currency)</option>
+            </select></label
+          >
+          <div class="toggles">
+            <label><input name="active" type="checkbox" /> Active only</label
+            ><label><input name="favorite" type="checkbox" /> Favorites</label>
+          </div>
+        </div>
+      </form>
+      <div class="results-line">
+        <span id="result-count">Loading private board…</span
+        ><span>OFFERS PRESERVED / HISTORY ACCUMULATES</span>
+      </div>
+      <section id="cards" class="cards" aria-label="Trumpet listings"></section>
+      <div id="empty" class="empty" hidden>
+        <span class="empty-mark">◎</span>
+        <h2>No signal yet.</h2>
+        <p id="empty-copy">
+          The next completed search will appear here. Browse All tracked for
+          your historical references.
+        </p>
+        <button id="browse-all" class="primary">Browse all tracked</button>
+      </div>
+      <footer>
+        <span>TRUMPET OBSERVATORY <i>/</i> A PRIVATE FIELD NOTEBOOK</span
+        ><span
+          >Photos and availability belong to their respective sources.</span
+        >
+      </footer>
+    </main>
+    <dialog id="detail">
+      <form id="feedback-form">
+        <div class="dialog-head">
+          <p class="eyebrow">YOUR FIELD NOTES</p>
+          <button type="button" id="close-detail" aria-label="Close listing">
+            ✕
+          </button>
+        </div>
+        <h2 id="detail-title"></h2>
+        <div id="detail-facts" class="facts"></div>
+        <div class="feedback-grid">
+          <label
+            >My rating<select name="rating">
+              <option value="">Unrated</option>
+              <option value="1">1 — Not for me</option>
+              <option value="2">2 — Low interest</option>
+              <option value="3">3 — Worth a look</option>
+              <option value="4">4 — Strong interest</option>
+              <option value="5">5 — Exceptional</option>
+            </select></label
+          ><label>Interest state<select name="interestState"></select></label
+          ><label class="favorite-input"
+            ><input type="checkbox" name="favorite" /> Favorite</label
+          >
+        </div>
+        <label
+          >Private notes<textarea
+            name="notes"
+            rows="5"
+            placeholder="What stands out? Questions for the seller? Why pass?"
+          ></textarea>
+        </label>
+        <div class="feedback-grid">
+          <label
+            >Favor these attributes<input
+              name="favoredAttributes"
+              placeholder="Raw brass, unusual bell…" /></label
+          ><label
+            >Dislike these attributes<input
+              name="dislikedAttributes"
+              placeholder="Separate attributes with commas"
+          /></label>
+        </div>
+        <p class="field-help">
+          Ratings, notes and attributes inform future searches. Acquired horns
+          stay in history and are excluded from alerts.
+        </p>
+        <p id="save-message" role="status" aria-live="polite"></p>
+        <button id="save-feedback" class="primary" type="submit">
+          Save feedback
+        </button>
+      </form>
+      <section class="history">
+        <h3>Market history</h3>
+        <div id="history"></div>
+      </section>
+    </dialog>
+  </body>
+</html>

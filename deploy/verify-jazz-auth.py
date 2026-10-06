@@ -14,7 +14,7 @@ def request(path,cookie=None,method='GET',origin=None):
  try:
   with urllib.request.urlopen(req,timeout=30) as response: return response.status,response.headers,response.read()
  except urllib.error.HTTPError as error:return error.code,error.headers,b''
-for path in ['/jazz/','/assets/jazz/clip-studio.js','/jazz/films/index.json','/jazz/api/v1/state']:
+for path in ['/jazz/','/assets/jazz/clip-studio.js','/jazz/films/index.json','/jazz/api/v1/state','/trumpets/','/assets/trumpets/app.js','/trumpets/api/v1/trumpets/listings','/trumpets/api/v1/trumpets/profile']:
  status,_,_=request(path);assert status==401,(path,status)
  status,headers,body=request(path,valid);assert status==200,(path,status)
  cookie=headers.get('Set-Cookie','')
@@ -23,6 +23,7 @@ for path in ['/jazz/','/assets/jazz/clip-studio.js','/jazz/films/index.json','/j
 assert request('/jazz/',valid+'x')[0]==401
 assert request('/jazz/',token(int(time.time())-1))[0]==401
 assert request('/jazz/api/v1/sync',valid,'POST','https://attacker.example')[0]==403
+assert request('/trumpets/api/v1/trumpets/seed',valid,'POST','https://attacker.example')[0]==403
 print('PASS: tampered/expired cookies and cross-site write denied')
 assert request('/')[0]==200
 print('PASS: public home unchanged')
