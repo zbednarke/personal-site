@@ -319,7 +319,7 @@ search remains enabled. Citation titles are accepted only for actual web-tool UR
 Parsers accept individual Product JSON-LD offers, dealer product metadata with
 explicit price/currency/stock, and Shopify product JSON with explicit variant stock
 and cart currency. Ambiguous variant prices and related products are rejected.
-JPY prices retain zero-decimal units. Unverified leads have a lower triage threshold
+Shopify’s scaled prices are divided by 100 even for JPY; yen display uses whole units. Unverified leads have a lower triage threshold
 (45 versus 55 for verified active offers).
 
 Discovery is bounded to 240 page inspections and 35 minutes after starting the run;

@@ -49,11 +49,11 @@ class RunnerTests(unittest.TestCase):
         c=runner.page_offers(markup+'<meta property="product:availability" content="in stock">','https://shop.test/product/taylor','Dealer',PROFILE)[0]
         self.assertEqual(c['price'],2100);self.assertEqual(c['status'],'active')
         self.assertEqual(runner.page_offers(markup+'<meta property="price" content="12">','https://shop.test/product/taylor','Dealer',PROFILE),[])
-    def test_shopify_variants_and_zero_decimal_currency(self):
-        product={'title':'Taylor Chicago II trumpet','id':7,'variants':[{'price':200000,'available':True}]}
+    def test_shopify_scaled_prices_including_yen_and_ambiguous_variants(self):
+        product={'title':'Taylor Chicago II trumpet','id':7,'variants':[{'price':100000,'available':True}]}
         def get(url): return json.dumps({'currency':'JPY'} if url.endswith('/cart.js') else product)
         c=runner.shopify_offer('https://shop.test/products/taylor','Dealer',PROFILE,get)
-        self.assertEqual(c['price'],200000);self.assertEqual(c['currency'],'JPY')
+        self.assertEqual(c['price'],1000);self.assertEqual(c['currency'],'JPY')
         product['variants'].append({'price':250000,'available':True})
         self.assertIsNone(runner.shopify_offer('https://shop.test/products/taylor','Dealer',PROFILE,get))
         product['variants']=[{'price':100,'available':None}]
