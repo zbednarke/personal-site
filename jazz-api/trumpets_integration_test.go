@@ -340,6 +340,14 @@ func TestTrumpetPersistence(t *testing.T) {
 		if queries != 2 || pages != 1 {
 			t.Fatal("query reliability not retained")
 		}
+
+		input.ExternalID = "registry-skipped-query"
+		input.Sources[0].Status = "skipped"
+		ingest(input, 200)
+		isolated.QueryRow(ctx, `SELECT queries FROM trumpet_sources WHERE user_id=$1 AND domain='specialist.test'`, user).Scan(&queries)
+		if queries != 2 {
+			t.Fatal("skipped query falsely advanced rotation")
+		}
 		owner := call("GET", "/v1/trumpets/profile", nil, "owner", 200)
 		other := call("GET", "/v1/trumpets/profile", nil, "other", 200)
 		if !bytes.Contains(owner, []byte("specialist.test")) || bytes.Contains(other, []byte("specialist.test")) {

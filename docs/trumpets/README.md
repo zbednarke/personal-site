@@ -343,7 +343,9 @@ source families/domains (eBay country aliases do not consume two slots). It keep
 at most eight useful-source slots; never/oldest searched sources fill the rest.
 Discovery admits at most six findings and twelve fetched pages per domain per run
 so easy marketplaces cannot flood the board. Active rechecks are exempt from these
-caps and run first. The source universe panel separates **searched domains**, **live
+caps and run first on every invocation, including same-day manual reruns. Sources
+from legacy tracked offers are also carried into rotation. Skipped queries do not
+advance source rotation or success counters. The source universe panel separates **searched domains**, **live
 page domains**, and **known domains**; a query success never implies current stock.
 Counts are observations, not a claim of exhaustive dealer inventory.
 

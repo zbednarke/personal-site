@@ -88,12 +88,16 @@ func accumulateTrumpetSources(ctx context.Context, tx pgx.Tx, user uuid.UUID, so
 		if s.Specialty == "" {
 			s.Specialty = "Discovered source"
 		}
+		query := s.Query
+		if s.Status == "skipped" {
+			query = ""
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO trumpet_sources(user_id,domain,name,geography,specialty,last_searched,last_live_check,last_useful,queries,successful_queries,pages_opened,verified_offers,stale_results,last_status,last_note)
   VALUES($1,$2,$3,$4,$5,CASE WHEN $6<>'' THEN now() END,CASE WHEN $7>0 THEN now() END,CASE WHEN $8>0 THEN now() END,CASE WHEN $6<>'' THEN 1 ELSE 0 END,CASE WHEN $6<>'' AND $9='checked' THEN 1 ELSE 0 END,$7,$8,$10,$9,$11)
   ON CONFLICT(user_id,domain) DO UPDATE SET
   last_searched=COALESCE(EXCLUDED.last_searched,trumpet_sources.last_searched),last_live_check=COALESCE(EXCLUDED.last_live_check,trumpet_sources.last_live_check),last_useful=COALESCE(EXCLUDED.last_useful,trumpet_sources.last_useful),
   queries=trumpet_sources.queries+EXCLUDED.queries,successful_queries=trumpet_sources.successful_queries+EXCLUDED.successful_queries,pages_opened=trumpet_sources.pages_opened+EXCLUDED.pages_opened,verified_offers=trumpet_sources.verified_offers+EXCLUDED.verified_offers,stale_results=trumpet_sources.stale_results+EXCLUDED.stale_results,last_status=EXCLUDED.last_status,last_note=EXCLUDED.last_note,
-  geography=CASE WHEN EXCLUDED.geography='International / unknown' THEN trumpet_sources.geography ELSE EXCLUDED.geography END,specialty=CASE WHEN EXCLUDED.specialty='Discovered source' THEN trumpet_sources.specialty ELSE EXCLUDED.specialty END`, user, s.Domain, s.Source, s.Geography, s.Specialty, s.Query, s.PagesOpened, s.VerifiedOffers, s.Status, s.StaleResults, s.Note)
+  geography=CASE WHEN EXCLUDED.geography='International / unknown' THEN trumpet_sources.geography ELSE EXCLUDED.geography END,specialty=CASE WHEN EXCLUDED.specialty='Discovered source' THEN trumpet_sources.specialty ELSE EXCLUDED.specialty END`, user, s.Domain, s.Source, s.Geography, s.Specialty, query, s.PagesOpened, s.VerifiedOffers, s.Status, s.StaleResults, s.Note)
 		if err != nil {
 			return err
 		}

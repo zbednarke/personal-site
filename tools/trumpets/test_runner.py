@@ -195,3 +195,23 @@ class MakerIdentityTests(unittest.TestCase):
         p=copy.deepcopy(PRODUCT);p['name']='Taylor Chicago 46 II / Harrelson-modified Bb trumpet';p['description']='Harrelson modifications and artist provenance'
         c=runner.normalize_product(p,'https://shop.test/horn','Dealer',PROFILE)
         self.assertEqual(c['maker'],'Taylor')
+
+class DailyPersistenceTests(unittest.TestCase):
+    def test_manual_run_rechecks_active_and_reports_actual_domain_evidence(self):
+        candidate=runner.normalize_product(PRODUCT,'https://shop.test/products/horn','Shop',PROFILE)
+        candidate.update(id='known',hornId='physical',verificationState='verified',acquired=False,lastChecked='2026-10-07',feedback={'interestState':'watch'})
+        class Client:
+            report=None
+            def call(self,path,body=None):
+                if path=='/profile':return copy.deepcopy(PROFILE)
+                if path=='/due':return {'listings':[]}
+                if path=='/listings':return {'listings':[candidate]}
+                if path=='/runs':self.report=body;return {'status':body['status'],'runId':'saved'}
+        client=Client()
+        with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only'}),patch.object(runner,'fetch',return_value=page(PRODUCT)),patch.object(runner,'search',return_value=[]),patch('builtins.print'):
+            self.assertEqual(runner.daily(client),0)
+        self.assertEqual(client.report['listings'][0]['id'],'known')
+        evidence=[s for s in client.report['sources'] if s.get('domain')=='shop.test']
+        self.assertEqual(sum(s['pagesOpened'] for s in evidence),1)
+        self.assertEqual(sum(s['verifiedOffers'] for s in evidence),1)
+        self.assertTrue(any(s['source'].startswith('New source discovery') for s in client.report['sources']))
