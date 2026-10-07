@@ -308,7 +308,7 @@ def search(query,key):
 
 def search_openai(query, key):
     """Use actual web-tool sources, never model-generated URLs or offer facts."""
-    domains=re.findall(r'site:([a-zA-Z0-9.-]+)',query)
+    domains=re.findall(r'(?<!-)\bsite:([a-zA-Z0-9.-]+)',query)
     tool={'type':'web_search','search_context_size':'low'}
     request={'model':os.environ.get('TRUMPETS_SEARCH_MODEL','gpt-4.1-mini'),
              'tools':[tool],'tool_choice':'required',
@@ -329,6 +329,13 @@ def search_openai(query, key):
             if attempt==2: raise
         time.sleep(2*(attempt+1))
     if payload.get('status')!='completed': raise ValueError('Incomplete web research response')
+    titles={}
+    for message in payload.get('output',[]):
+        if message.get('type')=='message':
+            for content in message.get('content',[]):
+                for annotation in content.get('annotations',[]):
+                    if annotation.get('type')=='url_citation' and annotation.get('title'):
+                        titles[annotation.get('url','')]=annotation['title']
     results=[];seen=set();searched=False
     for item in payload.get('output',[]):
         if item.get('type')!='web_search_call' or item.get('status')!='completed': continue
@@ -340,7 +347,8 @@ def search_openai(query, key):
             host=(urllib.parse.urlsplit(url).hostname or '').lower()
             if domains and not any(host==d or host.endswith('.'+d) for d in domains): continue
             if url.startswith('https://') and url not in seen:
-                seen.add(url);results.append({'url':url, **({'title':source['title']} if source.get('title') else {})})
+                seen.add(url);title=source.get('title') or titles.get(url)
+                results.append({'url':url, **({'title':title} if title else {})})
     if not searched: raise ValueError('No completed web search')
     return results[:10]
 
@@ -386,7 +394,7 @@ def daily(client):
         if not key and not openai_key:
             s['status']='skipped';s['note']='No web search provider is configured.';continue
         query=(' OR '.join('site:'+d for d in domains)+' used boutique Bb trumpet') if domains else ('used custom Bb trumpet Taylor Harrelson Van Laar boutique dealer -site:reverb.com' if name=='New source discovery' else 'used boutique Bb trumpet private sale custom')
-        if name.startswith('Maker search '): query=MAKER_QUERIES[int(name.rsplit(' ',1)[-1])-1]
+        if name.startswith('Maker search '): query=MAKER_QUERIES[int(name.rsplit(' ',1)[-1])-1]+' -site:reverb.com'
         try:
             results=search(query,key) if key else search_openai(query,openai_key)
             unsupported=0

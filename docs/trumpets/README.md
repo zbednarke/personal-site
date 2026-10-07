@@ -313,6 +313,8 @@ Acquired horns remain excluded.
 
 Runs search the 27 source groups, new sources and private offers, plus nine explicit
 maker/model queries covering boutique makers and exceptional production models.
+Those extra queries exclude Reverb to encourage other sources; its dedicated source
+search remains enabled. Citation titles are accepted only for actual web-tool URLs.
 Parsers accept individual Product JSON-LD offers, dealer product metadata with
 explicit price/currency/stock, and Shopify product JSON with explicit variant stock
 and cart currency. Ambiguous variant prices and related products are rejected.
