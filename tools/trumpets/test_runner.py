@@ -63,5 +63,17 @@ class RunnerTests(unittest.TestCase):
         for payload in [{'status':'incomplete','output':[]}, {'status':'completed','output':[{'type':'message','content':[]}]}]:
             with patch.object(runner,'fetch',return_value=json.dumps(payload)):
                 with self.assertRaises(ValueError):runner.search_openai('Bb trumpet','private-key')
+    def test_openai_recovers_temporary_provider_errors(self):
+        payload={'status':'completed','output':[{'type':'web_search_call','status':'completed','action':{'type':'search','sources':[{'url':'https://shop.test/horn'}]}}]}
+        errors=[urllib.error.HTTPError('https://api.openai.com/v1/responses',503,'unavailable',None,None),TimeoutError('timeout')]
+        with patch.object(runner,'fetch',side_effect=errors+[json.dumps(payload)]) as fetch, patch.object(runner.time,'sleep'):
+            self.assertEqual(runner.search_openai('Bb trumpet','private-key'),[{'url':'https://shop.test/horn'}])
+            self.assertEqual(fetch.call_count,3)
+    def test_openai_auth_failures_and_exhausted_retries_fail(self):
+        for code,want in [(401,1),(500,3)]:
+            error=urllib.error.HTTPError('https://api.openai.com/v1/responses',code,'failed',None,None)
+            with patch.object(runner,'fetch',side_effect=error) as fetch, patch.object(runner.time,'sleep'):
+                with self.assertRaises(urllib.error.HTTPError):runner.search_openai('Bb trumpet','private-key')
+                self.assertEqual(fetch.call_count,want)
 
 if __name__=='__main__': unittest.main()

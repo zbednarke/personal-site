@@ -208,10 +208,19 @@ def search_openai(query, key):
              'include':['web_search_call.action.sources'],
              'max_output_tokens':1000,
              'input':'Find specific used professional Bb trumpet listing pages for this query. '
-                     'Search the web; do not invent URLs, prices or availability. '+query}
-    payload=json.loads(fetch('https://api.openai.com/v1/responses',
-        {'Authorization':'Bearer '+key,'Content-Type':'application/json'},
-        json.dumps(request).encode(),timeout=120))
+                     'Search the web; do not invent URLs, prices or availability. '
+                     'Return a concise list of URLs without descriptions. '+query}
+    for attempt in range(3):
+        try:
+            payload=json.loads(fetch('https://api.openai.com/v1/responses',
+                {'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+                json.dumps(request).encode(),timeout=120))
+            break
+        except urllib.error.HTTPError as error:
+            if error.code not in (408,429,500,502,503,504) or attempt==2: raise
+        except (urllib.error.URLError,TimeoutError):
+            if attempt==2: raise
+        time.sleep(2*(attempt+1))
     if payload.get('status')!='completed': raise ValueError('Incomplete web research response')
     results=[];seen=set();searched=False
     for item in payload.get('output',[]):
@@ -281,6 +290,7 @@ def daily(client):
             time.sleep(1.1)  # modest per-run provider pacing
         except Exception:
             s['status']='failed';s['note']='Search provider request failed.';issues.append('Search failed at '+name)
+        print(json.dumps({'source':name,'status':s['status'],'candidates':s['candidates']}),flush=True)
     if not key and not openai_key: issues.append('Broad search not run: web search provider missing.')
     if issues: report['status']='partial';report['error']=' '.join(sorted(set(issues)))[:10000]
     report['sources']=list(checks.values())
