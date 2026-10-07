@@ -109,7 +109,8 @@ def normalize_product(product,url,source,profile):
     description=html.unescape(re.sub('<[^>]+>',' ',str(product.get('description',''))))[:50000]
     text=(title+' '+description).lower()
     if not re.search(r'\btrumpet\b|\btrompette\b|トランペット|\btrompet\b',text): return None
-    if re.search(r'\b(cornet|flugelhorn|trombone|mouthpiece|case only|piccolo)\b',title.lower()): return None
+    subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()
+    if re.search(r'\b(cornets?|flugelhorns?|trombones?|mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only|piccolo)\b',subject): return None
     if re.search(r'\b(c trumpet|eb trumpet|d trumpet|e-flat|c-trumpet)\b',title.lower()): return None
     maker=next((m for m in MAKERS if re.search(r'\b'+re.escape(m.lower())+r'\b',text)),None)
     brand=product.get('brand',{})
@@ -236,6 +237,7 @@ def candidate_hint(result, source, profile, page=''):
     url=result.get('url',''); parts=urllib.parse.urlsplit(url)
     if parts.scheme!='https' or not parts.hostname or parts.username or parts.password: return None
     path=urllib.parse.unquote(parts.path).lower()
+    if path.rstrip('/').rsplit('/',1)[-1] in ('for-sale','for_sale','forsale','inventory','used','shop','trumpets','trumpet'): return None
     # Category pages, research articles and generic shop roots are not offers.
     if not re.search(r'/products?/[^/]+|/itm/|/item/|/listings?/|/classifieds?/|/m[0-9]+|/[^/]*(?:trumpet|taylor|harrelson|oiram|dorotea|feroce|calicchio|lawler|monette)[^/]+',path): return None
     if re.search(r'/blogs?/|/news/|/collections/[^/]+/?$|/categor',path): return None
@@ -246,7 +248,8 @@ def candidate_hint(result, source, profile, page=''):
     description=result.get('description','')
     text=(title+' '+description+' '+path.replace('-',' ')).lower()
     maker=next((m for m in MAKERS if re.search(r'\b'+re.escape(m.lower())+r'\b',text)),None)
-    if not maker or re.search(r'\b(mouthpiece|flugelhorn|cornet|trombone|piccolo|case only|c trumpet|eb trumpet|d trumpet)\b',text): return None
+    subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()+' '+path.replace('-',' ')
+    if not maker or re.search(r'\b(mouthpieces?|flugelhorns?|cornets?|trombones?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|piccolo|case only|c trumpet|eb trumpet|d trumpet)\b',subject): return None
     # Reuse ranking without treating the temporary scoring offer as evidence.
     scoring=normalize_product({'name':title+' trumpet','description':text,'offers':{'priceCurrency':'USD','availability':'InStock'}},url,source,profile)
     if not scoring or scoring['searchScore']<45: return None

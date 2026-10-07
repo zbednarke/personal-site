@@ -198,6 +198,31 @@ const base = "http://127.0.0.1:4173";
       );
     }
     await page.setViewportSize({ width: 1440, height: 1450 });
+    await page.locator(".notes").first().click();
+    await page.locator("[name=interestState]").selectOption("pass");
+    await page.getByRole("button", { name: "Save feedback" }).click();
+    await page.waitForFunction(
+      () => document.querySelectorAll(".card").length === 0,
+    );
+    await page.getByRole("button", { name: "Close listing" }).click();
+    await page.reload();
+    await page.waitForFunction(
+      () => document.querySelector("#all-count").textContent === "24",
+    );
+    await page.getByRole("button", { name: /Candidates/ }).click();
+    assert.equal(await page.locator(".card").count(), 0);
+    await page.locator("#filters [name=interest]").selectOption("pass");
+    assert.equal(await page.locator(".card").count(), 1);
+    await page.locator(".notes").first().click();
+    await page.locator("[name=interestState]").selectOption("watch");
+    await page.getByRole("button", { name: "Save feedback" }).click();
+    await page.waitForFunction(
+      () => document.querySelectorAll(".card").length === 0,
+    );
+    await page.getByRole("button", { name: "Close listing" }).click();
+    await page.locator("#filters [name=interest]").selectOption("");
+    assert.equal(await page.locator(".card").count(), 1);
+    await page.setViewportSize({ width: 1440, height: 1450 });
     await page.getByRole("button", { name: /All tracked/ }).click();
     await page.locator(".notes").first().click();
     await page

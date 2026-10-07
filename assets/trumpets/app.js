@@ -192,7 +192,11 @@
       el(
         "span",
         "status " + l.status,
-        l.verificationState === "candidate" ? "Unverified" : l.status,
+        l.acquired
+          ? "acquired"
+          : l.verificationState === "candidate"
+            ? "Unverified"
+            : l.status,
       ),
     );
     body.append(kicker);
@@ -307,7 +311,7 @@
         .map((e) => e.listingId),
     ).size;
     $("#all-count").textContent = board.listings.filter(
-      (l) => l.verificationState !== "candidate",
+      (l) => l.verificationState !== "candidate" || l.acquired,
     ).length;
     $("#candidate-count").textContent = board.listings.filter(
       (l) =>
@@ -359,7 +363,7 @@
     $("#empty").hidden = rows.length > 0;
     $("#empty-copy").textContent =
       view === "candidates"
-        ? "No pending candidates. Unverified finds appear here; mark interest as pass to dismiss a hint."
+        ? "No matching candidates. Mark interest as pass to dismiss a lead; filter interest by pass to review dismissed leads."
         : view === "today"
           ? "No meaningful changes reported today. Browse All tracked for your historical references."
           : "No listings match these filters. Clear a filter to broaden the board.";

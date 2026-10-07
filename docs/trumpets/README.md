@@ -306,10 +306,11 @@ Candidates accumulates worthwhile search leads when a dealer blocks access or la
 an unambiguous offer. These are explicitly unverified: no invented price, stock,
 posted date, serial number or photo, and no market observations or Today alerts.
 Rating, notes and favorites work privately. Set interest to `pass` to dismiss a lead
-and exclude it from automated rediscovery/rechecks. Leads are retried daily; an
+and exclude it from automated rediscovery/rechecks. Select the `pass` interest
+filter to revisit dismissed leads. Acquired leads remain accessible in All tracked. Leads are retried daily; an
 unambiguous verified offer promotes the same row, preserving first seen, feedback
 and URL identity. Search hints cannot downgrade verified price/status history.
-Acquired horns remain excluded.
+Acquired horns remain excluded from new-listing alerts.
 
 Runs search the 27 source groups, new sources and private offers, plus nine explicit
 maker/model queries covering boutique makers and exceptional production models.

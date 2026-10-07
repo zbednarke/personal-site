@@ -142,8 +142,21 @@ test("unverified leads stay outside Today and tracked market records", () => {
   );
   assert.deepEqual(
     M.select(b, { view: "all" }).map((l) => l.id),
-    ["verified"],
+    ["verified", "owned"],
   );
   assert.equal(M.select(b, { view: "today" }).length, 0);
   assert.ok(M.badges(b.listings[1], []).includes("UNVERIFIED"));
+});
+
+test("dismissed candidates remain reviewable through the pass filter", () => {
+  const b = M.shape({
+    listings: [
+      listing("dismissed", {
+        verificationState: "candidate",
+        feedback: { interestState: "pass" },
+      }),
+    ],
+  });
+  assert.equal(M.select(b, { view: "candidates" }).length, 0);
+  assert.equal(M.select(b, { view: "candidates", interest: "pass" }).length, 1);
 });
