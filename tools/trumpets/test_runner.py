@@ -40,6 +40,7 @@ class RunnerTests(unittest.TestCase):
         c=runner.candidate_hint({'url':'https://shop.test/products/harrelson-muse-raw-brass-trumpet'},'Dealer',{'priorityMakers':['Harrelson']})
         self.assertEqual(c['verificationState'],'candidate');self.assertEqual(c['status'],'stale')
         self.assertIsNone(c['price']);self.assertEqual(c['serialNumber'],'');self.assertEqual(c['images'],[])
+        self.assertIsNotNone(runner.candidate_hint({'url':'https://gregblackmouthpieces.com/products/taylor-chicago-46-ii-standard-bb-trumpet','title':'Taylor Chicago 46 II Standard Bb Trumpet – Greg Black Mouthpieces'},'Dealer',PROFILE))
         for url in ['https://shop.test/collections/taylor-trumpet','https://shop.test/blog/taylor-trumpet','https://shop.test/products/taylor-mouthpiece','https://shop.test/products/yamaha-ytr2330-trumpet','https://shop.test/products/monette-prana-mouthpieces-used','https://shop.test/del-quadro-custom-trumpets/for-sale','https://shop.test/products/harrelson-trumpet-stand']:
             self.assertIsNone(runner.candidate_hint({'url':url},'Dealer',PROFILE))
     def test_dealer_metadata_requires_explicit_stock_currency_price(self):
