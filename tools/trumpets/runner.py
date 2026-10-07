@@ -225,7 +225,10 @@ def shopify_offer(url, source, profile, get_page=fetch):
     if len(prices)!=1 or not isinstance(next(iter(prices)),(float,int)): return None
     currency=json.loads(get_page(urllib.parse.urlunsplit((parts.scheme,parts.netloc,'/cart.js','','')))).get('currency','')
     if currency not in ('USD','EUR','GBP','CAD','AUD','CHF','JPY'): return None
-    price=next(iter(prices))/(1 if currency=='JPY' else 100)
+    # Shopify appends hundredths even for currencies without subunits:
+    # https://shopify.dev/docs/api/liquid/objects/product#product-price
+    # Its documented 1000 JPY example is represented as 100000.
+    price=next(iter(prices))/100
     p={'name':product.get('title',''),'description':product.get('description',''),'brand':product.get('vendor',''),
        'productID':str(product.get('id','')),'image':product.get('images',[]),
        'offers':{'price':price,'priceCurrency':currency,'availability':'InStock' if available else 'SoldOut'}}
