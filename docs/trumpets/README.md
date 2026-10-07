@@ -82,13 +82,12 @@ with a shared physical horn identity. Use `GET /machine/listings` for that compa
 1. Build/deploy `jazz-api` with the existing Cloud Run process. Startup applies
    migration 021 to the existing PostgreSQL database; no new database or GCS bucket
    is needed. Back up the database through the usual deployment process.
-2. Publish `trumpets/` and `assets/trumpets/` in the existing static release.
-3. Expand the site's existing **private path matcher** to include `/trumpets`,
+2. Expand the site's existing **private path matcher** to include `/trumpets`,
    `/trumpets/*` and `/assets/trumpets/*`, **before** serving those files. Add the
    `/trumpets/api/*` reverse proxy from `deploy/Caddyfile.jazz.example`.
    Reuse the existing authenticated identity and gateway secret; overwrite client
    identity headers at the gateway. Validate Caddy before reload.
-4. Preserve whichever existing login is deployed. The example uses Basic Auth;
+3. Preserve whichever existing login is deployed. The example uses Basic Auth;
    the repository also supports `jazz-auth`'s seven-day cookie. For the cookie
    deployment retain its existing `route @jazz_private` authentication gate and
    forward `X-Jazz-User {http.request.header.X-Jazz-User}` as on Jazz, rather than
@@ -96,6 +95,9 @@ with a shared physical horn identity. Use `GET /machine/listings` for that compa
    in both authentication and privacy headers. `deploy/verify-jazz-auth.py` now
    checks Trumpets too. Do not rerun the one-time login installer on an already
    installed cookie deployment merely to add this route.
+4. After validating and reloading the private routes, publish `trumpets/` and
+   `assets/trumpets/` in the existing static release. Switch the release symlink
+   atomically and keep the previous release and Caddy configuration for rollback.
 5. Generate a **random token of at least 32 bytes**, store the plaintext only in
    Secret Manager / the runner's secret store, and compute its SHA-256 hex digest.
    Configure **Cloud Run** with `TRUMPETS_MACHINE_TOKEN_SHA256` (the digest) and
@@ -105,7 +107,8 @@ with a shared physical horn identity. Use `GET /machine/listings` for that compa
    the token in the client and the digest in Cloud Run. Never commit either a token
    file, private profile snapshot, search report with feedback, or a cloud credential.
 6. In GitHub Actions configure secrets `TRUMPETS_API_URL` (Cloud Run service base
-   URL), `TRUMPETS_MACHINE_TOKEN` (plaintext **secret**) and `BRAVE_SEARCH_API_KEY`.
+   URL), `TRUMPETS_MACHINE_TOKEN` (plaintext **secret**) and either
+   `BRAVE_SEARCH_API_KEY` or `OPENAI_API_KEY`.
    Set repository variable `TRUMPETS_DAILY_ENABLED=true` only after verification.
    The workflow runs at **13:17 UTC daily** and supports manual dispatch. Its log
    contains run ID/status/counts only, never the private profile/notes. No feedback
@@ -128,6 +131,32 @@ plus deliberate new-source discovery. Sources include specialist dealers, Japane
 and European shops, auctions, regional shops, maker/demo inventory and credible
 private offers; Reverb is only one group. Every active offer due that UTC day is
 fetched separately, even if it did not occur in fresh search results.
+
+If no Brave key is configured, `OPENAI_API_KEY` enables OpenAI web search through
+the Responses API (default model `gpt-4.1-mini`, configurable with
+`TRUMPETS_SEARCH_MODEL`). Only URLs from completed web-tool search sources are
+used; generated prose is never taken as listing evidence. Dealer searches filter
+returned URLs to the requested domains. Private notes are not sent to the search
+provider. Both providers feed the same source-page verification, normalization,
+dedupe and feedback scoring pipeline.
+
+### VM-hosted daily job
+
+When GitHub Actions secret administration is unavailable, the same runner can run
+on the existing Caddy VM. Install it as `/opt/trumpets/runner.py`; put the service
+and timer from `deploy/trumpets-research.*` in `/etc/systemd/system/`. Create
+`/etc/trumpets/runner.env` owned by root with mode **0600**, containing
+`TRUMPETS_API_URL`, `TRUMPETS_MACHINE_TOKEN`, and the selected provider's API key.
+Obtain credentials through Secret Manager; never put this file in a static release.
+
+The service runs as a dynamically allocated unprivileged user, with a read-only
+filesystem and private temporary directory. The timer runs at **13:17 UTC** with
+persistent catch-up after downtime. Enable with
+`systemctl enable --now trumpets-research.timer`, and run the first search with
+`systemctl start trumpets-research.service`. A partial report exits 2 and is
+retained in the board, leaving unsupported active listings due for revalidation.
+Use `journalctl -u trumpets-research.service` for run ID/status/counts only.
+Enable **one** scheduler; keep `TRUMPETS_DAILY_ENABLED` unset for VM scheduling.
 
 This conservative adapter ingests **unambiguous individual Product JSON-LD offers**.
 It rejects aggregate prices, ordinary Bach/Yamaha without exceptional evidence,

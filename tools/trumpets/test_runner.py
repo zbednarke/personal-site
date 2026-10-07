@@ -47,5 +47,21 @@ class RunnerTests(unittest.TestCase):
             self.assertIsNotNone(c);self.assertGreaterEqual(c['searchScore'],55)
     def test_source_diversity(self):
         self.assertGreaterEqual(len(runner.SOURCES),25);self.assertIn('TC Gakki / Japanese shops',runner.SOURCES);self.assertIn('European specialist dealers',runner.SOURCES)
+    def test_openai_search_uses_only_completed_tool_sources(self):
+        payload={'status':'completed','output':[
+            {'type':'message','content':[{'text':'https://invented.test/horn'}]},
+            {'type':'web_search_call','status':'completed','action':{'type':'search','sources':[
+                {'url':'https://shop.test/horn'}, {'url':'https://shop.test/horn'},
+                {'url':'https://other.test/horn'}, {'url':'http://shop.test/insecure'}]}}]}
+        with patch.object(runner,'fetch',return_value=json.dumps(payload)) as fetch:
+            results=runner.search_openai('site:shop.test used Bb trumpet','private-key')
+            self.assertEqual(results,[{'url':'https://shop.test/horn'}])
+            request=json.loads(fetch.call_args.args[2])
+            self.assertIn('site:shop.test',request['input'])
+            self.assertNotIn('private-key',request['input'])
+    def test_openai_incomplete_or_unsearched_results_fail(self):
+        for payload in [{'status':'incomplete','output':[]}, {'status':'completed','output':[{'type':'message','content':[]}]}]:
+            with patch.object(runner,'fetch',return_value=json.dumps(payload)):
+                with self.assertRaises(ValueError):runner.search_openai('Bb trumpet','private-key')
 
 if __name__=='__main__': unittest.main()

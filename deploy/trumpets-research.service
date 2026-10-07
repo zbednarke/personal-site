@@ -1,0 +1,18 @@
+[Unit]
+Description=Private trumpet discovery and daily listing revalidation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+EnvironmentFile=/etc/trumpets/runner.env
+ExecStart=/usr/bin/python3 /opt/trumpets/runner.py
+TimeoutStartSec=45min
+# A partial report is retained in the dashboard; unsupported listings stay due.
+SuccessExitStatus=2
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0077

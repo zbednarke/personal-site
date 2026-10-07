@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily private trumpet research at 13:17 UTC
+
+[Timer]
+OnCalendar=*-*-* 13:17:00 UTC
+Persistent=true
+Unit=trumpets-research.service
+
+[Install]
+WantedBy=timers.target
