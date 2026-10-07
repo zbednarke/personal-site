@@ -381,6 +381,11 @@ func TestTrumpetPersistence(t *testing.T) {
 		if horns != 1 || !strings.Contains(notes, "Love the engineering") || !strings.Contains(notes, "Cool but too expensive") {
 			t.Fatal("crosspost promotion lost identity or notes", horns)
 		}
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_events WHERE listing_id=$1 AND meaningful`, leadID).Scan(&meaningful)
+		if meaningful != 0 {
+			t.Fatal("same-price promoted crosspost alerted as discovery")
+		}
+
 		// Tiny changes accumulate without generating a price alert.
 		price = 3999
 		verified.Price = &price

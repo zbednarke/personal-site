@@ -478,7 +478,15 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 					kind = "newly discovered"
 				}
 			}
-			if err = trumpetEvent(ctx, tx, user, id, kind, oldPrice, c.Price, c.Currency, oldStatus, c.Status, !acquired && c.VerificationState != "candidate"); err != nil {
+			meaningful := !acquired && c.VerificationState != "candidate"
+			if oldVerification == "candidate" && c.Status == "active" {
+				var crossposted bool
+				if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_listings WHERE horn_id=$1 AND id<>$2 AND verification_state='verified' AND status='active' AND (currency<>$3 OR price IS NULL OR $4::numeric IS NULL OR price<=$4::numeric*1.03))`, horn, id, c.Currency, c.Price).Scan(&crossposted); err != nil {
+					return uuid.Nil, err
+				}
+				meaningful = meaningful && !crossposted && c.SearchScore >= 65
+			}
+			if err = trumpetEvent(ctx, tx, user, id, kind, oldPrice, c.Price, c.Currency, oldStatus, c.Status, meaningful); err != nil {
 				return uuid.Nil, err
 			}
 		}
