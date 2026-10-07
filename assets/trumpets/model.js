@@ -110,8 +110,8 @@
         (f.view === "candidates"
           ? l.verificationState === "candidate" &&
             !l.acquired &&
-            fb.interestState !== "pass"
-          : l.verificationState !== "candidate") &&
+            (fb.interestState !== "pass" || f.interest === "pass")
+          : l.verificationState !== "candidate" || l.acquired) &&
         (f.view !== "today" ||
           (todayIds.has(l.id) && !l.acquired && l.status !== "acquired")) &&
         (!f.active || l.status === "active") &&
