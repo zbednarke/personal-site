@@ -102,6 +102,7 @@
     for (const [id, val] of [
       ["today", "today"],
       ["all", "all"],
+      ["candidates", "candidates"],
     ]) {
       const button = $("#" + id);
       button.classList.toggle("selected", v === val);
@@ -145,7 +146,13 @@
     } else {
       visual.classList.add("no-photo");
       visual.append(
-        el("span", "unverified", "HISTORICAL REFERENCE / PHOTO UNVERIFIED"),
+        el(
+          "span",
+          "unverified",
+          l.verificationState === "candidate"
+            ? "SEARCH LEAD / PHOTO UNVERIFIED"
+            : "HISTORICAL REFERENCE / PHOTO UNVERIFIED",
+        ),
       );
     }
     const badges = el("div", "badges");
@@ -182,7 +189,11 @@
     const kicker = el("div", "card-kicker");
     kicker.append(
       el("span", "maker", l.maker),
-      el("span", "status " + l.status, l.status),
+      el(
+        "span",
+        "status " + l.status,
+        l.verificationState === "candidate" ? "Unverified" : l.status,
+      ),
     );
     body.append(kicker);
     body.append(el("h2", "model", l.model));
@@ -255,7 +266,11 @@
       el(
         "span",
         "",
-        l.lastChecked ? `Checked ${date(l.lastChecked)}` : "Needs verification",
+        l.verificationState === "candidate"
+          ? "Price / availability unverified"
+          : l.lastChecked
+            ? `Checked ${date(l.lastChecked)}`
+            : "Needs verification",
       ),
     );
     body.append(foot);
@@ -283,7 +298,7 @@
     const rows = M.select(board, filterState());
     $("#cards").replaceChildren(...rows.map(card));
     $("#result-count").textContent =
-      `${rows.length} ${rows.length === 1 ? "instrument" : "instruments"} / ${view === "today" ? "today’s meaningful changes" : "accumulated market memory"}`;
+      `${rows.length} ${rows.length === 1 ? "instrument" : "instruments"} / ${view === "today" ? "today’s meaningful changes" : view === "candidates" ? "unverified leads · price and availability unknown" : "accumulated market memory"}`;
     $("#today-count").textContent = new Set(
       board.events
         .filter((e) =>
@@ -291,7 +306,15 @@
         )
         .map((e) => e.listingId),
     ).size;
-    $("#all-count").textContent = board.listings.length;
+    $("#all-count").textContent = board.listings.filter(
+      (l) => l.verificationState !== "candidate",
+    ).length;
+    $("#candidate-count").textContent = board.listings.filter(
+      (l) =>
+        l.verificationState === "candidate" &&
+        !l.acquired &&
+        l.feedback.interestState !== "pass",
+    ).length;
     const search = M.lastSuccessFor(board, "search"),
       recheck = M.lastSuccessFor(board, "recheck");
     $("#last-search").textContent = search ? date(search) : "Not run yet";
@@ -335,9 +358,11 @@
         );
     $("#empty").hidden = rows.length > 0;
     $("#empty-copy").textContent =
-      view === "today"
-        ? "No meaningful changes reported today. Browse All tracked for your historical references."
-        : "No listings match these filters. Clear a filter to broaden the board.";
+      view === "candidates"
+        ? "No pending candidates. Unverified finds appear here; mark interest as pass to dismiss a hint."
+        : view === "today"
+          ? "No meaningful changes reported today. Browse All tracked for your historical references."
+          : "No listings match these filters. Clear a filter to broaden the board.";
     $("#browse-all").textContent =
       view === "today" ? "Browse all tracked" : "Clear filters";
   }
@@ -363,7 +388,10 @@
     const facts = $("#detail-facts");
     facts.replaceChildren();
     for (const [key, value] of Object.entries({
-      Status: l.status,
+      Status:
+        l.verificationState === "candidate"
+          ? "Availability unverified — search hint only"
+          : l.status,
       Serial: l.serialNumber,
       Year: l.details.year,
       Finish: l.details.finish,
@@ -465,6 +493,7 @@
   $("#close-detail").addEventListener("click", () => $("#detail").close());
   $("#today").addEventListener("click", () => setView("today"));
   $("#all").addEventListener("click", () => setView("all"));
+  $("#candidates").addEventListener("click", () => setView("candidates"));
   $("#browse-all").addEventListener("click", () => {
     if (view === "today") setView("all");
     else {

@@ -118,3 +118,32 @@ test("latest successful search/recheck chooses combined or dedicated run by time
   assert.equal(M.lastSuccessFor(b, "recheck"), "2026-10-04");
   assert.equal(M.lastSuccessFor({}, "search"), null);
 });
+
+test("unverified leads stay outside Today and tracked market records", () => {
+  const b = M.shape({
+    listings: [
+      listing("verified"),
+      listing("hint", {
+        verificationState: "candidate",
+        status: "stale",
+        price: null,
+      }),
+      listing("passed", {
+        verificationState: "candidate",
+        feedback: { interestState: "pass" },
+      }),
+      listing("owned", { verificationState: "candidate", acquired: true }),
+    ],
+    events: [{ listingId: "hint", kind: "newly discovered" }],
+  });
+  assert.deepEqual(
+    M.select(b, { view: "candidates" }).map((l) => l.id),
+    ["hint"],
+  );
+  assert.deepEqual(
+    M.select(b, { view: "all" }).map((l) => l.id),
+    ["verified"],
+  );
+  assert.equal(M.select(b, { view: "today" }).length, 0);
+  assert.ok(M.badges(b.listings[1], []).includes("UNVERIFIED"));
+});

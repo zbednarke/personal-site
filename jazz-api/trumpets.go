@@ -30,31 +30,32 @@ type hornDetails struct {
 	Provenance      string   `json:"provenance,omitempty"`
 }
 type trumpetCandidate struct {
-	ID              string      `json:"id,omitempty"`
-	HornID          string      `json:"hornId,omitempty"`
-	Maker           string      `json:"maker"`
-	Model           string      `json:"model"`
-	SerialNumber    string      `json:"serialNumber"`
-	Details         hornDetails `json:"details"`
-	Title           string      `json:"title"`
-	Description     string      `json:"description"`
-	URL             string      `json:"url"`
-	Source          string      `json:"source"`
-	SourceListingID string      `json:"sourceListingId"`
-	Seller          string      `json:"seller"`
-	Location        string      `json:"location"`
-	Price           *float64    `json:"price"`
-	Currency        string      `json:"currency"`
-	Shipping        *float64    `json:"shipping"`
-	PostedAt        *time.Time  `json:"postedAt"`
-	Status          string      `json:"status"`
-	DiscoveryType   string      `json:"discoveryType"`
-	Images          []string    `json:"images"`
-	SearchScore     float64     `json:"searchScore"`
-	SearchRationale string      `json:"searchRationale"`
-	Tags            []string    `json:"tags"`
-	Evidence        string      `json:"evidence"`
-	SeedKey         string      `json:"-"`
+	VerificationState string      `json:"verificationState,omitempty"`
+	ID                string      `json:"id,omitempty"`
+	HornID            string      `json:"hornId,omitempty"`
+	Maker             string      `json:"maker"`
+	Model             string      `json:"model"`
+	SerialNumber      string      `json:"serialNumber"`
+	Details           hornDetails `json:"details"`
+	Title             string      `json:"title"`
+	Description       string      `json:"description"`
+	URL               string      `json:"url"`
+	Source            string      `json:"source"`
+	SourceListingID   string      `json:"sourceListingId"`
+	Seller            string      `json:"seller"`
+	Location          string      `json:"location"`
+	Price             *float64    `json:"price"`
+	Currency          string      `json:"currency"`
+	Shipping          *float64    `json:"shipping"`
+	PostedAt          *time.Time  `json:"postedAt"`
+	Status            string      `json:"status"`
+	DiscoveryType     string      `json:"discoveryType"`
+	Images            []string    `json:"images"`
+	SearchScore       float64     `json:"searchScore"`
+	SearchRationale   string      `json:"searchRationale"`
+	Tags              []string    `json:"tags"`
+	Evidence          string      `json:"evidence"`
+	SeedKey           string      `json:"-"`
 }
 type trumpetFeedback struct {
 	Rating             *int     `json:"rating"`
@@ -215,6 +216,23 @@ func normalizeTrumpet(c *trumpetCandidate) error {
 	if c.Status == "" {
 		c.Status = "active"
 	}
+	if c.VerificationState == "" {
+		c.VerificationState = "verified"
+		if c.SeedKey != "" {
+			c.VerificationState = "historical"
+		}
+	}
+	if !containsString([]string{"verified", "candidate", "historical"}, c.VerificationState) {
+		return errors.New("invalid verification state")
+	}
+	if c.VerificationState == "candidate" {
+		if c.URL == "" {
+			return errors.New("candidate URL required")
+		}
+		if c.Status != "stale" || c.Price != nil || c.Shipping != nil || c.PostedAt != nil || c.SerialNumber != "" {
+			return errors.New("unverified candidates cannot assert availability, money, dates or serials")
+		}
+	}
 	if !containsString([]string{"active", "sold", "removed", "stale", "acquired"}, c.Status) {
 		return errors.New("invalid status")
 	}
@@ -303,11 +321,11 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 	}
 	var id, horn uuid.UUID
 	var oldPrice *float64
-	var oldStatus, oldCurrency string
+	var oldStatus, oldCurrency, oldVerification string
 	var acquired bool
-	err := tx.QueryRow(ctx, `SELECT l.id,l.horn_id,l.price,l.status,l.currency,h.acquired FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id
+	err := tx.QueryRow(ctx, `SELECT l.id,l.horn_id,l.price,l.status,l.currency,h.acquired,l.verification_state FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id
  WHERE l.user_id=$1 AND (($2::uuid IS NOT NULL AND l.id=$2) OR ($2::uuid IS NULL AND (($3::text IS NOT NULL AND l.canonical_url=$3) OR ($4::text IS NOT NULL AND l.source=$5 AND l.source_listing_id=$4) OR ($6::text IS NOT NULL AND l.seed_key=$6))))
- ORDER BY l.first_seen LIMIT 1 FOR UPDATE OF l`, user, nullText(c.ID), nullText(c.URL), nullText(c.SourceListingID), c.Source, nullText(c.SeedKey)).Scan(&id, &horn, &oldPrice, &oldStatus, &oldCurrency, &acquired)
+ ORDER BY l.first_seen LIMIT 1 FOR UPDATE OF l`, user, nullText(c.ID), nullText(c.URL), nullText(c.SourceListingID), c.Source, nullText(c.SeedKey)).Scan(&id, &horn, &oldPrice, &oldStatus, &oldCurrency, &acquired, &oldVerification)
 	fresh := errors.Is(err, pgx.ErrNoRows)
 	if err != nil && !fresh {
 		return uuid.Nil, err
@@ -315,10 +333,14 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 	if fresh && c.ID != "" {
 		return uuid.Nil, errors.New("listing id not owned or not found")
 	}
+	// Search hints never overwrite a previously verified offer or its market facts.
+	if !fresh && c.VerificationState == "candidate" && oldVerification != "candidate" {
+		return id, nil
+	}
 	details, _ := json.Marshal(c.Details)
 	if fresh {
 		identity := hornIdentity(c.Maker, c.SerialNumber)
-		if c.HornID == "" {
+		if c.HornID == "" && c.VerificationState != "candidate" {
 			var seeded uuid.UUID
 			e := tx.QueryRow(ctx, `SELECT h.id FROM trumpet_horns h JOIN trumpet_listings l ON l.horn_id=h.id
     WHERE h.user_id=$1 AND l.seed_key IS NOT NULL AND lower(h.maker)=lower($2) AND lower(h.model)=lower($3)
@@ -376,7 +398,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		}
 		// Seeds are incomplete historical references, not fresh search results.
 		if c.SeedKey == "" {
-			if err = trumpetEvent(ctx, tx, user, id, c.DiscoveryType, nil, c.Price, c.Currency, "", c.Status, !acquired); err != nil {
+			if err = trumpetEvent(ctx, tx, user, id, c.DiscoveryType, nil, c.Price, c.Currency, "", c.Status, !acquired && c.VerificationState != "candidate"); err != nil {
 				return uuid.Nil, err
 			}
 		}
@@ -389,6 +411,9 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 			discovery = "status change"
 			if oldStatus != "active" && c.Status == "active" {
 				discovery = "rediscovered"
+				if oldVerification == "candidate" {
+					discovery = "newly discovered"
+				}
 			}
 		}
 		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET title=$3,description=$4,seller=$5,location=$6,price=$7,currency=$8,shipping=$9,
@@ -403,7 +428,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 			if oldCurrency == c.Currency && oldPrice != nil && c.Price != nil && *c.Price < *oldPrice {
 				kind = "price drop"
 			}
-			if err = trumpetEvent(ctx, tx, user, id, kind, oldPrice, c.Price, c.Currency, oldStatus, c.Status, !acquired && kind == "price drop"); err != nil {
+			if err = trumpetEvent(ctx, tx, user, id, kind, oldPrice, c.Price, c.Currency, oldStatus, c.Status, !acquired && c.VerificationState != "candidate" && kind == "price drop"); err != nil {
 				return uuid.Nil, err
 			}
 		}
@@ -411,8 +436,11 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 			kind := "status change"
 			if oldStatus != "active" && c.Status == "active" {
 				kind = "rediscovered"
+				if oldVerification == "candidate" {
+					kind = "newly discovered"
+				}
 			}
-			if err = trumpetEvent(ctx, tx, user, id, kind, oldPrice, c.Price, c.Currency, oldStatus, c.Status, !acquired); err != nil {
+			if err = trumpetEvent(ctx, tx, user, id, kind, oldPrice, c.Price, c.Currency, oldStatus, c.Status, !acquired && c.VerificationState != "candidate"); err != nil {
 				return uuid.Nil, err
 			}
 		}
@@ -433,6 +461,20 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 			return uuid.Nil, err
 		}
 	}
+	if oldVerification == "candidate" && c.VerificationState == "verified" && !acquired {
+		_, err = tx.Exec(ctx, `UPDATE trumpet_horns SET maker=$3,model=$4 WHERE id=$1 AND user_id=$2`, horn, user, c.Maker, c.Model)
+		if err != nil {
+			return uuid.Nil, err
+		}
+	}
+	if c.VerificationState == "candidate" {
+		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3,last_checked=NULL WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState)
+		return id, err
+	}
+	_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3 WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState)
+	if err != nil {
+		return uuid.Nil, err
+	}
 	if c.SeedKey == "" {
 		_, err = tx.Exec(ctx, `INSERT INTO trumpet_observations(listing_id,user_id,run_id,price,currency,shipping,status,evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(listing_id,run_id) DO NOTHING`, id, user, run, c.Price, c.Currency, c.Shipping, c.Status, c.Evidence)
 	}
@@ -449,7 +491,7 @@ func trumpetEvent(ctx context.Context, tx pgx.Tx, user, id uuid.UUID, kind strin
 func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]trumpetListing, error) {
 	rows, err := app.db.Query(ctx, `SELECT l.id::text,l.horn_id::text,h.maker,h.model,h.serial_number,h.details,l.title,l.description,
  COALESCE(l.canonical_url,''),l.source,COALESCE(l.source_listing_id,''),l.seller,l.location,l.price,l.currency,l.shipping,l.posted_at,
- l.status,l.discovery_type,l.search_score,l.search_rationale,l.images,l.tags,l.first_seen,l.last_checked,l.changed_at,h.acquired,
+ l.status,l.discovery_type,l.search_score,l.search_rationale,l.images,l.tags,l.first_seen,l.last_checked,l.changed_at,h.acquired,l.verification_state,
  COALESCE((SELECT jsonb_build_object('rating',f.rating,'interestState',f.interest_state,'notes',f.notes,'favorite',f.favorite,
  'favoredAttributes',f.favored_attributes,'dislikedAttributes',f.disliked_attributes) FROM trumpet_feedback f WHERE f.horn_id=h.id),'{}'),
  COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence) ORDER BY o.checked_at) FROM trumpet_observations o WHERE o.listing_id=l.id),'[]'),
@@ -463,7 +505,7 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
 	for rows.Next() {
 		var l trumpetListing
 		var details, feedback, images, tags, prices, statuses []byte
-		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &feedback, &prices, &statuses); err != nil {
+		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses); err != nil {
 			return nil, err
 		}
 		for _, pair := range []struct {
@@ -575,7 +617,7 @@ func (app *application) trumpetDue(w http.ResponseWriter, r *http.Request) {
 	due := []trumpetListing{}
 	boundary := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, l := range listings {
-		if !l.Acquired && (l.Status == "active" || l.Status == "stale") && (l.LastChecked == nil || l.LastChecked.Before(boundary)) {
+		if !l.Acquired && !(l.VerificationState == "candidate" && l.Feedback.InterestState == "pass") && (l.Status == "active" || l.Status == "stale") && (l.LastChecked == nil || l.LastChecked.Before(boundary)) {
 			due = append(due, l)
 		}
 	}
