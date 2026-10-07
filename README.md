@@ -63,3 +63,16 @@ at startup and proxies API calls to the production Jazz service as user `zach`.
 This means local edits use the same PostgreSQL records and private GCS recording
 bucket as the live page without exposing a database URL, cloud credential, or
 gateway secret to browser JavaScript or saving one in the repository.
+
+## Private trumpet research
+
+`/trumpets/` is the Trumpet Observatory: accumulated listings, daily signals,
+price/status history, source coverage and private ratings/notes/preferences.
+It reuses the Jazz Go/Postgres/gateway service. The daily runner searches across
+specialist and international sources and rechecks active offers; the existing
+ChatGPT search can read the private profile and submit verified daily reports.
+
+See [Trumpets setup, API, privacy, tests and screenshots](docs/trumpets/README.md).
+`./dev.ps1` also serves `http://localhost:4173/trumpets/` through the existing private
+production proxy. Deployment must protect the Trumpets page/assets/API in Caddy;
+the daily workflow needs server-side machine auth and runner secrets before enabling.

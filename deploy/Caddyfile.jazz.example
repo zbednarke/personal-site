@@ -17,7 +17,7 @@
 header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 
 @jazz_private {
-    path /jazz /jazz/* /assets/jazz/*
+    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/*
     not path /jazz/share/*
 }
 
@@ -59,4 +59,15 @@ handle_path /jazz/share/* {
 handle_path /jazz/films/* {
     root * /srv/zachbednarke.com/films
     file_server
+}
+
+
+# Trumpet notes and feedback inherit the same private gateway. Machine clients
+# use the Cloud Run URL directly with a separate scoped bearer token.
+handle_path /trumpets/api/* {
+    reverse_proxy {$JAZZ_API_URL} {
+        header_up Host {upstream_hostport}
+        header_up X-Jazz-User {http.auth.user.id}
+        header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+    }
 }

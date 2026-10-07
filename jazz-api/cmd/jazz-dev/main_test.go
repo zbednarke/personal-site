@@ -63,3 +63,31 @@ func TestDevelopmentHandlerServesJazzWithoutLogin(t *testing.T) {
 		t.Fatalf("proxied response = %d %q", apiResponse.Code, body)
 	}
 }
+
+func TestDevelopmentHandlerProxiesTrumpetsWithVerifiedIdentity(t *testing.T) {
+	allowHTTPUpstreamForTests = true
+	defer func() { allowHTTPUpstreamForTests = false }()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/trumpets/profile" {
+			t.Errorf("path: %s", r.URL.Path)
+		}
+		if r.Header.Get("X-Jazz-User") != "owner" || r.Header.Get("X-Jazz-Gateway-Key") != "server-only" || r.Header.Get("Authorization") != "" {
+			t.Error("untrusted client identity forwarded")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	handler, err := newDevHandler(devConfig{staticRoot: t.TempDir(), apiURL: upstream.URL, gatewayKey: "server-only", user: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/trumpets/api/v1/trumpets/profile", nil)
+	r.Header.Set("X-Jazz-User", "attacker")
+	r.Header.Set("X-Jazz-Gateway-Key", "fake")
+	r.Header.Set("Authorization", "Bearer fake")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != 204 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatal("private development proxy", w.Code)
+	}
+}

@@ -38,7 +38,7 @@ func main() {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("Jazz development site ready at http://%s/jazz/", cfg.addr)
+	log.Printf("Private development apps ready at http://%s/jazz/ and http://%s/trumpets/", cfg.addr, cfg.addr)
 	log.Printf("Local login is disabled; data and recordings use the private production account for %q.", cfg.user)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -84,7 +84,11 @@ func newDevHandler(cfg devConfig) (http.Handler, error) {
 	originalDirector := proxy.Director
 	proxy.Director = func(request *http.Request) {
 		originalDirector(request)
-		request.URL.Path = strings.TrimPrefix(request.URL.Path, "/jazz/api")
+		if strings.HasPrefix(request.URL.Path, "/trumpets/api/") {
+			request.URL.Path = strings.TrimPrefix(request.URL.Path, "/trumpets/api")
+		} else {
+			request.URL.Path = strings.TrimPrefix(request.URL.Path, "/jazz/api")
+		}
 		if request.URL.Path == "" {
 			request.URL.Path = "/"
 		}
@@ -105,7 +109,7 @@ func newDevHandler(cfg devConfig) (http.Handler, error) {
 		response.Header().Set("Cache-Control", "no-store")
 		response.Header().Set("Referrer-Policy", "no-referrer")
 		response.Header().Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
-		if strings.HasPrefix(request.URL.Path, "/jazz/api/") {
+		if strings.HasPrefix(request.URL.Path, "/jazz/api/") || strings.HasPrefix(request.URL.Path, "/trumpets/api/") {
 			proxy.ServeHTTP(response, request)
 			return
 		}

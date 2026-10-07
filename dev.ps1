@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = $PSScriptRoot
 $apiDirectory = Join-Path $projectRoot "jazz-api"
 
-Write-Host "Connecting the local Jazz page to the private production data service..."
+Write-Host "Connecting the local Jazz and Trumpets pages to the private production data service..."
 $gatewayKey = (& gcloud secrets versions access latest --secret=jazz-gateway-key --project=parabolio-prod).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gatewayKey)) {
     throw "Could not load the local Jazz gateway credential from Google Cloud."
