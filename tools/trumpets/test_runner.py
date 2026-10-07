@@ -92,7 +92,7 @@ class RunnerTests(unittest.TestCase):
             self.assertIn('site:shop.test',request['input'])
             self.assertNotIn('private-key',request['input'])
     def test_grounded_citation_titles_and_negative_domain_filters(self):
-        payload={'status':'completed','output':[{'type':'message','content':[{'annotations':[{'type':'url_citation','url':'https://ebay.com/itm/123','title':'Taylor Chicago II Bb trumpet'},{'type':'url_citation','url':'https://invented.test/horn','title':'Harrelson trumpet'}]}]},{'type':'web_search_call','status':'completed','action':{'type':'search','sources':[{'url':'https://ebay.com/itm/123'}]}}]}
+        payload={'status':'completed','output':[{'type':'message','content':[{'annotations':[{'type':'url_citation','url':'https://ebay.com/itm/123','title':'Taylor Chicago II Bb trumpet'},{'type':'url_citation','url':'https://invented.test/horn','title':'Harrelson trumpet'}]}]},{'type':'web_search_call','status':'completed','action':{'type':'search','sources':[{'url':'https://ebay.com/itm/123'},{'url':'https://reverb.com/item/123'}]}}]}
         with patch.object(runner,'fetch',return_value=json.dumps(payload)):
             results=runner.search_openai('Taylor trumpet -site:reverb.com','key')
         self.assertEqual(results,[{'url':'https://ebay.com/itm/123','title':'Taylor Chicago II Bb trumpet'}])

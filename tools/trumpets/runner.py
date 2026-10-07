@@ -309,6 +309,7 @@ def search(query,key):
 def search_openai(query, key):
     """Use actual web-tool sources, never model-generated URLs or offer facts."""
     domains=re.findall(r'(?<!-)\bsite:([a-zA-Z0-9.-]+)',query)
+    excluded_domains=re.findall(r'-site:([a-zA-Z0-9.-]+)',query)
     tool={'type':'web_search','search_context_size':'low'}
     request={'model':os.environ.get('TRUMPETS_SEARCH_MODEL','gpt-4.1-mini'),
              'tools':[tool],'tool_choice':'required',
@@ -345,6 +346,7 @@ def search_openai(query, key):
         for source in action.get('sources',[]):
             url=source.get('url','')
             host=(urllib.parse.urlsplit(url).hostname or '').lower()
+            if any(host==d or host.endswith('.'+d) for d in excluded_domains): continue
             if domains and not any(host==d or host.endswith('.'+d) for d in domains): continue
             if url.startswith('https://') and url not in seen:
                 seen.add(url);title=source.get('title') or titles.get(url)
