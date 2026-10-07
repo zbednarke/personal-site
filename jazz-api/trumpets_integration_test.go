@@ -54,6 +54,24 @@ func TestTrumpetPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("migration replay preserves existing long Jazz recordings", func(t *testing.T) {
+		for _, duration := range []int{7200000, 14400000} {
+			id := uuid.New()
+			_, err := isolated.Exec(ctx, `INSERT INTO recordings
+ (id,user_id,bucket,object_name,content_type,expected_size_bytes,duration_ms,recorded_at,status)
+ VALUES ($1,$2,'test',$3,'audio/webm',1,$4,now(),'ready')`, id, user, id.String(), duration)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := migrate(ctx, isolated); err != nil {
+			t.Fatalf("replay with existing two/four-hour recordings: %v", err)
+		}
+		var total int
+		if err := isolated.QueryRow(ctx, `SELECT sum(duration_ms) FROM recordings WHERE user_id=$1`, user).Scan(&total); err != nil || total != 21600000 {
+			t.Fatalf("recording durations changed during migration: %d, %v", total, err)
+		}
+	})
 	call := func(method, path string, input any, subject string, want int) []byte {
 		t.Helper()
 		body, _ := json.Marshal(input)

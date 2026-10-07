@@ -23,4 +23,5 @@ jobs:
           TRUMPETS_API_URL: ${{ secrets.TRUMPETS_API_URL }}
           TRUMPETS_MACHINE_TOKEN: ${{ secrets.TRUMPETS_MACHINE_TOKEN }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python tools/trumpets/runner.py

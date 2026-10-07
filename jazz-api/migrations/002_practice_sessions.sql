@@ -40,4 +40,6 @@ ALTER TABLE recordings
 
 ALTER TABLE recordings
     ADD CONSTRAINT recordings_duration_ms_check
-    CHECK (duration_ms IS NULL OR duration_ms BETWEEN 0 AND 3600000);
+    -- Startup replays migrations. Preserve the four-hour policy from migration
+    -- 007 so existing long recordings remain valid during this earlier step.
+    CHECK (duration_ms IS NULL OR duration_ms BETWEEN 0 AND 14400000);

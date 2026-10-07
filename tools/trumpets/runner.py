@@ -60,10 +60,10 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch(url, headers=None, data=None):
+def fetch(url, headers=None, data=None, timeout=25):
     safe_remote(url)
     req = urllib.request.Request(url, data=data, headers={'User-Agent': USER_AGENT, **(headers or {})})
-    with urllib.request.build_opener(SafeRedirect()).open(req, timeout=25) as response:
+    with urllib.request.build_opener(SafeRedirect()).open(req, timeout=timeout) as response:
         content = response.read(3_000_001)
         if len(content) > 3_000_000:
             raise ValueError('Response too large')
@@ -199,6 +199,36 @@ def search(query,key):
     return payload.get('web',{}).get('results',[])
 
 
+def search_openai(query, key):
+    """Use actual web-tool sources, never model-generated URLs or offer facts."""
+    domains=re.findall(r'site:([a-zA-Z0-9.-]+)',query)
+    tool={'type':'web_search','search_context_size':'low'}
+    request={'model':os.environ.get('TRUMPETS_SEARCH_MODEL','gpt-4.1-mini'),
+             'tools':[tool],'tool_choice':'required',
+             'include':['web_search_call.action.sources'],
+             'max_output_tokens':1000,
+             'input':'Find specific used professional Bb trumpet listing pages for this query. '
+                     'Search the web; do not invent URLs, prices or availability. '+query}
+    payload=json.loads(fetch('https://api.openai.com/v1/responses',
+        {'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+        json.dumps(request).encode(),timeout=120))
+    if payload.get('status')!='completed': raise ValueError('Incomplete web research response')
+    results=[];seen=set();searched=False
+    for item in payload.get('output',[]):
+        if item.get('type')!='web_search_call' or item.get('status')!='completed': continue
+        action=item.get('action',{})
+        if action.get('type')!='search': continue
+        searched=True
+        for source in action.get('sources',[]):
+            url=source.get('url','')
+            host=(urllib.parse.urlsplit(url).hostname or '').lower()
+            if domains and not any(host==d or host.endswith('.'+d) for d in domains): continue
+            if url.startswith('https://') and url not in seen:
+                seen.add(url);results.append({'url':url})
+    if not searched: raise ValueError('No completed web search')
+    return results[:10]
+
+
 class Client:
     def __init__(self):
         self.base=os.environ['TRUMPETS_API_URL'].rstrip('/')+'/v1/trumpets/machine'
@@ -224,14 +254,15 @@ def daily(client):
         except Exception:
             s['status']='failed';s['note']='Recheck denied, unavailable or invalid; prior observations preserved.';issues.append('Failed recheck at '+s['source'])
     key=os.environ.get('BRAVE_SEARCH_API_KEY')
+    openai_key=os.environ.get('OPENAI_API_KEY')
     groups=list(SOURCES.items())+[('New source discovery',None),('Credible private listings',None)]
     for name,domains in groups:
         s=check(name)
-        if not key:
-            s['status']='skipped';s['note']='BRAVE_SEARCH_API_KEY is not configured.';continue
+        if not key and not openai_key:
+            s['status']='skipped';s['note']='No web search provider is configured.';continue
         query=(' OR '.join('site:'+d for d in domains)+' used boutique Bb trumpet') if domains else ('used custom Bb trumpet Taylor Harrelson Van Laar boutique dealer -site:reverb.com' if name=='New source discovery' else 'used boutique Bb trumpet private sale custom')
         try:
-            results=search(query,key)
+            results=search(query,key) if key else search_openai(query,openai_key)
             unsupported=0
             for result in results:
                 url=result.get('url','')
@@ -250,7 +281,7 @@ def daily(client):
             time.sleep(1.1)  # modest per-run provider pacing
         except Exception:
             s['status']='failed';s['note']='Search provider request failed.';issues.append('Search failed at '+name)
-    if not key: issues.append('Broad search not run: BRAVE_SEARCH_API_KEY missing.')
+    if not key and not openai_key: issues.append('Broad search not run: web search provider missing.')
     if issues: report['status']='partial';report['error']=' '.join(sorted(set(issues)))[:10000]
     report['sources']=list(checks.values())
     result=client.call('/runs',report)
