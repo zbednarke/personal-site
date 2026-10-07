@@ -1,0 +1,344 @@
+[
+  {
+    "domain": "reverb.com",
+    "name": "Reverb",
+    "geography": "International",
+    "specialty": "marketplace"
+  },
+  {
+    "domain": "horntrader.com",
+    "name": "HornTrader",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "austincustombrass.biz",
+    "name": "Austin Custom Brass",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "thompsonmusic.com",
+    "name": "Thompson Music",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "jlandressbrass.com",
+    "name": "J. Landress Brass",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "dillonmusic.com",
+    "name": "Dillon Music",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "trentaustin.com",
+    "name": "Trent Austin",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "baltimorebrass.net",
+    "name": "Baltimore Brass",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "brassinstrumentworkshop.com",
+    "name": "Rich Ita",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "brassark.com",
+    "name": "Brass Ark",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "hornstash.com",
+    "name": "Horn Stash",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "thebrass-exchange.com",
+    "name": "Brass Exchange",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "brassandwinds.com",
+    "name": "Mighty Quinn",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "hornguys.com",
+    "name": "Ferguson Music",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "gamonbrass.com",
+    "name": "Gamonbrass",
+    "geography": "Europe",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "dawkes.co.uk",
+    "name": "Dawkes",
+    "geography": "UK",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "windblowers.com",
+    "name": "Windblowers",
+    "geography": "UK",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "philparkerltd.com",
+    "name": "Phil Parker",
+    "geography": "UK",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "trevorjonesltd.co.uk",
+    "name": "Trevor Jones",
+    "geography": "UK",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "johnpacker.co.uk",
+    "name": "John Packer",
+    "geography": "UK",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "tcgakki.com",
+    "name": "TC Gakki / Japanese shops",
+    "geography": "Japan",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "ishibashi.co.jp",
+    "name": "TC Gakki / Japanese shops",
+    "geography": "Japan",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "adams-music.com",
+    "name": "European specialist dealers",
+    "geography": "Europe",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "brassfeeling.de",
+    "name": "European specialist dealers",
+    "geography": "Europe",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "ebay.com",
+    "name": "eBay",
+    "geography": "International",
+    "specialty": "marketplace"
+  },
+  {
+    "domain": "ebay.co.uk",
+    "name": "eBay",
+    "geography": "UK",
+    "specialty": "marketplace"
+  },
+  {
+    "domain": "marktplaats.nl",
+    "name": "Marktplaats",
+    "geography": "Europe",
+    "specialty": "marketplace"
+  },
+  {
+    "domain": "invaluable.com",
+    "name": "Auction houses",
+    "geography": "International",
+    "specialty": "auction"
+  },
+  {
+    "domain": "catawiki.com",
+    "name": "Auction houses",
+    "geography": "International",
+    "specialty": "auction"
+  },
+  {
+    "domain": "musicgoround.com",
+    "name": "Regional music shops",
+    "geography": "USA",
+    "specialty": "specialist dealer"
+  },
+  {
+    "domain": "taylortrumpets.com",
+    "name": "Maker / demo inventory",
+    "geography": "USA",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "whyharrelson.com",
+    "name": "Maker / demo inventory",
+    "geography": "USA",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "arresonance.com",
+    "name": "Maker / demo inventory",
+    "geography": "USA",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "trumpetherald.com",
+    "name": "Trumpet Herald",
+    "geography": "International",
+    "specialty": "forum / private classifieds"
+  },
+  {
+    "domain": "trumpetmaster.com",
+    "name": "Trumpet Master",
+    "geography": "International",
+    "specialty": "forum / collector community"
+  },
+  {
+    "domain": "saxontheweb.net",
+    "name": "Sax on the Web",
+    "geography": "International",
+    "specialty": "forum / private classifieds"
+  },
+  {
+    "domain": "usedbrass.co.uk",
+    "name": "Used Brass",
+    "geography": "UK",
+    "specialty": "used / consignment"
+  },
+  {
+    "domain": "thomann.de",
+    "name": "Thomann",
+    "geography": "Europe",
+    "specialty": "used / refurbished"
+  },
+  {
+    "domain": "musik-produktiv.com",
+    "name": "Musik Produktiv",
+    "geography": "Europe",
+    "specialty": "used / demo"
+  },
+  {
+    "domain": "kuehnl-hoyer.de",
+    "name": "Kühnl & Hoyer",
+    "geography": "Germany",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "ricco-kuehn.de",
+    "name": "Ricco Kühn",
+    "geography": "Germany",
+    "specialty": "custom maker / demo"
+  },
+  {
+    "domain": "schagerl.com",
+    "name": "Schagerl",
+    "geography": "Austria",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "getzen.com",
+    "name": "Getzen",
+    "geography": "USA",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "saxandwoodwind.com.au",
+    "name": "Sax & Woodwind",
+    "geography": "Australia",
+    "specialty": "regional specialist"
+  },
+  {
+    "domain": "ozwinds.com.au",
+    "name": "Ozwinds",
+    "geography": "Australia",
+    "specialty": "used / consignment"
+  },
+  {
+    "domain": "long-mcquade.com",
+    "name": "Long & McQuade",
+    "geography": "Canada",
+    "specialty": "regional / used"
+  },
+  {
+    "domain": "cosmomusic.ca",
+    "name": "Cosmo Music",
+    "geography": "Canada",
+    "specialty": "used / demo"
+  },
+  {
+    "domain": "kurosawagakki.com",
+    "name": "Kurosawa Gakki",
+    "geography": "Japan",
+    "specialty": "international specialist"
+  },
+  {
+    "domain": "shimokura-gakki.com",
+    "name": "Shimokura Gakki",
+    "geography": "Japan",
+    "specialty": "vintage / used"
+  },
+  {
+    "domain": "digimart.net",
+    "name": "Digimart",
+    "geography": "Japan",
+    "specialty": "country marketplace"
+  },
+  {
+    "domain": "leboncoin.fr",
+    "name": "Leboncoin",
+    "geography": "France",
+    "specialty": "country classifieds"
+  },
+  {
+    "domain": "kleinanzeigen.de",
+    "name": "Kleinanzeigen",
+    "geography": "Germany",
+    "specialty": "country classifieds"
+  },
+  {
+    "domain": "ricardo.ch",
+    "name": "Ricardo",
+    "geography": "Switzerland",
+    "specialty": "country classifieds"
+  },
+  {
+    "domain": "drouot.com",
+    "name": "Drouot",
+    "geography": "Europe",
+    "specialty": "auction"
+  },
+  {
+    "domain": "gardinerhoulgate.co.uk",
+    "name": "Gardiner Houlgate",
+    "geography": "UK",
+    "specialty": "auction"
+  },
+  {
+    "domain": "lotus-trumpets.com",
+    "name": "LOTUS",
+    "geography": "International",
+    "specialty": "maker / demo"
+  },
+  {
+    "domain": "vanlaartrumpets.nl",
+    "name": "Van Laar",
+    "geography": "Netherlands",
+    "specialty": "maker / demo"
+  }
+]

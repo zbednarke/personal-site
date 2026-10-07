@@ -58,13 +58,15 @@
           All tracked <span id="all-count">0</span></button
         ><button id="candidates" aria-pressed="false">
           Candidates <span id="candidate-count">0</span></button
-        ><span class="day-note">DAILY SIGNAL / UTC</span>
+        ><span class="day-note">SELECTIVE SIGNAL / UTC</span>
       </nav>
       <details class="coverage">
         <summary>
           Source coverage <span id="run-state">No search submitted</span>
         </summary>
+        <p class="field-help">Queries find leads. Live pages establish availability. At least 36 domains are scheduled per run, with reserved exploration and four new-source searches; blocked or unverified pages remain visible.</p>
         <div id="coverage-list"></div>
+        <details class="source-universe"><summary>Accumulated source universe <span id="universe-count"></span></summary><div id="source-universe"></div></details>
         <p id="run-error"></p>
       </details>
       <form id="filters" class="filters" aria-label="Filter listings">
@@ -192,7 +194,7 @@
           /></label>
         </div>
         <p class="field-help">
-          Ratings, notes and attributes inform future searches. Acquired horns
+          Ratings and attributes inform future searches. Explicit likes, dislikes and “too expensive” notes adjust ranking without narrowing exploration. Acquired horns
           stay in history and are excluded from alerts.
         </p>
         <p id="save-message" role="status" aria-live="polite"></p>

@@ -126,8 +126,7 @@ placeholder illustrations contain no private feedback.
 
 ## Search clients and daily revalidation
 
-The baseline runner uses a Brave Search API query for every configured source group
-plus deliberate new-source discovery. Sources include specialist dealers, Japanese
+The adaptive runner plans 36 distinct source domains per run, six rotating maker/model searches, four exploration searches and four deliberate new-source searches. The domain universe starts with 57 international dealer, maker, community, auction and classified domains, then grows from useful verified offers and unverified leads. Sources include specialist dealers, Japanese
 and European shops, auctions, regional shops, maker/demo inventory and credible
 private offers; Reverb is only one group. Every active offer due that UTC day is
 fetched separately, even if it did not occur in fresh search results.
@@ -165,8 +164,7 @@ Enable **one** scheduler; keep `TRUMPETS_DAILY_ENABLED` unset for VM scheduling.
 This conservative adapter ingests **unambiguous individual Product JSON-LD offers**.
 It rejects aggregate prices, ordinary Bach/Yamaha without exceptional evidence,
 non-trumpets and obvious non-Bb models; it has no warm/dark sound filter. It scores
-priority makers/features and the owner's favored/disliked attributes. It does not
-claim to understand freeform notes or exhaust websites without structured offers.
+priority makers/features and the owner's favored/disliked attributes. It interprets explicit sentiment phrases in freeform notes locally, including likes/dislikes of finishes and engineering, and style-positive but price-negative reactions. These bounded signals improve ranking without becoming hard filters. Unrecognized prose remains available to authenticated research clients; the runner does not claim arbitrary natural-language understanding or exhaustive access to unsupported sites.
 Unsupported/private/login/anti-bot pages and denied requests are reported; no
 availability or price is invented. HTTP 404/410 becomes removed, explicit structured
 sold/out-of-stock becomes sold, and a returning active offer becomes rediscovered.
@@ -312,8 +310,7 @@ unambiguous verified offer promotes the same row, preserving first seen, feedbac
 and URL identity. Search hints cannot downgrade verified price/status history.
 Acquired horns remain excluded from new-listing alerts.
 
-Runs search the 27 source groups, new sources and private offers, plus nine explicit
-maker/model queries covering boutique makers and exceptional production models.
+Runs rotate 36 individual domains from the accumulated universe, with bounded slots for previously useful sources and priority for never/oldest-searched domains. Six maker/model queries rotate across the nine seed queries; four unfamiliar-maker/international exploration queries and four new-source queries run every day. At least 25% of the planned queries explore beyond the shortlist. New-source queries exclude known domains; accepted useful new domains persist automatically.
 Those extra queries exclude Reverb to encourage other sources; its dedicated source
 search remains enabled. Citation titles are accepted only for actual web-tool URLs.
 Parsers accept individual Product JSON-LD offers, dealer product metadata with
@@ -326,11 +323,75 @@ Discovery is bounded to 240 page inspections and 35 minutes after starting the r
 active listing rechecks happen first, then up to 40 queued leads. Remaining promising result URLs can still enter
 the queue. Source coverage records actual checks and unsupported pages, rather than
 claiming exhaustive inventory. Authenticated clients can consume all freeform feedback;
-the automated runner uses structured preferences and passes without interpreting notes.
+the automated runner consumes structured preferences, explicit note signals and passes. Raw private notes never leave the private API in public search queries.
 
 Deployment adds replay-safe migration `022_trumpet_candidates.sql`, API/UI changes
 and the updated stdlib runner. No Caddy, Cloud Run environment or secret changes are
 required. Deploy the API before the runner/UI to support `verificationState`.
 The existing VM timer stays daily at 13:17 UTC; the expanded runner uses a versioned
-daily idempotency key so it can run once on upgrade.
+run idempotency key; each invocation has its own ID so an incomplete run can be retried that day without replaying the old failure.
 [Candidate queue screenshot](screenshots/candidates.png) uses synthetic data.
+
+
+## Persistent adaptive watch (migration 023)
+
+`trumpet_sources` stores owner-scoped domains, geography/specialty, first seen,
+last searched/live/useful timestamps, query success, pages opened, verified
+observations and confirmed stale-page counts. Bootstrap domains are merged with
+stored sources rather than used as a whitelist. Rotation schedules 36 unique
+source families/domains (eBay country aliases do not consume two slots). It keeps
+at most eight useful-source slots; never/oldest searched sources fill the rest.
+Discovery admits at most six findings and twelve fetched pages per domain per run
+so easy marketplaces cannot flood the board. Active rechecks are exempt from these
+caps and run first. The source universe panel separates **searched domains**, **live
+page domains**, and **known domains**; a query success never implies current stock.
+Counts are observations, not a claim of exhaustive dealer inventory.
+
+The profile now includes `sourceUniverse`, `watchPolicy`, and `notePreferences`.
+An explicit “love the engineering / raw brass, but too expensive” note retains
+those style signals and mildly penalizes same-maker offers at or above that
+example's observed asking price in the same currency. “Don't like gold plate”
+reduces that attribute's weight. Adjustments are bounded; acquired exclusion is
+physical-horn scoped and exploration stays reserved. No note text is sent to Brave
+or OpenAI search queries. Unsupported language remains private raw feedback for
+other authenticated research clients.
+
+All verified observations carry description/condition/configuration/provenance
+snapshots. Changes produce `details change` events; whitespace-only description
+changes are ignored. Every price movement remains in history. Alerts require a
+same-currency drop of at least **3%**, or an increase of at least **15%**; currency
+changes and minor adjustments do not imply comparable discounts. New sold offers
+are saved as asking-price history without new-discovery alerts. When at least three
+other verified, distinct same-model horns have same-currency observed asking prices,
+comparisons use their median, clearly labeled as asking prices, not sale values.
+
+Today consumes a separate `alerts` array: at most eight ranked verified physical
+horns, excluding acquired, passed and unverified leads. No meaningful signal means
+an empty feed. `events` and full offer histories remain available to authenticated
+clients. Canonical URLs remove common eBay tracking; marketplace listing IDs are
+also extracted. Serial-confirmed cross-posts share private feedback; candidate
+promotion merges onto the verified horn while retaining both notes. Exact image
+matches require matching model and named seller for automatic linking; weaker
+matches stay explicitly unconfirmed. All tracked groups physical horns and prefers
+active seller-direct offers, with alternate direct links/prices/statuses accessible
+inside the card. All individual offers/history remain in Postgres.
+
+Rechecks use live pages. Exact-product headings and explicit stock badges override
+stale structured stock (related-product/footer badges are ignored). Sold/expired
+badges become sold; pending/reserved/temporarily unavailable become stale until
+revalidated. HTTP 404/410 becomes removed. Unsupported or blocked active pages keep
+the previous facts and leave the run partial and the offer due. Freshly posted
+classification requires a seller date within the last 24 hours; missing, older or
+future dates are newly discovered instead. Queued candidates remain unverified
+until an unambiguous source offer is available.
+
+Deploy the API first: startup applies replay-safe `023_trumpet_watch.sql` after a
+Cloud SQL backup. Preserve existing Cloud Run environment, secrets, resources and
+Caddy routes. Then replace `/opt/trumpets/runner.py` and overlay the trumpet static
+assets atomically on the existing site release. The daily VM timer remains **13:17
+UTC**. No new secret or scheduler is required. The previous API/runner remain
+compatible with the additive migration for rollback; avoid deleting source/history
+rows. Run one manual combined search after rollout and check authenticated coverage,
+remaining active rechecks, Today and the mobile source universe.
+
+[Mobile source universe](screenshots/mobile-coverage.png) uses synthetic fixtures.

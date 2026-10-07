@@ -74,6 +74,12 @@ const base = "http://127.0.0.1:4173";
         {
           source: "Independent dealer · TEST FIXTURE",
           status: "checked",
+          domain: "fixtures.invalid",
+          query: "site:fixtures.invalid used trumpet",
+          pagesOpened: 3,
+          verifiedOffers: 3,
+          geography: "International",
+          specialty: "Visual fixture",
           candidates: 3,
         },
         { source: "Reverb", status: "checked", candidates: 0 },
@@ -173,8 +179,20 @@ const base = "http://127.0.0.1:4173";
       () => document.querySelectorAll(".card").length === 3,
     );
     await page.screenshot({ path: path.join(out, "today.png") });
+    await page.locator(".coverage > summary").click();
+    await page.locator(".source-universe > summary").click();
+    assert.ok(await page.locator(".source-record").count() >= 50);
+    assert.match(await page.locator("#source-count").innerText(), /1 searched \/ 1 live/);
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1100 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `source universe overflow at ${width}px`);
+    }
+    await page.setViewportSize({ width: 390, height: 1450 });
+    await page.screenshot({ path: path.join(out, "mobile-coverage.png") });
+    await page.locator(".coverage > summary").click();
+    await page.setViewportSize({ width: 1440, height: 1450 });
     await page.getByRole("button", { name: /All tracked/ }).click();
-    assert.equal(await page.locator(".card").count(), 24);
+    assert.equal(await page.locator(".card").count(), 21); // References and verified offers group by physical horn.
     await page.screenshot({ path: path.join(out, "all-tracked.png") });
     assert.equal(
       await page.evaluate(

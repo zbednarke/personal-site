@@ -90,10 +90,11 @@
       })),
       events: board.events || [],
       sourceCatalog: board.sourceCatalog || [],
+      sourceUniverse: board.sourceUniverse || [],
     };
   }
   function select(board, f) {
-    const todayIds = new Set((board.events || []).map((e) => e.listingId));
+    const todayIds = new Set((board.alerts ?? board.events ?? []).map((e) => e.listingId));
     let rows = board.listings.filter((l) => {
       const fb = l.feedback || {};
       const text = [
@@ -135,7 +136,33 @@
         a.currency.localeCompare(b.currency) ||
         (a.price ?? Infinity) - (b.price ?? Infinity),
     };
-    return rows.sort(sorts[f.sort] || sorts.newest);
+    return groupOffers(rows, board.listings, f.view).sort(sorts[f.sort] || sorts.newest);
+  }
+  function groupOffers(rows, baseline = rows, view = "all") {
+    const grouped = new Map();
+    for (const listing of rows) {
+      const key = listing.hornId || listing.id;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(listing);
+    }
+    const marketplace = (l) => /reverb\.com|ebay\.|marktplaats\./i.test(l.url || "");
+    return [...grouped.entries()].map(([key, offers]) => {
+      if (view !== "today") offers.sort((a, b) =>
+        Number(b.status === "active") - Number(a.status === "active") ||
+        Number(marketplace(a)) - Number(marketplace(b)) ||
+        (a.currency === b.currency ? (a.price ?? Infinity) - (b.price ?? Infinity) : 0));
+      const primary = offers[0];
+      const alternates = baseline.filter((l) => (l.hornId || l.id) === key && l.id !== primary.id && safeURL(l.url));
+      return { ...primary, alternateOffers: alternates };
+    });
+  }
+  function sourceMetrics(board) {
+    const checks = board.latestRun?.sources || [];
+    return {
+      searched: new Set(checks.filter((s) => s.domain && s.query && s.status === "checked").map((s) => s.domain)).size,
+      live: new Set(checks.filter((s) => s.domain && s.pagesOpened > 0).map((s) => s.domain)).size,
+      universe: (board.sourceUniverse || []).length,
+    };
   }
   function badges(l, events) {
     const out = [];
@@ -147,6 +174,8 @@
     if (kinds.has("newly discovered") || kinds.has("rediscovered"))
       out.push("FOUND");
     if (kinds.has("price drop")) out.push("PRICE DROP");
+    if (kinds.has("status change")) out.push("STATUS CHANGE");
+    if (kinds.has("details change")) out.push("UPDATED");
     const text = [
       l.details?.finish,
       l.details?.provenance,
@@ -177,5 +206,7 @@
     badges,
     priceDrop,
     biggestDrop,
+    groupOffers,
+    sourceMetrics,
   };
 });

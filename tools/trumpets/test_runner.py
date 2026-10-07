@@ -116,3 +116,82 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(fetch.call_count,want)
 
 if __name__=='__main__': unittest.main()
+
+class AdaptiveWatchTests(unittest.TestCase):
+    def test_rotation_expansion_and_exploration_are_reserved(self):
+        import datetime as dt
+        universe=[dict(domain=f'dealer{i}.test',name=f'Dealer {i}',lastSearched=None,geography='International',specialty='specialist') for i in range(60)]
+        profile={**PROFILE,'sourceUniverse':universe}
+        first=runner.search_plan(profile,dt.date(2026,10,7))
+        second=runner.search_plan(profile,dt.date(2026,10,8))
+        selected={q['domain'] for q in first if q['domain']}
+        self.assertEqual(len(selected),36)
+        self.assertNotEqual(selected,{q['domain'] for q in second if q['domain']})
+        self.assertEqual(sum(q['source'].startswith('New source') for q in first),4)
+        self.assertGreaterEqual(sum(q['exploration'] for q in first)/len(first),.25)
+        for q in first:
+            if q['source'].startswith('New source'):
+                for source in universe:self.assertIn('-site:'+source['domain'],q['query'])
+        # Successful coverage advances the persistent rotation to older domains.
+        for source in universe:
+            if source['domain'] in selected:source['lastSearched']='2026-10-07T13:17:00Z'
+        rotated=runner.search_plan(profile,dt.date(2026,10,8))
+        unseen={s['domain'] for s in universe if not s['lastSearched']}
+        self.assertTrue(unseen.issubset({q['domain'] for q in rotated}))
+    def test_notes_change_rank_but_preserve_exploration(self):
+        p=copy.deepcopy(PRODUCT)
+        neutral=runner.normalize_product(p,'https://shop.test/item','Dealer',{'priorityMakers':['Taylor']})
+        profile={'priorityMakers':['Taylor'],'notePreferences':{'favoredAttributes':{'upswept':2},'dislikedAttributes':{},'makerWeights':{},'pricePreferences':[]}}
+        positive=runner.normalize_product(p,'https://shop.test/item','Dealer',profile)
+        self.assertGreater(positive['searchScore'],neutral['searchScore'])
+        profile['notePreferences']['pricePreferences']=[{'maker':'Taylor','currency':'USD','referencePrice':2200}]
+        costly=runner.normalize_product(p,'https://shop.test/item','Dealer',profile)
+        self.assertIsNotNone(costly);self.assertLess(costly['searchScore'],positive['searchScore'])
+        p['brand']={'name':'Unfamiliar Builder'};p['name']='Unfamiliar Builder one-off prototype Bb trumpet unusual bell engineering';p['description']='Rare custom professional instrument'
+        surprise=runner.normalize_product(p,'https://shop.test/item','Dealer',profile)
+        self.assertGreaterEqual(surprise['searchScore'],65)
+    def test_live_stock_badge_outranks_cached_structured_stock(self):
+        c=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE)
+        markup=page(PRODUCT)+'<h1>'+PRODUCT['name']+'</h1><div class="product-stock">Sold out</div>'
+        checked=runner.recheck(c,lambda _:markup,PROFILE)
+        self.assertEqual(checked['status'],'sold')
+        related=page(PRODUCT)+'<h1>'+PRODUCT['name']+'</h1><section class="related-products"><div class="product-stock">Sold out</div></section>'
+        self.assertEqual(runner.recheck(c,lambda _:related,PROFILE)['status'],'active')
+        unrelated='<h1>Another trumpet</h1><div class="product-stock">Sold out</div>'
+        self.assertIsNone(runner.recheck(c,lambda _:unrelated,PROFILE))
+        pending='<h1>'+PRODUCT['name']+'</h1><div class="availability">Pending</div>'
+        self.assertEqual(runner.recheck(c,lambda _:pending,PROFILE)['status'],'stale')
+    def test_verified_updates_preserve_details_and_extract_shipping(self):
+        c=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE)
+        p=copy.deepcopy(PRODUCT);p['description']='Serial: AB-123. Artist provenance documentation added.'
+        p['itemCondition']='https://schema.org/UsedCondition';p['additionalProperty']=[{'name':'Bore','value':'.460'},{'name':'Provenance','value':'Artist owned'}]
+        p['offers']['shippingDetails']={'shippingRate':{'value':40,'currency':'USD'}}
+        checked=runner.recheck(c,lambda _:page(p),PROFILE)
+        self.assertIn('documentation',checked['description']);self.assertEqual(checked['shipping'],40)
+        self.assertEqual(checked['details']['bore'],'.460');self.assertEqual(checked['serialNumber'],'AB-123')
+    def test_serial_or_exact_image_required_for_crosspost_link(self):
+        old={'maker':'Taylor','model':'Chicago II','serialNumber':'123','images':['https://shop.test/unique.jpg'],'hornId':'physical','verificationState':'verified'}
+        same={'maker':'Taylor','model':'Chicago II','serialNumber':'123','images':[]}
+        self.assertEqual(runner.link_physical_horn(same,[old])['hornId'],'physical')
+        another={'maker':'Taylor','model':'Chicago II','serialNumber':'124','images':old['images']}
+        self.assertNotIn('hornId',runner.link_physical_horn(another,[old]))
+        missing={'maker':'Taylor','model':'Chicago II','serialNumber':'','images':[]}
+        self.assertNotIn('hornId',runner.link_physical_horn(missing,[old]))
+        self.assertEqual(runner.canonical_url('https://www.ebay.com/itm/123456789012?itmmeta=track&utm_source=x'),'https://ebay.com/itm/123456789012')
+        self.assertEqual(runner.listing_id('https://ebay.com/itm/trumpet/123456789012'),'123456789012')
+
+class MarketContextTests(unittest.TestCase):
+    def test_comparisons_require_three_distinct_verified_same_currency_horns(self):
+        c=runner.normalize_product(PRODUCT,'https://shop.test/item','Dealer',PROFILE)
+        baseline=[dict(c,id=str(i),hornId=str(i),url='https://shop.test/'+str(i),model=c['model'],price=3200,lastChecked='2026-10-07',verificationState='verified') for i in range(3)]
+        result=runner.market_context(copy.deepcopy(c),baseline)
+        self.assertIn('good value',result['tags']);self.assertIn('not completed-sale',result['searchRationale'])
+        self.assertNotIn('good value',runner.market_context(copy.deepcopy(c),baseline[:2])['tags'])
+        for old in baseline:old['currency']='JPY'
+        self.assertNotIn('good value',runner.market_context(copy.deepcopy(c),baseline)['tags'])
+
+class MakerIdentityTests(unittest.TestCase):
+    def test_modifier_does_not_replace_original_maker(self):
+        p=copy.deepcopy(PRODUCT);p['name']='Taylor Chicago 46 II / Harrelson-modified Bb trumpet';p['description']='Harrelson modifications and artist provenance'
+        c=runner.normalize_product(p,'https://shop.test/horn','Dealer',PROFILE)
+        self.assertEqual(c['maker'],'Taylor')
