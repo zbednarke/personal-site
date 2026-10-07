@@ -286,6 +286,18 @@
           `${l.possibleRelists.length} possible relist match${l.possibleRelists.length === 1 ? "" : "es"} · identity unconfirmed`,
         ),
       );
+    if (l.alternateOffers?.length) {
+      const crossposts = el("details", "crossposts");
+      crossposts.append(el("summary", "", `${l.alternateOffers.length} related offer${l.alternateOffers.length === 1 ? "" : "s"} / same horn`));
+      for (const offer of l.alternateOffers) {
+        const link = el("a", "", `${offer.source} · ${M.money(offer.price, offer.currency)} · ${offer.status}`);
+        link.href = M.safeURL(offer.url); link.target = "_blank"; link.rel = "noopener noreferrer";
+        crossposts.append(link);
+      }
+      body.append(crossposts);
+    }
+    const signal = (board.alerts ?? board.events).find((e) => e.listingId === l.id);
+    if (signal) body.append(el("p", "signal-note", `${signal.kind.toUpperCase()}${signal.detail ? " · " + signal.detail : ""}`));
     article.append(body);
     return article;
   }
@@ -304,7 +316,7 @@
     $("#result-count").textContent =
       `${rows.length} ${rows.length === 1 ? "instrument" : "instruments"} / ${view === "today" ? "today’s meaningful changes" : view === "candidates" ? "unverified leads · price and availability unknown" : "accumulated market memory"}`;
     $("#today-count").textContent = new Set(
-      board.events
+      (board.alerts ?? board.events)
         .filter((e) =>
           board.listings.some((l) => l.id === e.listingId && !l.acquired),
         )
@@ -338,7 +350,7 @@
     const run = board.latestRun,
       sources = run?.sources || [];
     $("#source-count").textContent =
-      `${sources.filter((s) => s.status === "checked").length} checked / ${sources.length} reported`;
+      board.sourceUniverse.length ? `${M.sourceMetrics(board).searched} searched / ${M.sourceMetrics(board).live} live / ${board.sourceUniverse.length} known` : `${sources.filter((s) => s.status === "checked").length} checks reported`;
     $("#run-state").textContent = run
       ? `${run.status.toUpperCase()} · ${run.kind} · ${date(run.completedAt)}`
       : "No search submitted";
@@ -355,11 +367,17 @@
       chip.title = s.note || "";
       coverage.append(chip);
     }
-    for (const s of board.sourceCatalog)
-      if (!reported.has(s))
-        coverage.append(
-          el("span", "coverage-chip unchecked", `${s} · not reported`),
-        );
+    const universe = $("#source-universe");
+    universe.replaceChildren();
+    for (const source of board.sourceUniverse) {
+      const row = el("article", "source-record");
+      row.append(el("strong", "", source.domain), el("span", "", `${source.geography} / ${source.specialty}`),
+        el("small", "", `${source.lastSearched ? "Searched " + date(source.lastSearched) : "Awaiting rotation"} · ${source.pagesOpened} pages opened · ${source.verifiedOffers} verified observations${source.staleResults ? " · " + source.staleResults + " stale pages" : ""}`));
+      universe.append(row);
+    }
+    $("#universe-count").textContent = `${board.sourceUniverse.length} known domains · grows with discoveries`;
+    if (!board.sourceUniverse.length) for (const s of board.sourceCatalog)
+      if (!reported.has(s)) coverage.append(el("span", "coverage-chip unchecked", `${s} · not reported`));
     $("#empty").hidden = rows.length > 0;
     $("#empty-copy").textContent =
       view === "candidates"
@@ -427,7 +445,7 @@
         el(
           "span",
           "",
-          `${event.kind}${event.kind.startsWith("price") ? " · " + M.money(event.oldPrice, event.currency) + " → " + M.money(event.newPrice, event.currency) : " · " + (event.oldStatus || "untracked") + " → " + event.newStatus}`,
+          `${event.kind}${event.detail ? " · " + event.detail : ""}${event.kind.startsWith("price") ? " · " + M.money(event.oldPrice, event.currency) + " → " + M.money(event.newPrice, event.currency) : " · " + (event.oldStatus || "untracked") + " → " + event.newStatus}`,
         ),
       );
       history.append(row);
@@ -446,6 +464,15 @@
           ),
         );
       history.append(observations);
+      const snapshots = el("details", "observation-snapshots");
+      snapshots.append(el("summary", "", "Description & condition snapshots"));
+      for (const o of l.priceHistory.slice().reverse().filter((o) => o.snapshot?.description || o.snapshot?.details?.condition || o.snapshot?.details?.provenance)) {
+        const row = el("div", "snapshot");
+        row.append(el("time", "", date(o.checkedAt)), el("p", "", o.snapshot.description || ""),
+          el("p", "field-help", [o.snapshot.details?.condition, o.snapshot.details?.provenance].filter(Boolean).join(" / ")));
+        snapshots.append(row);
+      }
+      history.append(snapshots);
     }
     if (!l.statusHistory.length && !l.priceHistory.length)
       history.append(

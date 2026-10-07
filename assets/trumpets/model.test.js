@@ -160,3 +160,26 @@ test("dismissed candidates remain reviewable through the pass filter", () => {
   assert.equal(M.select(b, { view: "candidates" }).length, 0);
   assert.equal(M.select(b, { view: "candidates", interest: "pass" }).length, 1);
 });
+
+test("selective alerts override raw events and same-horn offers group", () => {
+  const board = M.shape({ listings: [
+    { id: "market", hornId: "physical", status: "active", source: "Reverb", url: "https://reverb.com/item/1", price: 3100, currency: "USD" },
+    { id: "direct", hornId: "physical", status: "active", source: "Dealer", url: "https://dealer.test/products/horn", price: 3000, currency: "USD" },
+    { id: "ordinary", hornId: "other", status: "active", source: "Shop", currency: "USD" },
+  ], events: [{ listingId: "market" }, { listingId: "ordinary" }], alerts: [{ listingId: "direct" }] });
+  const today = M.select(board, { view: "today" });
+  assert.equal(today.length, 1); assert.equal(today[0].id, "direct"); assert.equal(today[0].alternateOffers[0].id, "market");
+  const all = M.select(board, { view: "all" });
+  assert.equal(all.length, 2); assert.equal(all.find(l => l.hornId === "physical").id, "direct");
+  assert.equal(M.select(M.shape({...board, alerts: []}), { view: "today" }).length, 0);
+});
+
+test("source telemetry counts actual searched domains separately from live pages", () => {
+  const metrics = M.sourceMetrics({ sourceUniverse: [{ domain: "dealer.test" }, { domain: "next.test" }], latestRun: { sources: [
+    { domain: "dealer.test", query: "site:dealer.test trumpet", status: "checked", pagesOpened: 2 },
+    { domain: "dealer.test", status: "checked", pagesOpened: 1 },
+    { domain: "failed.test", query: "search", status: "failed", pagesOpened: 0 },
+    { source: "New source discovery", status: "checked" },
+  ] } });
+  assert.deepEqual(metrics, { searched: 1, live: 1, universe: 2 });
+});

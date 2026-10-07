@@ -6,6 +6,8 @@ import argparse
 import copy
 import datetime as dt
 import html
+import hashlib
+import collections
 from html.parser import HTMLParser
 import ipaddress
 import json
@@ -39,7 +41,7 @@ SOURCES = {
 USER_AGENT = 'TrumpetObservatory/1.0 (+private instrument research; daily checks)'
 ALLOWED_FIELDS = {'id','hornId','maker','model','serialNumber','details','title','description','url','source','sourceListingId','seller','location','price','currency','shipping','postedAt','status','discoveryType','images','searchScore','searchRationale','tags','evidence','verificationState'}
 MAKERS = ['AR Resonance','Del Quadro','Van Laar','Harrelson','Monette','Inderbinen','Blackburn','Calicchio','Schilke','Taylor','Adams','Lawler','LOTUS','Eclipse','Benge','GERDT','BAC','Olds','Selmer','Besson','Yamaha','Bach']
-TRAITS = ['raw brass','raw nickel','aged brass','patina','engraving','gold plate','mixed metals','black hardware','upswept','one-off','artist','provenance','custom','handcraft','oiram','antique']
+TRAITS = ['raw brass','raw nickel','aged brass','patina','engraving','gold plate','mixed metals','black hardware','upswept','one-off','artist','provenance','custom','handcraft','oiram','antique','engineering','rare','vintage','unusual bell','artist model','prototype','discontinued']
 
 
 def safe_remote(url):
@@ -104,6 +106,62 @@ def amount(value):
     except (ValueError,TypeError): return None
 
 
+def canonical_url(url):
+    p=urllib.parse.urlsplit(url)
+    tracking={'fbclid','gclid','ref','referrer','srsltid','itmmeta','itmprp','hash','_trksid','_trkparms'}
+    query=urllib.parse.urlencode(sorted((k,v) for k,v in urllib.parse.parse_qsl(p.query) if not k.lower().startswith('utm_') and k.lower() not in tracking))
+    return urllib.parse.urlunsplit(('https',p.netloc.lower().removeprefix('www.'),p.path.rstrip('/'),query,''))
+
+
+def listing_id(url):
+    p=urllib.parse.urlsplit(url)
+    if 'ebay.' in p.hostname:
+        match=re.search(r'/itm/(?:[^/]+/)?([0-9]{9,})',p.path)
+        return match[1] if match else ''
+    if p.hostname.removeprefix('www.')=='reverb.com':
+        match=re.search(r'/item/([0-9]+)',p.path)
+        return match[1] if match else ''
+    return ''
+
+
+def shipping_amount(offer,currency):
+    shipping=offer.get('shippingDetails',{})
+    if isinstance(shipping,list): shipping=shipping[0] if len(shipping)==1 else {}
+    rate=shipping.get('shippingRate',{}) if isinstance(shipping,dict) else {}
+    return amount(rate.get('value')) if isinstance(rate,dict) and rate.get('currency')==currency else None
+
+
+def address_text(value):
+    if not isinstance(value,dict): return ''
+    address=value.get('address',value)
+    if not isinstance(address,dict): return ''
+    return ', '.join(str(address[k]) for k in ('addressLocality','addressRegion','addressCountry') if isinstance(address.get(k),str))
+
+
+def link_physical_horn(candidate,baseline):
+    """Only serials or identical images plus matching model link automatically.
+    Similar configurations remain separate; the API offers possible-relist hints.
+    """
+    for old in baseline:
+        if old.get('verificationState')=='candidate' or old['maker'].lower()!=candidate['maker'].lower(): continue
+        serial=candidate.get('serialNumber','').replace(' ','').lower()
+        old_serial=old.get('serialNumber','').replace(' ','').lower()
+        if serial and old_serial and serial!=old_serial: continue
+        serial_match=bool(serial and serial==old_serial)
+        image_match=old['model'].lower()==candidate['model'].lower() and bool(old.get('seller')) and old.get('seller','').lower()==candidate.get('seller','').lower() and bool(set(old.get('images',[])) & set(candidate.get('images',[])))
+        if (serial_match or image_match) and old.get('hornId'):
+            candidate['hornId']=old['hornId']; return candidate
+    return candidate
+
+
+def identify_maker(text):
+    matches=[]
+    for maker in MAKERS:
+        match=re.search(r'\b'+re.escape(maker.lower())+r'\b',text.lower())
+        if match:matches.append((match.start(),maker))
+    return min(matches)[1] if matches else None
+
+
 def normalize_product(product,url,source,profile):
     title=html.unescape(str(product.get('name','')))
     description=html.unescape(re.sub('<[^>]+>',' ',str(product.get('description',''))))[:50000]
@@ -112,19 +170,23 @@ def normalize_product(product,url,source,profile):
     subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()
     if re.search(r'\b(cornets?|flugelhorns?|trombones?|mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only|piccolo)\b',subject): return None
     if re.search(r'\b(c trumpet|eb trumpet|d trumpet|e-flat|c-trumpet)\b',title.lower()): return None
-    maker=next((m for m in MAKERS if re.search(r'\b'+re.escape(m.lower())+r'\b',text)),None)
+    maker=identify_maker(title) or identify_maker(description)
     brand=product.get('brand',{})
     if isinstance(brand,dict): brand=brand.get('name','')
     if not maker: maker=str(brand or '')
     if not maker: return None
     offers=product.get('offers') or {}
-    if isinstance(offers,list): offers=offers[0] if offers else {}
+    if isinstance(offers,list):
+        facts={(str(o.get('price')),str(o.get('priceCurrency')),str(o.get('availability'))) for o in offers if isinstance(o,dict)}
+        if len(facts)!=1 or len(offers)!=sum(isinstance(o,dict) for o in offers): return None
+        offers=offers[0] if offers else {}
     if not isinstance(offers,dict): return None
     # Aggregate offers cannot establish a specific horn's price/availability.
     if offers.get('@type')=='AggregateOffer': return None
     availability=str(offers.get('availability','')).lower().rsplit('/',1)[-1]
     if availability in ('instock','limitedavailability','onlineonly'): status='active'
     elif availability in ('soldout','outofstock','discontinued'): status='sold'
+    elif availability in ('preorder','presale','backorder','reserved','pending','temporarilyunavailable'): status='stale'
     else: return None
     price=amount(offers.get('price'))
     currency=str(offers.get('priceCurrency','')).upper()
@@ -132,6 +194,7 @@ def normalize_product(product,url,source,profile):
     traits=[v for v in TRAITS if v in text]
     priority={m.lower() for m in profile.get('priorityMakers',[])}
     base=65 if maker.lower() in priority else 35
+    if any(t in traits for t in ('engineering','rare','prototype','one-off','unusual bell','custom','provenance')): base=max(base,60)
     if maker=='Adams' and not re.search(r'\ba[49]\b|custom',text): base=40
     if maker=='Benge' and not traits and not re.search(r'rare|unusual|vintage|custom',text): base=40
     exceptional_model=re.search(r'handcraft|\bhc[12]\b|921x|faddis|super recording|opera premiere|concept tt|\bmeha\b',text)
@@ -142,16 +205,29 @@ def normalize_product(product,url,source,profile):
     favored=profile.get('favoredAttributes',{}); disliked=profile.get('dislikedAttributes',{})
     bonus=sum(min(5,weight)*2 for term,weight in favored.items() if term in text)
     penalty=sum(min(5,weight)*3 for term,weight in disliked.items() if term in text)
-    score=max(0,min(100,base+len(traits)*5+bonus-penalty))
+    notes=profile.get('notePreferences',{})
+    bonus+=sum(min(3,weight)*2 for term,weight in notes.get('favoredAttributes',{}).items() if term in text)
+    penalty+=sum(min(3,weight)*2 for term,weight in notes.get('dislikedAttributes',{}).items() if term in text)
+    bonus+=max(-6,min(6,notes.get('makerWeights',{}).get(maker.lower(),0)*2))
+    for preference in notes.get('pricePreferences',[]):
+        if preference['maker'].lower()==maker.lower() and preference['currency']==currency and price is not None and price>=preference['referencePrice']:
+            penalty+=8; break
+    score=max(0,min(100,base+len(traits)*5+min(12,bonus)-min(18,penalty)))
     images=product.get('image',[])
     if isinstance(images,(str,dict)): images=[images]
     images=[i.get('url','') if isinstance(i,dict) else i for i in images]
     images=[i for i in images if isinstance(i,str) and i.startswith('https://')][:20]
     model=str(product.get('model') or title)
     if isinstance(product.get('model'),dict): model=str(product['model'].get('name') or title)
-    # Scores are evidence-based triage. Freeform notes remain available in the
-    # profile to the ChatGPT workflow; this baseline does not pretend to interpret them.
+    # Explicit private feedback phrases provide bounded ranking adjustments.
     serial=str(product.get('serialNumber') or '')
+    if not serial:
+        match=re.search(r'\bserial(?: number| no\.?)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9-]{1,30})',description,re.I)
+        if match: serial=match[1]
+    condition=str(product.get('itemCondition','')).rsplit('/',1)[-1]
+    properties=product.get('additionalProperty',[])
+    if isinstance(properties,dict): properties=[properties]
+    details={str(v.get('name','')).lower():str(v.get('value','')) for v in properties if isinstance(v,dict)}
     finish=next((t for t in traits if t in ('raw brass','raw nickel','gold plate','antique','aged brass')),'')
     seller=offers.get('seller',{})
     seller=seller.get('name','') if isinstance(seller,dict) else str(seller)
@@ -166,8 +242,8 @@ def normalize_product(product,url,source,profile):
     now=dt.datetime.now(dt.timezone.utc)
     new=posted is not None and now-dt.timedelta(days=1)<=dt.datetime.fromisoformat(posted)<=now
     return dict(maker=maker,model=model,title=title,description=description,url=url,source=source,
-                sourceListingId=str(product.get('productID') or ''),seller=seller,location='',
-                serialNumber=serial,details={'finish':finish},price=price,currency=currency,shipping=None,
+                sourceListingId=str(product.get('productID') or listing_id(url)),seller=seller,location=address_text(offers.get('availableAtOrFrom') or product.get('location')),
+                serialNumber=serial,details={'finish':finish,'condition':condition,**{k:details[k] for k in ('bore','bell','provenance') if k in details}},price=price,currency=currency,shipping=shipping_amount(offers,currency),
                 status=status,discoveryType='new listing' if new else 'newly discovered',postedAt=posted,images=images,searchScore=score,
                 searchRationale=f'{maker}; '+(', '.join(traits) or 'professional instrument reference')+'. Structured offer verified; shipping and condition require review.',
                 tags=traits,evidence='Product JSON-LD offer / '+availability)
@@ -250,7 +326,7 @@ def candidate_hint(result, source, profile, page=''):
     title=html.unescape(page_title or result.get('title','') or re.sub(r'[-_]+',' ',parts.path.rstrip('/').split('/')[-1]))[:500]
     description=result.get('description','')
     text=(title+' '+description+' '+path.replace('-',' ')).lower()
-    maker=next((m for m in MAKERS if re.search(r'\b'+re.escape(m.lower())+r'\b',text)),None)
+    maker=identify_maker(title) or identify_maker(text)
     subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()+' '+path.replace('-',' ')
     if not maker or re.search(r'\b(mouthpieces?|flugelhorns?|cornets?|trombones?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|piccolo|case only|c trumpet|eb trumpet|d trumpet)\b',subject): return None
     # Reuse ranking without treating the temporary scoring offer as evidence.
@@ -277,6 +353,35 @@ MAKER_QUERIES = [
 ]
 
 
+class LiveState(HTMLParser):
+    def __init__(self):
+        super().__init__();self.h1=[];self.badges=[];self.stack=[];self.skip=0
+    def handle_starttag(self,tag,attrs):
+        a=dict(attrs);label=(a.get('class','')+' '+a.get('id','')+' '+a.get('itemprop','')).lower()
+        suppressed=self.skip>0 or tag in ('script','style','nav','footer') or bool(re.search(r'related|recommend|recently.viewed',label))
+        kind='h1' if tag=='h1' else 'stock' if re.search(r'availability|stock.status|product.stock|sold.out|soldout',label) else ''
+        if tag not in ('meta','link','img','br','hr','input','source','wbr'):
+            self.stack.append((tag,kind,suppressed));self.skip+=int(suppressed)
+    def handle_endtag(self,tag):
+        for i in range(len(self.stack)-1,-1,-1):
+            if self.stack[i][0]==tag:
+                removed=self.stack[i:];self.stack=self.stack[:i];self.skip-=sum(int(v[2]) for v in removed);break
+    def handle_data(self,data):
+        if self.skip:return
+        kinds={v[1] for v in self.stack}
+        if 'h1' in kinds:self.h1.append(data)
+        if 'stock' in kinds:self.badges.append(data)
+    def state(self,title):
+        heading=' '.join(' '.join(self.h1).split()).lower()
+        target=' '.join(title.split()).lower()
+        if not heading or (heading!=target and heading not in ('sold '+target,'sold: '+target,'sold - '+target)):return None
+        text=' '.join(self.badges).lower()
+        if heading.startswith('sold') or re.search(r'\b(sold|out of stock|expired|listing ended|discontinued)\b',text):return 'sold'
+        if re.search(r'\b(pending|reserved|temporarily unavailable|backorder)\b',text):return 'stale'
+        if re.search(r'\b(in stock|available now)\b',text):return 'active'
+        return None
+
+
 def recheck(listing, get_page, profile):
     c={k:copy.deepcopy(v) for k,v in listing.items() if k in ALLOWED_FIELDS}
     c['discoveryType']='rediscovered'
@@ -287,6 +392,7 @@ def recheck(listing, get_page, profile):
         if c.get('verificationState')=='candidate': return None
         c.update(status='removed',evidence=f'HTTP {error.code}; prior price retained as last known')
         return c
+    state=LiveState();state.feed(page);authoritative=state.state(c['title'])
     candidates=page_offers(page,c['url'],c['source'],profile)
     if not candidates and '/products/' in c['url']:
         try:
@@ -299,9 +405,17 @@ def recheck(listing, get_page, profile):
     # A page with multiple unrelated products is ambiguous; never take the
     # price of a recommendation/related product as the tracked horn's price.
     matched=[p for p in candidates if p['title'].strip().lower()==c['title'].strip().lower() or (p['sourceListingId'] and p['sourceListingId']==c.get('sourceListingId'))]
-    if len(matched)!=1: return None
+    if len(matched)!=1:
+        if authoritative and c.get('verificationState')!='candidate':
+            c.update(status=authoritative,evidence='Live product heading and explicit stock badge; prior price retained')
+            return c
+        return None
     p=matched[0]
-    c.update(status=p['status'],price=p['price'] if p['price'] is not None else c.get('price'),currency=p['currency'],evidence=p['evidence'])
+    c.update(status=authoritative or p['status'],price=p['price'] if p['price'] is not None else c.get('price'),currency=p['currency'],evidence=p['evidence'],searchScore=p['searchScore'],searchRationale=p['searchRationale'],tags=p['tags'])
+    for key in ('description','seller','location','serialNumber','postedAt','shipping'):
+        if p.get(key) not in (None,''): c[key]=p[key]
+    c['details']={**c.get('details',{}),**{k:v for k,v in p.get('details',{}).items() if v}}
+    if authoritative: c['evidence']+=' / live product stock badge overrides metadata'
     if p['images']: c['images']=p['images']
     return c
 
@@ -371,77 +485,187 @@ class Client:
         return json.loads(fetch(self.base+path,headers,None if data is None else json.dumps(data).encode()))
 
 
+EXPLORATION_QUERIES = [
+    'rare vintage professional Bb trumpet unusual engineering rotary bell custom provenance sale',
+    'unfamiliar boutique trumpet builder prototype artist demo consignment Bb for sale',
+    'trompette sib occasion artisan cuivre brut gravee rare collection',
+    'Trompete B gebraucht Sonderanfertigung vergoldet selten Rohmessing',
+    '中古 トランペット カスタム ビンテージ シリアル 販売',
+    'GERDT Lars Hjalt custom trumpet used vintage Besson Meha Olds Opera',
+    'Conn Connstellation Martin Committee Selmer Radial unusual rare Bb trumpet sale',
+    'Kühnl Hoyer Ricco Kühn Schagerl Hub van Laar custom used trumpet demo',
+]
+NEW_SOURCE_QUERIES = [
+    'used boutique Bb trumpets independent specialist consignment dealer Canada Australia',
+    'rare custom trumpet private classifieds collector forum sale Europe UK',
+    '中古 カスタム トランペット 販売 専門店 Japan vintage brass dealer',
+    'trompette occasion artisan Trompete gebraucht custom specialist European shop',
+    'trumpet maker artist demo prototype refurbished inventory boutique brass',
+    'vintage brass trumpet estate auction regional music shop private seller',
+    'rare trumpet consignment South America Scandinavia Switzerland dealer',
+    'boutique professional trumpet used international enthusiast community sale',
+]
+
+
+def search_plan(profile,day=None):
+    day=day or dt.datetime.now(dt.timezone.utc).date()
+    universe=profile.get('sourceUniverse') or [dict(domain=d,name=n,specialty='specialist dealer',geography='International') for n,ds in SOURCES.items() for d in ds]
+    # Sort never/oldest searched sources first; date-dependent ties avoid repeating
+    # the same seed subset. Useful sources get a bounded portion of the run.
+    rank=lambda s:hashlib.sha256((day.isoformat()+s['domain']).encode()).hexdigest()
+    oldest=sorted(universe,key=lambda s:(s.get('lastSearched') or '',rank(s)))
+    useful=sorted((s for s in universe if s.get('verifiedOffers',0)>0),key=rank)[:8]
+    selected=[];families=collections.Counter()
+    for source in useful+oldest:
+        domain=source['domain']
+        if any(s['domain']==domain for s in selected): continue
+        family='ebay' if domain.startswith('ebay.') else domain
+        if families[family]>=1: continue
+        families[family]+=1;selected.append(source)
+        if len(selected)==36: break
+    offset=day.toordinal()
+    plan=[]
+    for i,source in enumerate(selected):
+        explore=i%4==0
+        phrase=EXPLORATION_QUERIES[(offset+i)%len(EXPLORATION_QUERIES)] if explore else MAKER_QUERIES[(offset+i)%len(MAKER_QUERIES)]
+        plan.append({**source,'source':source['name']+' / '+source['domain'],'query':'site:'+source['domain']+' '+phrase,'exploration':explore})
+    # All known domains are excluded from deliberate source-expansion queries.
+    exclusions=''
+    for source in universe:
+        term=' -site:'+source['domain']
+        if len(exclusions)+len(term)>3000: break
+        exclusions+=term
+    for i in range(4):
+        plan.append(dict(source='New source discovery '+str(i+1),domain='',query=NEW_SOURCE_QUERIES[(offset*4+i)%len(NEW_SOURCE_QUERIES)]+' '+exclusions,exploration=True))
+    for i in range(6):
+        plan.append(dict(source='Maker search '+str(i+1),domain='',query=MAKER_QUERIES[(offset+i)%len(MAKER_QUERIES)]+' -site:reverb.com',exploration=False))
+    for i in range(4):
+        plan.append(dict(source='Exploration '+str(i+1),domain='',query=EXPLORATION_QUERIES[(offset+i)%len(EXPLORATION_QUERIES)]+' -site:reverb.com',exploration=True))
+    return plan
+
+
+def market_context(candidate,baseline):
+    """Compare observed asking prices, never claim they are completed sales."""
+    peers={}
+    for old in baseline:
+        if old.get('verificationState')!='verified' or not old.get('lastChecked') or old.get('price') is None:continue
+        if old['maker'].lower()!=candidate['maker'].lower() or old['model'].lower()!=candidate['model'].lower() or old['currency']!=candidate['currency']:continue
+        if old.get('hornId')==candidate.get('hornId') or old.get('url')==candidate.get('url'):continue
+        peers.setdefault(old.get('hornId',old['id']),old['price'])
+    if len(peers)<3 or candidate.get('price') is None:return candidate
+    values=sorted(peers.values());median=(values[(len(values)-1)//2]+values[len(values)//2])/2
+    if median<=0:return candidate
+    ratio=candidate['price']/median
+    if ratio<=.85:
+        candidate['tags']=list(dict.fromkeys(candidate.get('tags',[])+['good value']))
+        candidate['searchScore']=min(100,candidate['searchScore']+6)
+    if ratio<=.85 or ratio>=1.25:
+        candidate['searchRationale']+=f" Asking price is {abs(round((1-ratio)*100))}% {'below' if ratio<1 else 'above'} the median of {len(peers)} tracked same-model {candidate['currency']} asking prices ({median:g}); condition/configuration may differ, not completed-sale values."
+    return candidate
+
+
 def daily(client):
-    profile=client.call('/profile'); due=client.call('/due')['listings']
-    board=client.call('/listings')['listings']
-    excluded={l.get('url') for l in board if l.get('acquired') or l.get('feedback',{}).get('interestState')=='pass'}
-    report={'externalId':'daily-coverage-v2-'+dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d'), 'kind':'combined', 'status':'succeeded','error':'','sources':[],'listings':[]}
-    issues=[];checks={};seen=set(excluded); started=time.monotonic(); inspected=0
-    def check(name): return checks.setdefault(name,dict(source=name,status='checked',candidates=0,note=''))
-    queued_checked=0
+    profile=client.call('/profile'); due=client.call('/due')['listings']; board=client.call('/listings')
+    baseline=board.get('listings',[])
+    # Previously tracked sources remain part of the pool even if they predate
+    # the normalized registry. Their next query/live check persists metadata.
+    universe={s['domain']:s for s in profile.get('sourceUniverse',[])}
+    for listing in baseline:
+        if not listing.get('url'):continue
+        domain=urllib.parse.urlsplit(listing['url']).hostname.removeprefix('www.')
+        universe.setdefault(domain,dict(domain=domain,name=listing['source'],geography='International / unknown',specialty='Previously tracked source'))
+    profile['sourceUniverse']=list(universe.values())
+    known_domains=set(universe)
+    # Daily due is also useful to external clients; each actual watch invocation
+    # revalidates all active offers, including manual reruns on the same UTC day.
+    due_by_id={l['id']:l for l in due}
+    for listing in baseline:
+        if listing['status']=='active' and not listing.get('acquired'):due_by_id[listing['id']]=listing
+    due=list(due_by_id.values())
+    by_url={canonical_url(l['url']):l for l in baseline if l.get('url')}
+    report={'externalId':'adaptive-watch-'+dt.datetime.now(dt.timezone.utc).isoformat(),'startedAt':dt.datetime.now(dt.timezone.utc).isoformat(),
+            'kind':'combined','status':'succeeded','sources':[],'listings':[],'error':''}
+    failures=[];submitted=set();started=time.monotonic();candidate_checks=0;pages=0;domain_pages=collections.Counter();domain_finds=collections.Counter()
+    live=collections.defaultdict(lambda:dict(pagesOpened=0,verifiedOffers=0,staleResults=0))
+    key=os.environ.get('BRAVE_SEARCH_API_KEY');openai=os.environ.get('OPENAI_API_KEY')
+    # Direct revalidation of every active offer takes precedence over discovery.
     for listing in sorted(due,key=lambda l:l.get('verificationState')=='candidate'):
+        if not listing['url']: continue
         if listing.get('verificationState')=='candidate':
-            if queued_checked>=40 or time.monotonic()-started>2100: continue
-            queued_checked+=1
-        if not listing.get('url'): continue  # incomplete historical references
-        s=check(listing['source'])
+            if candidate_checks>=40 or time.monotonic()-started>35*60: continue
+            candidate_checks+=1
+        domain=urllib.parse.urlsplit(listing['url']).hostname.removeprefix('www.')
         try:
-            c=recheck(listing,fetch,profile)
-            if c: report['listings'].append(c);s['candidates']+=1;seen.add(c['url'])
-            elif listing.get('verificationState')!='candidate': s['status']='failed';s['note']='One or more pages lacked an unambiguous structured offer; no price/status guessed.';issues.append('Unsupported recheck at '+s['source'])
-        except Exception:
-            if listing.get('verificationState')!='candidate':
-                s['status']='failed';s['note']='Recheck denied, unavailable or invalid; prior observations preserved.';issues.append('Failed recheck at '+s['source'])
-    key=os.environ.get('BRAVE_SEARCH_API_KEY')
-    openai_key=os.environ.get('OPENAI_API_KEY')
-    groups=list(SOURCES.items())+[('New source discovery',None),('Credible private listings',None)]+[(f'Maker search {i+1}',None) for i in range(len(MAKER_QUERIES))]
-    for name,domains in groups:
-        s=check(name)
-        if time.monotonic()-started>2100:
-            s['status']='skipped';s['note']='Run time budget reached; search deferred.';issues.append('Discovery time budget reached');continue
-        if not key and not openai_key:
-            s['status']='skipped';s['note']='No web search provider is configured.';continue
-        query=(' OR '.join('site:'+d for d in domains)+' used boutique Bb trumpet') if domains else ('used custom Bb trumpet Taylor Harrelson Van Laar boutique dealer -site:reverb.com' if name=='New source discovery' else 'used boutique Bb trumpet private sale custom')
-        if name.startswith('Maker search '): query=MAKER_QUERIES[int(name.rsplit(' ',1)[-1])-1]+' -site:reverb.com'
-        try:
-            results=search(query,key) if key else search_openai(query,openai_key)
-            unsupported=0
-            for result in results:
-                url=result.get('url','')
-                if url in seen: continue
-                # Source discovery retains the actual domain, not the discovery category.
-                source=name if domains else urllib.parse.urlsplit(url).hostname or name
-                page=''; candidates=[]
-                if inspected<240 and time.monotonic()-started<2100:
-                    inspected+=1
-                    try:
-                        page=fetch(url)
-                        candidates=page_offers(page,url,source,profile)
-                        if not candidates and '/products/' in url:
-                            try:
-                                offer=shopify_offer(url,source,profile)
-                                if offer: candidates=[offer]
-                            except Exception: pass
-                    except Exception: pass
-                if len(candidates)==1:
-                    c=candidates[0]
-                    if c['searchScore']>=55 and c['status']=='active':
-                        report['listings'].append(c);seen.add(url);s['candidates']+=1
-                else:
-                    unsupported+=1
-                    c=candidate_hint(result,source,profile,page)
-                    if c:
-                        report['listings'].append(c);seen.add(url);s['candidates']+=1
-            s['note']=f'{len(results)} search results reviewed; {unsupported} lacked verified individual offers. Promising unverified leads queued separately; coverage is not exhaustive.'
-            time.sleep(1.1)  # modest per-run provider pacing
-        except Exception:
-            s['status']='failed';s['note']='Search provider request failed.';issues.append('Search failed at '+name)
-        print(json.dumps({'source':name,'status':s['status'],'candidates':s['candidates']}),flush=True)
-    if not key and not openai_key: issues.append('Broad search not run: web search provider missing.')
-    if issues: report['status']='partial';report['error']=' '.join(sorted(set(issues)))[:10000]
-    report['sources']=list(checks.values())
-    result=client.call('/runs',report)
-    print(json.dumps({'runId':result['runId'],'status':result.get('status','replayed'),'remainingActive':result.get('remainingActive'),'submitted':len(report['listings'])}))
+            checked=recheck(listing,fetch,profile)
+            live[domain]['pagesOpened']+=1
+            if checked:
+                link_physical_horn(checked,baseline);market_context(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
+                live[domain]['verifiedOffers']+=1
+                if checked['status']=='removed':live[domain]['staleResults']+=1
+            elif listing.get('verificationState')!='candidate':failures.append('Active recheck unsupported: '+domain)
+        except Exception as error:
+            if listing.get('verificationState')!='candidate':failures.append('Active recheck failed: '+domain+' / '+type(error).__name__)
+    if not key and not openai: failures.append('No search provider key configured')
+    else:
+        for task in search_plan(profile):
+            check={k:task[k] for k in ('source','domain','query','geography','specialty') if k in task}
+            check.update(status='checked',candidates=0,note='',pagesOpened=0,verifiedOffers=0,staleResults=0)
+            if time.monotonic()-started>35*60:
+                check.update(status='skipped',note='Run time budget exhausted');report['sources'].append(check);failures.append('Search time budget exhausted');continue
+            try:
+                results=search(task['query'],key) if key else search_openai(task['query'],openai)
+                for result in results:
+                    url=result.get('url','')
+                    if not url.startswith('https://'):continue
+                    canonical=canonical_url(url);old=by_url.get(canonical)
+                    if canonical in submitted or (old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status']=='active')):continue
+                    domain=urllib.parse.urlsplit(url).hostname.removeprefix('www.')
+                    if task['source'].startswith('New source discovery') and domain in known_domains:continue
+                    if domain_finds[domain]>=6:continue
+                    source=task.get('name') if task.get('domain')==domain else domain
+                    markup='';offers=[]
+                    if pages<240 and domain_pages[domain]<12 and time.monotonic()-started<35*60:
+                        pages+=1;domain_pages[domain]+=1
+                        try:
+                            markup=fetch(url);live[domain]['pagesOpened']+=1
+                            offers=page_offers(markup,url,source,profile)
+                            if not offers and '/products/' in url:
+                                try:
+                                    offer=shopify_offer(url,source,profile,fetch)
+                                    if offer: offers=[offer]
+                                except Exception: pass
+                        except urllib.error.HTTPError as error:
+                            if error.code in (404,410):
+                                live[domain]['pagesOpened']+=1;live[domain]['staleResults']+=1;continue
+                        except Exception: pass
+                    if len(offers)==1 and offers[0]['searchScore']>=55:
+                        c=offers[0];c['verificationState']='verified'
+                        if old:c['id']=old['id']
+                        link_physical_horn(c,baseline);market_context(c,baseline)
+                        live[domain]['verifiedOffers']+=1
+                    else:
+                        c=candidate_hint(result,source,profile,markup)
+                        if old and old.get('verificationState')!='candidate':c=None
+                        if not c:continue
+                    c['url']=canonical;report['listings'].append(c);submitted.add(canonical);domain_finds[domain]+=1;check['candidates']+=1
+                    # The registry grows only from useful offer/lead evidence,
+                    # not every arbitrary URL returned by a search engine.
+                    live[domain]
+                check['note']=f"Search query reviewed; {check['candidates']} offers/leads retained. Search indexing does not establish live availability."
+            except Exception as error:
+                check.update(status='failed',note='Search provider failed: '+type(error).__name__);failures.append(check['source']+' search failed')
+            report['sources'].append(check);print(json.dumps({'source':check['source'],'status':check['status'],'candidates':check['candidates']}),flush=True)
+    if pages>=240:failures.append('Discovery page budget exhausted; promising unverified leads retained')
+    # Attribute live evidence once per actual domain; query success is separate.
+    by_domain={s['domain']:s for s in report['sources'] if s.get('domain')}
+    for domain,counts in live.items():
+        if domain not in by_domain:
+            if not domain_finds[domain] and domain not in known_domains: continue
+            check=dict(source='Live pages / '+domain,domain=domain,status='checked' if counts['pagesOpened'] else 'skipped',candidates=domain_finds[domain],note='Direct listing pages reviewed; stock evidence is stored per offer.' if counts['pagesOpened'] else 'Unverified search lead discovered; no live page accessed.',**counts)
+            report['sources'].append(check)
+        else:by_domain[domain].update(counts)
+    if failures:report.update(status='partial',error='; '.join(dict.fromkeys(failures)))
+    result=client.call('/runs',report);print(json.dumps(result),flush=True)
     return 0 if result.get('status')=='succeeded' else 2
 
 

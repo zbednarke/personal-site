@@ -321,6 +321,108 @@ func TestTrumpetPersistence(t *testing.T) {
 		}
 	})
 
+	t.Run("accumulated source evidence is private replay safe and atomic", func(t *testing.T) {
+		input := trumpetRunInput{ExternalID: "source-registry", Kind: "search", Status: "succeeded", Sources: []trumpetSourceCheck{{Source: "New specialist", Domain: "specialist.test", Geography: "Japan", Specialty: "vintage / custom", Query: "site:specialist.test used trumpet", Status: "checked", Candidates: 2, PagesOpened: 3, VerifiedOffers: 1, StaleResults: 1}}}
+		ingest(input, 200)
+		ingest(input, 200)
+		var queries, pages, offers, stale int
+		if err := isolated.QueryRow(ctx, `SELECT queries,pages_opened,verified_offers,stale_results FROM trumpet_sources WHERE user_id=$1 AND domain='specialist.test'`, user).Scan(&queries, &pages, &offers, &stale); err != nil || queries != 1 || pages != 3 || offers != 1 || stale != 1 {
+			t.Fatalf("registry replay: %d %d %d %d %v", queries, pages, offers, stale, err)
+		}
+		input.ExternalID = "registry-failed-query"
+		input.Status = "partial"
+		input.Sources[0].Status = "failed"
+		input.Sources[0].PagesOpened = 0
+		input.Sources[0].VerifiedOffers = 0
+		input.Sources[0].StaleResults = 0
+		ingest(input, 200)
+		isolated.QueryRow(ctx, `SELECT queries,successful_queries FROM trumpet_sources WHERE user_id=$1 AND domain='specialist.test'`, user).Scan(&queries, &pages)
+		if queries != 2 || pages != 1 {
+			t.Fatal("query reliability not retained")
+		}
+
+		input.ExternalID = "registry-skipped-query"
+		input.Sources[0].Status = "skipped"
+		ingest(input, 200)
+		isolated.QueryRow(ctx, `SELECT queries FROM trumpet_sources WHERE user_id=$1 AND domain='specialist.test'`, user).Scan(&queries)
+		if queries != 2 {
+			t.Fatal("skipped query falsely advanced rotation")
+		}
+		owner := call("GET", "/v1/trumpets/profile", nil, "owner", 200)
+		other := call("GET", "/v1/trumpets/profile", nil, "other", 200)
+		if !bytes.Contains(owner, []byte("specialist.test")) || bytes.Contains(other, []byte("specialist.test")) {
+			t.Fatal("source universe owner scope")
+		}
+		input.ExternalID = "registry-rollback"
+		input.Sources[0].Domain = "rolledback.test"
+		input.Listings = []trumpetCandidate{{Maker: "Taylor", Model: "Invalid owner", Title: "Invalid", Source: "Shop", URL: "https://rolledback.test/horn", HornID: uuid.NewString()}}
+		ingest(input, 400)
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_sources WHERE domain='rolledback.test'`).Scan(&queries)
+		if queries != 0 {
+			t.Fatal("source survived rejected run")
+		}
+		if err := migrate(ctx, isolated); err != nil {
+			t.Fatal("source registry migration replay", err)
+		}
+	})
+	t.Run("serial confirmed candidate promotion retains both private note histories", func(t *testing.T) {
+		price := 4000.0
+		verified := trumpetCandidate{Maker: "Eclipse", Model: "Custom", SerialNumber: "CUSTOM-77", Title: "Eclipse Custom Bb trumpet", URL: "https://eclipse.test/products/custom", Source: "Eclipse", Status: "active", Price: &price, Currency: "USD", SearchScore: 90, Description: "Original condition"}
+		r := trumpetRunInput{ExternalID: "canonical-horn", Kind: "search", Status: "succeeded", Sources: []trumpetSourceCheck{{Source: "Eclipse", Status: "checked"}}, Listings: []trumpetCandidate{verified}}
+		knownID := ingest(r, 200)["listingIds"].([]any)[0].(string)
+		call("PUT", "/v1/trumpets/listings/"+knownID+"/feedback", trumpetFeedback{InterestState: "interested", Notes: "Love the engineering", Favorite: true}, "owner", 200)
+		lead := trumpetCandidate{Maker: "Eclipse", Model: "URL hint", Title: "Eclipse trumpet", URL: "https://crosspost.test/item/eclipse", Source: "Marketplace", Status: "stale", VerificationState: "candidate", SearchScore: 70}
+		r.ExternalID = "crosspost-lead"
+		r.Listings = []trumpetCandidate{lead}
+		leadID := ingest(r, 200)["listingIds"].([]any)[0].(string)
+		call("PUT", "/v1/trumpets/listings/"+leadID+"/feedback", trumpetFeedback{InterestState: "watch", Notes: "Cool but too expensive"}, "owner", 200)
+		verified.ID = leadID
+		verified.URL = lead.URL
+		verified.Source = lead.Source
+		r.ExternalID = "serial-promotion"
+		r.Listings = []trumpetCandidate{verified}
+		ingest(r, 200)
+		var horns, meaningful int
+		var notes string
+		isolated.QueryRow(ctx, `SELECT count(DISTINCT horn_id) FROM trumpet_listings WHERE id::text=ANY($1)`, []string{knownID, leadID}).Scan(&horns)
+		isolated.QueryRow(ctx, `SELECT f.notes FROM trumpet_feedback f JOIN trumpet_listings l ON l.horn_id=f.horn_id WHERE l.id=$1`, leadID).Scan(&notes)
+		if horns != 1 || !strings.Contains(notes, "Love the engineering") || !strings.Contains(notes, "Cool but too expensive") {
+			t.Fatal("crosspost promotion lost identity or notes", horns)
+		}
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_events WHERE listing_id=$1 AND meaningful`, leadID).Scan(&meaningful)
+		if meaningful != 0 {
+			t.Fatal("same-price promoted crosspost alerted as discovery")
+		}
+
+		// Tiny changes accumulate without generating a price alert.
+		price = 3999
+		verified.Price = &price
+		verified.ID = knownID
+		verified.URL = "https://eclipse.test/products/custom"
+		verified.Source = "Eclipse"
+		r.ExternalID = "tiny-adjustment"
+		r.Listings = []trumpetCandidate{verified}
+		ingest(r, 200)
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_events WHERE listing_id=$1 AND kind='price drop' AND meaningful`, knownID).Scan(&meaningful)
+		if meaningful != 0 {
+			t.Fatal("tiny adjustment alerted")
+		}
+		verified.Description = "Seller adds artist provenance and condition documentation"
+		verified.Details.Condition = "UsedCondition"
+		r.ExternalID = "documentation-update"
+		r.Listings = []trumpetCandidate{verified}
+		ingest(r, 200)
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_events WHERE listing_id=$1 AND kind='details change' AND meaningful`, knownID).Scan(&meaningful)
+		if meaningful != 1 {
+			t.Fatal("description update not recorded")
+		}
+		var snapshots int
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_observations WHERE listing_id=$1 AND snapshot->>'description'<>''`, knownID).Scan(&snapshots)
+		if snapshots != 3 {
+			t.Fatal("description snapshots missing", snapshots)
+		}
+	})
+
 	// Reject owner hijacking and roll back the entire report.
 	c.ID = uuid.NewString()
 	run.ExternalID = "bad"
