@@ -566,8 +566,23 @@ def market_context(candidate,baseline):
 
 def daily(client):
     profile=client.call('/profile'); due=client.call('/due')['listings']; board=client.call('/listings')
-    known_domains={s['domain'] for s in profile.get('sourceUniverse',[])}
-    baseline=board.get('listings',[]);by_url={canonical_url(l['url']):l for l in baseline if l.get('url')}
+    baseline=board.get('listings',[])
+    # Previously tracked sources remain part of the pool even if they predate
+    # the normalized registry. Their next query/live check persists metadata.
+    universe={s['domain']:s for s in profile.get('sourceUniverse',[])}
+    for listing in baseline:
+        if not listing.get('url'):continue
+        domain=urllib.parse.urlsplit(listing['url']).hostname.removeprefix('www.')
+        universe.setdefault(domain,dict(domain=domain,name=listing['source'],geography='International / unknown',specialty='Previously tracked source'))
+    profile['sourceUniverse']=list(universe.values())
+    known_domains=set(universe)
+    # Daily due is also useful to external clients; each actual watch invocation
+    # revalidates all active offers, including manual reruns on the same UTC day.
+    due_by_id={l['id']:l for l in due}
+    for listing in baseline:
+        if listing['status']=='active' and not listing.get('acquired'):due_by_id[listing['id']]=listing
+    due=list(due_by_id.values())
+    by_url={canonical_url(l['url']):l for l in baseline if l.get('url')}
     report={'externalId':'adaptive-watch-'+dt.datetime.now(dt.timezone.utc).isoformat(),'startedAt':dt.datetime.now(dt.timezone.utc).isoformat(),
             'kind':'combined','status':'succeeded','sources':[],'listings':[],'error':''}
     failures=[];submitted=set();started=time.monotonic();candidate_checks=0;pages=0;domain_pages=collections.Counter();domain_finds=collections.Counter()
