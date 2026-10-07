@@ -35,6 +35,38 @@ class RunnerTests(unittest.TestCase):
         p=copy.deepcopy(PRODUCT);p['name']='Harrelson MUSE trumpet';p['productID']='other'
         self.assertIsNone(runner.recheck(c,lambda _:page(p),PROFILE))
         self.assertIsNone(runner.recheck(c,lambda _:page([PRODUCT,PRODUCT]),PROFILE))
+        self.assertEqual(runner.page_offers(page([PRODUCT,PRODUCT]),c['url'],'Dealer',PROFILE),[])
+    def test_candidate_hints_never_invent_market_facts(self):
+        c=runner.candidate_hint({'url':'https://shop.test/products/harrelson-muse-raw-brass-trumpet'},'Dealer',{'priorityMakers':['Harrelson']})
+        self.assertEqual(c['verificationState'],'candidate');self.assertEqual(c['status'],'stale')
+        self.assertIsNone(c['price']);self.assertEqual(c['serialNumber'],'');self.assertEqual(c['images'],[])
+        for url in ['https://shop.test/collections/taylor-trumpet','https://shop.test/blog/taylor-trumpet','https://shop.test/products/taylor-mouthpiece','https://shop.test/products/yamaha-ytr2330-trumpet']:
+            self.assertIsNone(runner.candidate_hint({'url':url},'Dealer',PROFILE))
+    def test_dealer_metadata_requires_explicit_stock_currency_price(self):
+        markup='<title>Taylor Chicago II trumpet</title><meta property="product:price:amount" content="2100"><meta property="product:price:currency" content="USD">'
+        self.assertEqual(runner.page_offers(markup,'https://shop.test/product/taylor','Dealer',PROFILE),[])
+        c=runner.page_offers(markup+'<meta property="product:availability" content="in stock">','https://shop.test/product/taylor','Dealer',PROFILE)[0]
+        self.assertEqual(c['price'],2100);self.assertEqual(c['status'],'active')
+        self.assertEqual(runner.page_offers(markup+'<meta property="price" content="12">','https://shop.test/product/taylor','Dealer',PROFILE),[])
+    def test_shopify_variants_and_zero_decimal_currency(self):
+        product={'title':'Taylor Chicago II trumpet','id':7,'variants':[{'price':200000,'available':True}]}
+        def get(url): return json.dumps({'currency':'JPY'} if url.endswith('/cart.js') else product)
+        c=runner.shopify_offer('https://shop.test/products/taylor','Dealer',PROFILE,get)
+        self.assertEqual(c['price'],200000);self.assertEqual(c['currency'],'JPY')
+        product['variants'].append({'price':250000,'available':True})
+        self.assertIsNone(runner.shopify_offer('https://shop.test/products/taylor','Dealer',PROFILE,get))
+        product['variants']=[{'price':100,'available':None}]
+        self.assertIsNone(runner.shopify_offer('https://shop.test/products/taylor','Dealer',PROFILE,get))
+    def test_candidate_promotes_only_unambiguous_offer(self):
+        c=runner.candidate_hint({'url':'https://shop.test/products/taylor-chicago-trumpet'},'Dealer',PROFILE);c['id']='hint'
+        result=runner.recheck(c,lambda _:page(PRODUCT),PROFILE)
+        self.assertEqual(result['id'],'hint');self.assertEqual(result['verificationState'],'verified');self.assertEqual(result['price'],2400)
+        self.assertIsNone(runner.recheck(c,lambda _:page([PRODUCT,PRODUCT]),PROFILE))
+        self.assertEqual(runner.page_offers(page([PRODUCT,PRODUCT]),c['url'],'Dealer',PROFILE),[])
+    def test_all_priority_maker_searches_are_present(self):
+        queries=' '.join(runner.MAKER_QUERIES).lower()
+        for name in ['taylor','harrelson','ar resonance','monette','adams','blackburn','van laar','inderbinen','lawler','lotus','eclipse','del quadro','bac','calicchio','schilke','benge']:
+            self.assertIn(name,queries)
     def test_private_network_blocked(self):
         for url in ['http://shop.test/horn','file:///etc/passwd','https://user:pass@shop.test/horn']:
             with self.assertRaises(ValueError): runner.safe_remote(url)

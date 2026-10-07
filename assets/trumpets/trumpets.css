@@ -970,3 +970,19 @@ dialog textarea {
     scroll-behavior: auto !important;
   }
 }
+/* Three private views stay reachable on narrow phones. */
+@media (max-width: 650px) {
+  .view-nav {
+    gap: 16px;
+  }
+  .view-nav button {
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  .view-nav button span {
+    margin-left: 5px;
+  }
+  .day-note {
+    display: none;
+  }
+}

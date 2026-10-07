@@ -61,6 +61,20 @@ func TestTrumpetValidation(t *testing.T) {
 			t.Fatal("bad candidate accepted")
 		}
 	}
+	hint := good
+	hint.VerificationState = "candidate"
+	hint.Status = "stale"
+	if err := normalizeTrumpet(&hint); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*trumpetCandidate){func(c *trumpetCandidate) { c.Status = "active" }, func(c *trumpetCandidate) { p := 100.0; c.Price = &p }, func(c *trumpetCandidate) { c.SerialNumber = "123" }} {
+		bad := hint
+		mutate(&bad)
+		if normalizeTrumpet(&bad) == nil {
+			t.Fatal("unverified facts accepted")
+		}
+	}
+
 	for _, c := range historicalTrumpets() {
 		if err := normalizeTrumpet(&c); err != nil {
 			t.Fatalf("seed %s: %v", c.Title, err)

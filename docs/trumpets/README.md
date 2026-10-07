@@ -298,3 +298,36 @@ proxy as well as Jazz; use the isolated preview for tests.
 
 [Desktop Today](screenshots/today.png) · [All tracked](screenshots/all-tracked.png) ·
 [Mobile](screenshots/mobile.png) · [Mobile notes](screenshots/mobile-notes.png)
+
+
+## Expanded discovery and candidate review
+
+Candidates accumulates worthwhile search leads when a dealer blocks access or lacks
+an unambiguous offer. These are explicitly unverified: no invented price, stock,
+posted date, serial number or photo, and no market observations or Today alerts.
+Rating, notes and favorites work privately. Set interest to `pass` to dismiss a lead
+and exclude it from automated rediscovery/rechecks. Leads are retried daily; an
+unambiguous verified offer promotes the same row, preserving first seen, feedback
+and URL identity. Search hints cannot downgrade verified price/status history.
+Acquired horns remain excluded.
+
+Runs search the 27 source groups, new sources and private offers, plus nine explicit
+maker/model queries covering boutique makers and exceptional production models.
+Parsers accept individual Product JSON-LD offers, dealer product metadata with
+explicit price/currency/stock, and Shopify product JSON with explicit variant stock
+and cart currency. Ambiguous variant prices and related products are rejected.
+JPY prices retain zero-decimal units. Unverified leads have a lower triage threshold
+(45 versus 55 for verified active offers).
+
+Discovery is bounded to 240 page inspections and 35 minutes after starting the run;
+active listing rechecks happen first, then up to 40 queued leads. Remaining promising result URLs can still enter
+the queue. Source coverage records actual checks and unsupported pages, rather than
+claiming exhaustive inventory. Authenticated clients can consume all freeform feedback;
+the automated runner uses structured preferences and passes without interpreting notes.
+
+Deployment adds replay-safe migration `022_trumpet_candidates.sql`, API/UI changes
+and the updated stdlib runner. No Caddy, Cloud Run environment or secret changes are
+required. Deploy the API before the runner/UI to support `verificationState`.
+The existing VM timer stays daily at 13:17 UTC; the expanded runner uses a versioned
+daily idempotency key so it can run once on upgrade.
+[Candidate queue screenshot](screenshots/candidates.png) uses synthetic data.

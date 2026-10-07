@@ -272,6 +272,55 @@ func TestTrumpetPersistence(t *testing.T) {
 	if ingest(run, 200)["status"] != "partial" {
 		t.Fatal("unchecked active horn accepted as successful recheck")
 	}
+	t.Run("candidate queue promotes without losing feedback or inventing history", func(t *testing.T) {
+		hint := trumpetCandidate{Maker: "Taylor", Model: "URL hint", Title: "Taylor Chicago trumpet", URL: "https://dealer.test/products/taylor-hint", Source: "Dealer", Status: "stale", VerificationState: "candidate", SearchScore: 70}
+		r := trumpetRunInput{ExternalID: "hint", Kind: "search", Status: "succeeded", Sources: []trumpetSourceCheck{{Source: "Dealer", Status: "checked"}}, Listings: []trumpetCandidate{hint}}
+		hintID := ingest(r, 200)["listingIds"].([]any)[0].(string)
+		var observations, meaningful int
+		var checked bool
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_observations WHERE listing_id=$1`, hintID).Scan(&observations)
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_events WHERE listing_id=$1 AND meaningful`, hintID).Scan(&meaningful)
+		isolated.QueryRow(ctx, `SELECT last_checked IS NOT NULL FROM trumpet_listings WHERE id=$1`, hintID).Scan(&checked)
+		if observations != 0 || meaningful != 0 || checked {
+			t.Fatal("hint invented market history")
+		}
+		f := trumpetFeedback{InterestState: "watch", Notes: "Keep this lead", Favorite: true}
+		call("PUT", "/v1/trumpets/listings/"+hintID+"/feedback", f, "owner", 200)
+		hint.VerificationState = "verified"
+		hint.Status = "active"
+		hint.Model = "Chicago II"
+		p := 2100.0
+		hint.Price = &p
+		r.ExternalID = "hint-verified"
+		r.Listings = []trumpetCandidate{hint}
+		if ingest(r, 200)["listingIds"].([]any)[0] != hintID {
+			t.Fatal("promotion lost identity")
+		}
+		data := call("GET", "/v1/trumpets/listings", nil, "owner", 200)
+		var b struct{ Listings []trumpetListing }
+		json.Unmarshal(data, &b)
+		for _, l := range b.Listings {
+			if l.ID == hintID && (l.VerificationState != "verified" || l.Model != "Chicago II" || l.Feedback.Notes != "Keep this lead" || len(l.PriceHistory) != 1) {
+				t.Fatal("promotion lost feedback or history", l)
+			}
+		}
+		hint.VerificationState = "candidate"
+		hint.Status = "stale"
+		hint.Price = nil
+		r.ExternalID = "hint-rediscovered"
+		r.Listings = []trumpetCandidate{hint}
+		ingest(r, 200)
+		var state, status string
+		var money float64
+		isolated.QueryRow(ctx, `SELECT verification_state,status,price FROM trumpet_listings WHERE id=$1`, hintID).Scan(&state, &status, &money)
+		if state != "verified" || status != "active" || money != 2100 {
+			t.Fatal("search hint downgraded verified offer")
+		}
+		if err := migrate(ctx, isolated); err != nil {
+			t.Fatal("candidate migration replay", err)
+		}
+	})
+
 	// Reject owner hijacking and roll back the entire report.
 	c.ID = uuid.NewString()
 	run.ExternalID = "bad"

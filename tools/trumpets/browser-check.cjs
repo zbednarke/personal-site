@@ -143,6 +143,19 @@ const base = "http://127.0.0.1:4173";
         },
       ],
     };
+    report.listings.push({
+      maker: "Lawler",
+      model: "C7 search hint",
+      title: "Lawler C7 · UNVERIFIED TEST FIXTURE",
+      url: "https://fixtures.invalid/products/lawler-c7",
+      source: "Independent dealer · TEST FIXTURE",
+      status: "stale",
+      verificationState: "candidate",
+      price: null,
+      searchScore: 72,
+      searchRationale: "Unverified test lead. Price and availability unknown.",
+      tags: ["TEST FIXTURE"],
+    });
     const response = await fetch(
       base + "/trumpets/api/v1/trumpets/machine/runs",
       {
@@ -169,6 +182,23 @@ const base = "http://127.0.0.1:4173";
       ),
       false,
     );
+    await page.getByRole("button", { name: /Candidates/ }).click();
+    assert.equal(await page.locator(".card").count(), 1);
+    assert.match(await page.locator(".card").innerText(), /UNVERIFIED/);
+    assert.match(await page.locator(".card").innerText(), /Price unverified/);
+    await page.screenshot({ path: path.join(out, "candidates.png") });
+    for (const width of [320, 390, 768, 1440]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth > innerWidth,
+        ),
+        false,
+        `candidate overflow at ${width}px`,
+      );
+    }
+    await page.setViewportSize({ width: 1440, height: 1450 });
+    await page.getByRole("button", { name: /All tracked/ }).click();
     await page.locator(".notes").first().click();
     await page
       .locator("textarea[name=notes]")

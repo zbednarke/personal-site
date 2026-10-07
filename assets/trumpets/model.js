@@ -74,6 +74,7 @@
       ...board,
       listings: (board.listings || []).map((l) => ({
         ...l,
+        verificationState: l.verificationState || "verified",
         details: l.details || {},
         images: (l.images || []).filter(safeURL),
         tags: l.tags || [],
@@ -106,6 +107,11 @@
         .join(" ")
         .toLowerCase();
       return (
+        (f.view === "candidates"
+          ? l.verificationState === "candidate" &&
+            !l.acquired &&
+            fb.interestState !== "pass"
+          : l.verificationState !== "candidate") &&
         (f.view !== "today" ||
           (todayIds.has(l.id) && !l.acquired && l.status !== "acquired")) &&
         (!f.active || l.status === "active") &&
@@ -133,6 +139,7 @@
   }
   function badges(l, events) {
     const out = [];
+    if (l.verificationState === "candidate") out.push("UNVERIFIED");
     const kinds = new Set(
       events.filter((e) => e.listingId === l.id).map((e) => e.kind),
     );
