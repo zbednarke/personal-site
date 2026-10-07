@@ -139,6 +139,10 @@ used; generated prose is never taken as listing evidence. Dealer searches filter
 returned URLs to the requested domains. Private notes are not sent to the search
 provider. Both providers feed the same source-page verification, normalization,
 dedupe and feedback scoring pipeline.
+Temporary OpenAI HTTP/rate-limit/network errors get at most three attempts with
+bounded backoff. Authentication failures are not retried. Exhausted failures remain
+visible as partial coverage, never invented results. Progress logs contain only
+source name, status and counts.
 
 ### VM-hosted daily job
 
