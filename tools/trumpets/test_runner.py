@@ -228,3 +228,9 @@ class InternationalRecheckTests(unittest.TestCase):
     def test_explicit_instrument_brand_outranks_modifier_name(self):
         p=copy.deepcopy(PRODUCT);p['name']='Harrelson modified Taylor Chicago 46 II Bb trumpet';p['brand']={'name':'Taylor'}
         self.assertEqual(runner.normalize_product(p,'https://shop.test/horn','Shop',PROFILE)['maker'],'Taylor')
+
+class SerialEvidenceTests(unittest.TestCase):
+    def test_unknown_serial_text_cannot_create_a_shared_physical_identity(self):
+        for placeholder in ['unknown','not provided','N/A','0']:
+            p=copy.deepcopy(PRODUCT);p['description']='Professional Bb trumpet. Serial: '+placeholder
+            self.assertEqual(runner.normalize_product(p,'https://shop.test/horn','Dealer',PROFILE)['serialNumber'],'')

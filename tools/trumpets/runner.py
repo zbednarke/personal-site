@@ -225,6 +225,7 @@ def normalize_product(product,url,source,profile):
     if not serial:
         match=re.search(r'\bserial(?: number| no\.?)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9-]{1,30})',description,re.I)
         if match: serial=match[1]
+    if serial.strip().lower() in ('unknown','none','not','n/a','na','not provided','not available','undisclosed','tbd','0'):serial=''
     condition=str(product.get('itemCondition','')).rsplit('/',1)[-1]
     properties=product.get('additionalProperty',[])
     if isinstance(properties,dict): properties=[properties]
@@ -417,8 +418,9 @@ def recheck(listing, get_page, profile):
     if p['price'] is not None:
         c.update(price=p['price'],currency=p['currency'])
         if p['currency']!=old_currency: c['shipping']=None
-    elif p['currency']!=old_currency:
+    else:
         c['evidence']+=' / current price unpublished; prior price and its original currency retained'
+        c['searchRationale']+=' Current asking price unpublished; the displayed amount is last known, not freshly verified.'
     if p.get('shipping') is not None and p['currency']==c.get('currency'):c['shipping']=p['shipping']
     for key in ('description','seller','location','serialNumber','postedAt'):
         if p.get(key) not in (None,''): c[key]=p[key]
