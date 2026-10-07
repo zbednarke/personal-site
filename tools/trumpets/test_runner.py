@@ -215,3 +215,22 @@ class DailyPersistenceTests(unittest.TestCase):
         self.assertEqual(sum(s['pagesOpened'] for s in evidence),1)
         self.assertEqual(sum(s['verifiedOffers'] for s in evidence),1)
         self.assertTrue(any(s['source'].startswith('New source discovery') for s in client.report['sources']))
+
+class InternationalRecheckTests(unittest.TestCase):
+    def test_unpublished_price_retains_original_currency_and_shipping(self):
+        c=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE);c['shipping']=40
+        p=copy.deepcopy(PRODUCT);p['offers'].pop('price');p['offers']['priceCurrency']='EUR';p['offers']['shippingDetails']={'shippingRate':{'value':50,'currency':'EUR'}}
+        result=runner.recheck(c,lambda _:page(p),PROFILE)
+        self.assertEqual((result['price'],result['currency'],result['shipping']),(2400,'USD',40))
+        p['offers']['price']='2100';p['offers'].pop('shippingDetails')
+        result=runner.recheck(c,lambda _:page(p),PROFILE)
+        self.assertEqual((result['price'],result['currency'],result['shipping']),(2100,'EUR',None))
+    def test_explicit_instrument_brand_outranks_modifier_name(self):
+        p=copy.deepcopy(PRODUCT);p['name']='Harrelson modified Taylor Chicago 46 II Bb trumpet';p['brand']={'name':'Taylor'}
+        self.assertEqual(runner.normalize_product(p,'https://shop.test/horn','Shop',PROFILE)['maker'],'Taylor')
+
+class SerialEvidenceTests(unittest.TestCase):
+    def test_unknown_serial_text_cannot_create_a_shared_physical_identity(self):
+        for placeholder in ['unknown','not provided','N/A','0']:
+            p=copy.deepcopy(PRODUCT);p['description']='Professional Bb trumpet. Serial: '+placeholder
+            self.assertEqual(runner.normalize_product(p,'https://shop.test/horn','Dealer',PROFILE)['serialNumber'],'')

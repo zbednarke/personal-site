@@ -173,6 +173,7 @@ def normalize_product(product,url,source,profile):
     maker=identify_maker(title) or identify_maker(description)
     brand=product.get('brand',{})
     if isinstance(brand,dict): brand=brand.get('name','')
+    if isinstance(brand,str) and brand.lower() in {m.lower() for m in MAKERS}: maker=next(m for m in MAKERS if m.lower()==brand.lower())
     if not maker: maker=str(brand or '')
     if not maker: return None
     offers=product.get('offers') or {}
@@ -224,6 +225,7 @@ def normalize_product(product,url,source,profile):
     if not serial:
         match=re.search(r'\bserial(?: number| no\.?)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9-]{1,30})',description,re.I)
         if match: serial=match[1]
+    if serial.strip().lower() in ('unknown','none','not','n/a','na','not provided','not available','undisclosed','tbd','0'):serial=''
     condition=str(product.get('itemCondition','')).rsplit('/',1)[-1]
     properties=product.get('additionalProperty',[])
     if isinstance(properties,dict): properties=[properties]
@@ -411,8 +413,16 @@ def recheck(listing, get_page, profile):
             return c
         return None
     p=matched[0]
-    c.update(status=authoritative or p['status'],price=p['price'] if p['price'] is not None else c.get('price'),currency=p['currency'],evidence=p['evidence'],searchScore=p['searchScore'],searchRationale=p['searchRationale'],tags=p['tags'])
-    for key in ('description','seller','location','serialNumber','postedAt','shipping'):
+    old_currency=c.get('currency')
+    c.update(status=authoritative or p['status'],evidence=p['evidence'],searchScore=p['searchScore'],searchRationale=p['searchRationale'],tags=p['tags'])
+    if p['price'] is not None:
+        c.update(price=p['price'],currency=p['currency'])
+        if p['currency']!=old_currency: c['shipping']=None
+    else:
+        c['evidence']+=' / current price unpublished; prior price and its original currency retained'
+        c['searchRationale']+=' Current asking price unpublished; the displayed amount is last known, not freshly verified.'
+    if p.get('shipping') is not None and p['currency']==c.get('currency'):c['shipping']=p['shipping']
+    for key in ('description','seller','location','serialNumber','postedAt'):
         if p.get(key) not in (None,''): c[key]=p[key]
     c['details']={**c.get('details',{}),**{k:v for k,v in p.get('details',{}).items() if v}}
     if authoritative: c['evidence']+=' / live product stock badge overrides metadata'
