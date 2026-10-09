@@ -307,20 +307,43 @@
     return element.innerHTML;
   }
 
+  // Tune progress comes from the repertoire service; the legacy campaign map is
+  // only a fallback while it is unavailable. Seven milestones map onto the old
+  // six-star scale so XP stays comparable.
+  function repertoireStats() {
+    const repertoire = globalThis.JazzRepertoire;
+    if (!repertoire?.loaded()) {
+      return {
+        startedTunes: Object.values(state.repertoire).filter((stage) => Number(stage) > 0).length,
+        stages: Object.values(state.repertoire).reduce((sum, stage) => sum + Number(stage || 0), 0),
+        maxStages: DATA.repertoire.length * 6,
+      };
+    }
+    const tunes = repertoire.tunes();
+    const chosen = tunes.filter((tune) => tune.chosen);
+    const solidCount = (tune) => Object.values(tune.milestones || {}).filter((status) => status === "solid").length;
+    return {
+      startedTunes: tunes.filter((tune) => tune.practiceStatus !== "not_started").length,
+      stages: chosen.reduce((sum, tune) => sum + Math.round((6 * solidCount(tune)) / 7), 0),
+      maxStages: Math.max(1, chosen.length * 6),
+    };
+  }
+
   function renderStats() {
     const totalMinutes = state.practice.reduce((sum, item) => sum + Number(item.minutes || 0), 0);
-    const startedTunes = Object.values(state.repertoire).filter((stage) => Number(stage) > 0).length;
+    const tuneStats = repertoireStats();
+    const startedTunes = tuneStats.startedTunes;
     const bosses = Object.values(state.bosses).filter(Boolean).length;
     const skillLevels = Object.values(state.skillLevels).reduce((sum, level) => sum + Number(level || 0), 0);
     const objectives = Object.values(state.objectives).filter(Boolean).length;
-    const repertoireStages = Object.values(state.repertoire).reduce((sum, stage) => sum + Number(stage || 0), 0);
+    const repertoireStages = tuneStats.stages;
     const sceneSteps = Object.values(state.scene).filter(Boolean).length;
     const xp = totalMinutes + skillLevels * 80 + objectives * 35 + repertoireStages * 45 + bosses * 250 + sceneSteps * 90;
     const level = Math.floor(xp / 1000) + 1;
 
     const skillPart = skillLevels / (DATA.skills.length * MAX_SKILL_LEVEL);
     const missionPart = objectives / DATA.mission.objectives.length;
-    const tunePart = repertoireStages / (DATA.repertoire.length * 6);
+    const tunePart = repertoireStages / tuneStats.maxStages;
     const bossPart = bosses / DATA.bosses.length;
     const scenePart = sceneSteps / DATA.sceneSteps.length;
     const progress = Math.round((skillPart * 0.42 + missionPart * 0.16 + tunePart * 0.16 + bossPart * 0.18 + scenePart * 0.08) * 100);
@@ -379,6 +402,8 @@
           title: block.title,
           detail: block.instructions || curriculum.detail || "Open practice block.",
           win: curriculum.win || "",
+          // The block's own link wins; older APIs without tuneId fall back to the curriculum.
+          tuneId: typeof block.tuneId === "string" ? block.tuneId : (curriculum.tuneId || ""),
         };
       });
     if (practiceLayoutDraft) practiceLayoutDraft = globalThis.JazzPracticeLayout.reconcile(practiceLayoutDraft, practiceSections.map((session) => session.id));
@@ -399,6 +424,7 @@
         track: session.track,
         targetMinutes: session.minutes,
         dayOnly: Boolean(session.practiceDate),
+        tuneId: session.tuneId || "",
       }));
       const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), definitions);
       applyPracticeBlocks(result.blocks || []);
@@ -471,6 +497,7 @@
     try {
       await save;
       updateSectionSyncStatus(session.id, "Saved", "saved");
+      if (session.tuneId) globalThis.JazzRepertoire?.invalidate(session.tuneId);
     } catch {
       updateSectionSyncStatus(session.id, "Sync pending", "pending");
     } finally {
@@ -1260,6 +1287,15 @@
         card.appendChild(nameField);
         $("[data-section-rename]", card)?.addEventListener("click", () => { nameField.hidden = false; input.focus(); input.select(); });
       }
+      if (session.tuneId && !practiceLayoutDraft) {
+        const tune = globalThis.JazzRepertoire?.byId(session.tuneId);
+        const pill = document.createElement("a");
+        pill.className = "plan-tune-pill";
+        pill.href = `#repertoire/${encodeURIComponent(session.tuneId)}`;
+        pill.textContent = `♪ ${tune?.title || session.tuneId}${tune?.archivedAt ? " (archived)" : ""}`;
+        pill.setAttribute("aria-label", `Open tune ${pill.textContent.slice(2)}`);
+        card.appendChild(pill);
+      }
       const dragHandle = $("[data-section-drag]", card);
       if (dragHandle) wireSectionDrag(dragHandle, session);
       $(".practice-plan-select", card).addEventListener("click", () => {
@@ -1363,8 +1399,51 @@
       reference.textContent = session.sourceLabel || "Open practice reference";
       $(".selected-section-head > div", card).appendChild(reference);
     }
+    if (block && (session.tuneId || session.category === "repertoire") && globalThis.JazzRepertoire) {
+      const tuneSlot = document.createElement("div");
+      tuneSlot.className = "section-tune-slot";
+      $(".selected-progress", card).before(tuneSlot);
+      const link = async (tuneId) => {
+        try {
+          const updated = await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, { tuneId });
+          guidedBlocks.set(session.id, { ...guidedBlockFor(session), ...updated });
+          session.tuneId = updated.tuneId || "";
+          showToast(tuneId ? `Linked to ${globalThis.JazzRepertoire.title(tuneId)}` : "Unlinked from the tune");
+          globalThis.JazzRepertoire.invalidate();
+        } catch (error) {
+          showToast(`Could not change the tune link: ${error.message}`);
+        }
+        renderSessions();
+      };
+      if (session.tuneId) globalThis.JazzRepertoire.renderTuneCard(tuneSlot, session.tuneId, block.id, { onUnlink: () => link("") });
+      else globalThis.JazzRepertoire.renderLinkPicker(tuneSlot, link);
+    }
     panel.appendChild(card);
     wireSectionTools(card, session, block);
+  }
+
+  // Practice now from the Repertoire view: focus today's existing section for the
+  // tune, or add one. Never steals the selection from a take in progress.
+  async function addTuneBlock(definition, tune) {
+    if (!guidedBlocksReady) throw new Error("Today’s plan is still syncing");
+    const existing = practiceSections.find((session) => session.tuneId === definition.tuneId);
+    const recording = Boolean(activeSectionRecordingID);
+    if (existing) {
+      if (!recording) selectedPracticeSectionID = existing.id;
+      location.hash = "#today";
+      renderSessions();
+      showToast(recording ? `${tune.title} is already in today’s plan; finish the current take to switch.` : `${tune.title} is already in today’s plan`);
+      return existing;
+    }
+    if (practiceSections.length >= 20) throw new Error("Today’s plan already has 20 sections.");
+    const position = Math.min(99, Math.max(-1, ...practiceSections.map((section) => Number(section.position ?? -1))) + 1);
+    const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), [{ ...definition, position }], "add");
+    applyPracticeBlocks(result.blocks || []);
+    if (!recording) selectedPracticeSectionID = definition.blockKey;
+    location.hash = "#today";
+    renderSessions();
+    showToast(recording ? "Added; finish the current take to switch." : `${tune.title} added to today’s plan`);
+    return practiceSections.find((session) => session.id === definition.blockKey);
   }
 
   function renderWeek() {
@@ -1530,33 +1609,6 @@
     $("#level-up").textContent = level >= MAX_SKILL_LEVEL ? "Skill mastered" : "Complete next level";
   }
 
-  function renderRepertoire() {
-    const grid = $("#repertoire-grid");
-    grid.replaceChildren();
-    DATA.repertoire.forEach((tune, index) => {
-      const stage = Math.max(0, Math.min(6, Number(state.repertoire[tune.id] || 0)));
-      const card = document.createElement("article");
-      card.className = `tune-card${tune.current ? " current" : ""}`;
-      card.innerHTML = `
-        <span class="tune-index">${String(index + 1).padStart(2, "0")}${tune.current ? " · CURRENT" : ""}</span>
-        <h3>${tune.title}</h3>
-        <p class="tune-lesson">${tune.lesson}</p>
-        <div class="stars" aria-label="${stage} of 6 stages">${[1,2,3,4,5,6].map((n) => `<span class="${n <= stage ? "on" : ""}">★</span>`).join("")}</div>
-        <div class="tune-stage">${DATA.repertoireStages[stage]}</div>
-        <div class="tune-actions">
-          <button type="button" data-direction="down" aria-label="Move ${tune.title} back one stage" ${stage === 0 ? "disabled" : ""}>−</button>
-          <button type="button" data-direction="up" aria-label="Advance ${tune.title} one stage" ${stage === 6 ? "disabled" : ""}>${stage === 6 ? "Gig ready" : "+ Advance"}</button>
-        </div>`;
-      $$("button", card).forEach((button) => button.addEventListener("click", () => {
-        const direction = button.dataset.direction === "up" ? 1 : -1;
-        state.repertoire[tune.id] = Math.max(0, Math.min(6, stage + direction));
-        saveState("repertoire.stage_changed");
-        renderAll();
-      }));
-      grid.appendChild(card);
-    });
-  }
-
   function renderRoadmap() {
     const grid = $("#roadmap-grid");
     grid.replaceChildren();
@@ -1619,7 +1671,6 @@
     renderMission();
     renderTrackTabs();
     renderSkillTree();
-    renderRepertoire();
     renderScene();
     renderBosses();
     if ($("#skill-dialog").open) renderSkillDialog();
@@ -1628,6 +1679,9 @@
   function setupDialogs() {
     $$('[data-close-dialog]').forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
     $$('dialog').forEach((dialog) => dialog.addEventListener("click", (event) => {
+      // Backdrop clicks target the dialog itself. Pressing Enter in a form
+      // synthesizes a click at (0, 0) on its submit button, which is not one.
+      if (event.target !== dialog) return;
       const rect = dialog.getBoundingClientRect();
       const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
       if (outside) dialog.close();
@@ -1647,11 +1701,36 @@
       status.textContent = "";
       dialog.close();
     };
+    const tuneField = $("#new-section-tune-field");
+    const tuneSelect = $("#new-section-tune");
+    const refreshTuneSelect = (selected = tuneSelect?.value || "") => {
+      if (!tuneSelect || !globalThis.JazzRepertoire) return;
+      tuneSelect.innerHTML = globalThis.JazzRepertoire.tuneOptionsMarkup(selected, { includeNew: true, placeholder: "No specific tune" });
+    };
+    const syncTuneField = () => {
+      if (!tuneField) return;
+      tuneField.hidden = $("#new-section-type").value !== "tune";
+      if (!tuneField.hidden) {
+        refreshTuneSelect();
+        globalThis.JazzRepertoire?.load().then(() => refreshTuneSelect());
+      }
+    };
+    $("#new-section-type")?.addEventListener("change", syncTuneField);
+    tuneSelect?.addEventListener("change", () => {
+      if (tuneSelect.value === "__new") {
+        tuneSelect.value = "";
+        globalThis.JazzRepertoire?.openCreate({ onCreated: (tune) => refreshTuneSelect(tune.tuneId) });
+        return;
+      }
+      const title = $("#new-section-title");
+      if (tuneSelect.value && !title.value.trim()) title.value = globalThis.JazzRepertoire?.title(tuneSelect.value) || "";
+    });
     openButton.addEventListener("click", () => {
       if (!guidedBlocksReady) {
         showToast("The practice plan is still syncing");
         return;
       }
+      syncTuneField();
       dialog.showModal();
       $("#new-section-title")?.focus();
     });
@@ -1664,6 +1743,7 @@
       const title = $("#new-section-title").value.trim();
       const instructions = $("#new-section-instructions").value.trim();
       const type = $("#new-section-type").value;
+      const tuneId = type === "tune" ? ($("#new-section-tune")?.value || "") : "";
       const minutes = Number($("#new-section-minutes").value);
       const presets = {
         fundamentals: { category: "fundamentals", track: "trumpet" },
@@ -1696,10 +1776,12 @@
           category: preset.category,
           track: preset.track,
           targetMinutes: minutes,
+          ...(tuneId && tuneId !== "__new" ? { tuneId } : {}),
         }], "add");
         applyPracticeBlocks(result.blocks || []);
         selectedPracticeSectionID = blockKey;
         form.reset();
+        syncTuneField();
         closeDialog();
         renderSessions();
         showToast(`${title} added to today’s plan`);
@@ -1773,6 +1855,11 @@
   }
 
   renderRoadmap();
+  globalThis.JazzTodayPlan = { addTuneBlock };
+  addEventListener("jazz:repertoire-changed", () => {
+    renderStats();
+    renderSessions({ planOnly: true });
+  });
   globalThis.JazzPracticeTimer = {
     context: toolPracticeContext,
     begin: beginToolPractice,

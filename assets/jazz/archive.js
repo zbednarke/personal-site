@@ -109,7 +109,8 @@
   }
 
   function visibleView() {
-    if (location.hash === "#archive") return "archive";
+    if (location.hash === "#archive" || location.hash.startsWith("#archive/")) return "archive";
+    if (location.hash === "#repertoire" || location.hash.startsWith("#repertoire/") || location.hash.startsWith("#repertoire?")) return "repertoire";
     if (location.hash === "#guide-tones") return "guide-tones";
     if (location.hash === "#studio") return "studio";
     if (location.hash === "#effects") return "effects";
@@ -140,12 +141,14 @@
     document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
     document.body.classList.toggle("virtuoso-studio", view === "studio");
     document.body.classList.toggle("virtuoso-effects", view === "effects");
+    document.body.classList.toggle("virtuoso-repertoire", view === "repertoire");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
     $("#guide-tones").hidden = view !== "guide-tones";
     $("#studio").hidden = view !== "studio";
     $("#effects").hidden = view !== "effects";
-    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", today: "Today" };
+    $("#repertoire").hidden = view !== "repertoire";
+    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", repertoire: "Repertoire", today: "Today" };
     $("#mobile-view-label").textContent = labels[view];
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;
@@ -153,15 +156,40 @@
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
-    if (view === "archive" && !state.initialized) initializeArchive();
+    const deepLink = archiveDeepLink();
+    if (view === "archive" && !state.initialized) initializeArchive(deepLink);
+    else if (view === "archive" && deepLink) openDeepLink(deepLink);
+    if (view === "repertoire") globalThis.JazzRepertoire?.route();
     if (view === "effects") requestAnimationFrame(resizeEffectsFrame);
     if (view !== "effects") $("#effects-frame")?.contentWindow?.postMessage({ type: "jazz:effects-stop" }, location.origin);
     document.dispatchEvent(new CustomEvent("jazz:view-change", { detail: { view } }));
   }
 
-  async function initializeArchive() {
+  // #archive/2026-10-08 opens a day; #archive/2026-10-08/<recording id> also plays that take.
+  function archiveDeepLink() {
+    const match = /^#archive\/(\d{4}-\d{2}-\d{2})(?:\/([0-9a-f-]{36}))?$/.exec(location.hash);
+    return match && U.parseDateKey(match[1]) ? { date: match[1], recordingID: match[2] || "" } : null;
+  }
+
+  async function openDeepLink(link, { loadCalendar = false } = {}) {
+    const date = U.parseDateKey(link.date);
+    const month = new Date(date.getFullYear(), date.getMonth(), 1);
+    if (loadCalendar || month.getTime() !== state.month.getTime()) {
+      state.month = month;
+      await loadMonth();
+    }
+    await selectDay(link.date);
+    const recording = (state.day?.recordings || []).find((item) => item.id === link.recordingID);
+    if (recording) selectRecording(recording);
+  }
+
+  async function initializeArchive(deepLink = null) {
     state.initialized = true;
     wireArchiveControls();
+    if (deepLink) {
+      await openDeepLink(deepLink, { loadCalendar: true });
+      return;
+    }
     await loadMonth();
     await selectDay(state.selectedDate);
   }
@@ -405,7 +433,7 @@
   }
 
   function renderPlayerMetadata(recording) {
-    const tune = globalThis.JAZZ_DATA?.repertoire?.find((item) => item.id === recording.tuneId)?.title || "";
+    const tune = globalThis.JazzRepertoire?.title(recording.tuneId) || globalThis.JAZZ_DATA?.repertoire?.find((item) => item.id === recording.tuneId)?.title || "";
     const format = recording.mediaKind === "video"
       ? `${recording.videoWidth || "?"}×${recording.videoHeight || "?"} video + WAV master`
       : (recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType || "Audio");

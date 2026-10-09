@@ -12,17 +12,7 @@ import (
 // The caller holds the session lock. A marker preserves even intentionally empty
 // days, so deleting every section never brings the factory curriculum back.
 func (app *application) seedPracticeDay(ctx context.Context, tx pgx.Tx, userID, sessionID uuid.UUID, input bootstrapBlocksRequest) error {
-	mode := input.Mode
-	if mode == "" {
-		// Compatibility with tabs opened before the initialize/add distinction.
-		mode = "add"
-		for _, block := range input.Blocks {
-			if !strings.HasPrefix(block.BlockKey, "custom-") {
-				mode = "initialize"
-				break
-			}
-		}
-	}
+	mode := effectiveBlockMode(input)
 	tag, err := tx.Exec(ctx, `INSERT INTO practice_day_layouts(session_id,user_id,practice_date) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, sessionID, userID, input.PracticeDate)
 	if err != nil {
 		return err
@@ -44,13 +34,13 @@ func (app *application) seedPracticeDay(ctx context.Context, tx pgx.Tx, userID, 
 		} else if err != nil {
 			return err
 		} else {
-			rows, err := tx.Query(ctx, `SELECT block_key,position,title,COALESCE(instructions,''),category,track,target_minutes FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 AND removed_at IS NULL AND carry_forward ORDER BY position,id`, previousSession, userID, previousDate)
+			rows, err := tx.Query(ctx, `SELECT block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,COALESCE(tune_id,'') FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 AND removed_at IS NULL AND carry_forward ORDER BY position,id`, previousSession, userID, previousDate)
 			if err != nil {
 				return err
 			}
 			for rows.Next() {
 				var b blockDefinition
-				if err := rows.Scan(&b.BlockKey, &b.Position, &b.Title, &b.Instructions, &b.Category, &b.Track, &b.TargetMinutes); err != nil {
+				if err := rows.Scan(&b.BlockKey, &b.Position, &b.Title, &b.Instructions, &b.Category, &b.Track, &b.TargetMinutes, &b.TuneID); err != nil {
 					rows.Close()
 					return err
 				}
@@ -87,6 +77,19 @@ func (app *application) seedPracticeDay(ctx context.Context, tx pgx.Tx, userID, 
 }
 
 func insertPracticeSeed(ctx context.Context, tx pgx.Tx, userID, sessionID uuid.UUID, date string, b blockDefinition) error {
-	_, err := tx.Exec(ctx, `INSERT INTO practice_blocks(id,session_id,user_id,practice_date,block_key,position,title,instructions,category,track,target_minutes,carry_forward) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12) ON CONFLICT(session_id,practice_date,block_key) DO NOTHING`, uuid.New(), sessionID, userID, date, b.BlockKey, b.Position, b.Title, b.Instructions, b.Category, b.Track, b.TargetMinutes, !b.DayOnly)
+	_, err := tx.Exec(ctx, `INSERT INTO practice_blocks(id,session_id,user_id,practice_date,block_key,position,title,instructions,category,track,target_minutes,carry_forward,tune_id) VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,$11,$12,NULLIF($13,'')) ON CONFLICT(session_id,practice_date,block_key) DO NOTHING`, uuid.New(), sessionID, userID, date, b.BlockKey, b.Position, b.Title, b.Instructions, b.Category, b.Track, b.TargetMinutes, !b.DayOnly, b.TuneID)
 	return err
+}
+
+func effectiveBlockMode(input bootstrapBlocksRequest) string {
+	if input.Mode != "" {
+		return input.Mode
+	}
+	// Compatibility with tabs opened before the initialize/add distinction.
+	for _, block := range input.Blocks {
+		if !strings.HasPrefix(block.BlockKey, "custom-") {
+			return "initialize"
+		}
+	}
+	return "add"
 }

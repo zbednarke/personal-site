@@ -52,6 +52,19 @@ gcloud run deploy jazz-api --source . --region us-central1 \
   --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
 ```
 
+To try a feature branch against real data without changing the live site,
+deploy a tagged revision that receives no traffic, then point the local pages at
+it. Startup migrations run against the shared database, so only do this for
+branches whose migrations are additive.
+
+```sh
+gcloud run deploy jazz-api --source . --region us-central1 --project parabolio-prod \
+  --tag repertoire --no-traffic \
+  --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+# from the repo root, with the tag URL printed by the deploy:
+./dev.ps1 -ApiUrl https://repertoire---jazz-api-<hash>-uc.a.run.app
+```
+
 ## Playback optimization
 
 Browser-created WebM and fragmented MP4 recordings can require long scans before
@@ -80,3 +93,32 @@ fresh blocks without copying notes, recordings, timers or completion. Empty
 plans remain empty. Date-specific appointments use `dayOnly: true` and are not
 carried forward. Bootstrap mode `initialize` never overwrites saved settings;
 mode `add` explicitly adds a section. Existing open tabs remain compatible.
+Recurring sections keep their tune link (`tune_id`) when carried forward.
+
+## Repertoire
+
+`GET /v1/repertoire?today=YYYY-MM-DD&includeArchived=1` returns the user's tunes
+with derived state (`deeplyLearned`, `practiceStatus`, last practiced date,
+total and this-week practice, session and take counts), unlinked tune practice
+and this week's total and jazz-track minutes. The first call per user seeds the
+starter list and imports the legacy campaign roadmap stages once
+(`repertoire_settings` marks it), so archived or swapped tunes never return.
+
+- `POST /v1/repertoire/tunes` creates a tune; the id is the title slug with a
+  `-2` suffix on collision. An archived slug returns 409 `{archived: true}` so the
+  client can offer a restore.
+- `PATCH /v1/repertoire/tunes/{tuneId}` needs `expectedRevision` (409 returns the
+  current tune) and `clientMutationId` (retries are no-ops). Each changed field
+  writes a `repertoire_events` row; `practiceBlockId` links it to a practice day.
+- `GET /v1/repertoire/tunes/{tuneId}/history` groups linked blocks and takes by
+  day, with change events and guide-tone drill stats.
+- `PATCH /v1/repertoire/settings` sets `setTargetDate`.
+
+Practice blocks link to tunes through `practice_blocks.tune_id`. Bootstrap and
+`PATCH /v1/practice-blocks/{id}` accept `tuneId`; an unknown or archived tune is
+422 except in `initialize` mode, where it is dropped so a stale curriculum file
+cannot block a day. New takes default to their block's tune. Tune practice is
+always derived from blocks (reconciled with their takes) and recordings and is
+never copied. Milestones only change by explicit edits; practice can promote a
+tune to learning, never to solid. Migration 024 backfills links on existing
+blocks once, guarded by `jazz_backfills`.
