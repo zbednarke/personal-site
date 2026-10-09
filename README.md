@@ -83,3 +83,18 @@ See [Trumpets setup, API, privacy, tests and screenshots](docs/trumpets/README.m
 `./dev.ps1` also serves `http://localhost:4173/trumpets/` through the existing private
 production proxy. Deployment must protect the Trumpets page/assets/API in Caddy;
 the daily workflow needs server-side machine auth and runner secrets before enabling.
+
+## Tests
+
+The browser code uses Node's built-in test runner, so there is no
+`package.json` or install step (Node 22+):
+
+```sh
+node --test assets/jazz/*.test.js assets/trumpets/*.test.js
+cd jazz-api && go test ./...
+```
+
+Database-backed Go tests run when `TRUMPETS_TEST_DATABASE_URL` /
+`JAZZ_LAYOUT_TEST_DATABASE_URL` point at a disposable Postgres. CI
+(`.github/workflows/trumpets-tests.yml`) runs all of the above on every pull
+request and push to `main`, plus the trumpet adapter and browser checks.
