@@ -288,6 +288,8 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 
 func (app *application) routes() http.Handler {
 	mux := http.NewServeMux()
+	// Cloud Run's front end answers /healthz itself, so external checks use /health.
+	mux.HandleFunc("GET /health", app.health)
 	mux.HandleFunc("GET /healthz", app.health)
 	app.trumpetRoutes(mux)
 	app.repertoireRoutes(mux)
