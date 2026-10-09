@@ -288,7 +288,12 @@ CHROMIUM_PATH=/path/to/chromium node tools/trumpets/browser-check.cjs
 
 This starts the test-only Go preview on loopback, verifies real API feedback
 persistence after reload, ratings, filters and favorites, checks 320/390/768/1440px layouts, 44px phone touch targets, collapsible mobile
-filters and notes-dialog/page horizontal overflow and JS errors, captures screenshots, then deletes its schema.
+filters and notes-dialog/page horizontal overflow and JS errors, then drives the
+inspiration board (seed and fixture enrichment, paste-to-capture, duplicate toast,
+📷 upload at 390px, clipboard image paste, two-file drop, quick priority, filters,
+detail autosave, click-to-load embed referrer policy, Observatory link and the
+share-sheet route), captures screenshots, then deletes its schema. Inspiration
+previews come from loopback fixtures and an in-memory bucket; no third party is contacted.
 `TRUMPETS_GO` can select a local Go executable. Test fixtures are clearly labeled;
 their prices, seller and illustrated images are synthetic, never market evidence.
 The regular `dev.ps1` now serves `/trumpets/` with the existing **production** data
@@ -397,3 +402,104 @@ rows. Run one manual combined search after rollout and check authenticated cover
 remaining active rechecks, Today and the mobile source universe.
 
 [Mobile source universe](screenshots/mobile-coverage.png) uses synthetic fixtures.
+
+## Horn inspiration (migration 025)
+
+`/trumpets/#inspiration` is a personal board for horns that inspire: YouTube
+Shorts, Instagram reels, retailer pages, screenshots and photos, each with an
+optional line about *why*. It is a view inside the Observatory, so it inherits
+the `@jazz_private` Caddy matcher, the `/trumpets/api/*` proxy and
+`trumpetPrivacy` (`private, no-store`, `noindex`, `no-referrer`) with no Caddy change.
+
+**Capture.** Paste a link into the capture bar (a single link pasted into the
+empty bar submits at once, with Undo), press Enter, paste or drop images anywhere
+on the board, or tap 📷. Each image becomes its own entry; uploads run two at a
+time with a local preview and Retry. A "Just added" strip offers one-tap priority
+(Just inspiration / Someday / Want / Actively hunting), maker and why. Everything
+except the link or image is optional; the detail dialog edits the rest with a
+600 ms autosave carrying `expectedRevision` (409 → non-conflicting fields are
+re-applied; the server wins on the same field).
+
+**Storage.**
+- Rows: `horn_inspirations` and `horn_inspiration_images` in `jazz_project`;
+  `horn_inspiration_seeds` remembers that the Harrelson starter card was offered,
+  so it is never recreated after archive or permanent delete.
+- Image bytes: the existing private `GCS_BUCKET` under
+  `inspiration/<user>/<inspiration>/<image>.<jpg|png|webp|gif>`, written by the API
+  (raw body `POST /v1/trumpets/inspiration/{id}/images`, ≤ 10 MB, sniffed type
+  must match the declared type, ≤ 12,000 px), so the bucket CORS is unchanged.
+  Phones re-encode to JPEG q0.85 with a ≤ 2048 px long edge first (GIFs keep animation).
+- Serving: `GET /v1/trumpets/inspiration/images/{id}` checks ownership and
+  302-redirects to a 10-minute V4 signed URL (`Cache-Control: private, max-age=300`).
+  No image URL is permanent and no image is committed to git.
+- The `renders/` lifecycle rule does not touch `inspiration/`. Permanent delete
+  removes the rows, then deletes objects best-effort; failures are logged as
+  orphaned objects. `inspiration/` objects without rows can be swept manually
+  (list the prefix and compare with `horn_inspiration_images.object_name`);
+  automated sweeping is out of scope.
+
+**Link identity.** `canonicalInspirationURL` (Go; mirrored in
+`assets/trumpets/inspiration-model.js`, both tested against
+`jazz-api/testdata/inspiration_urls.json`) builds on `canonicalTrumpetURL` and
+strips share parameters (`si`, `is`, `igsh`, `mibextid`, TikTok `_r`/`_t`, …)
+without changing Observatory listing identities. YouTube Shorts canonicalize to
+`https://youtube.com/shorts/<id>`; `youtu.be`/`watch`/`live`/`embed` links to
+`https://youtube.com/watch?v=<id>` (keeping `t`). Dedupe uses the provider media id
+when present, otherwise the canonical URL: a live duplicate returns 409 ("Already on
+your board"), an archived one offers Restore.
+
+**Preview fetching (SSRF-safe).** The browser calls `POST …/{id}/enrich` after
+capture (no background goroutines; the board retries pending entries older than a
+minute, three at a time). Only the canonical URL leaves the server; notes never do.
+The dedicated client resolves each host and refuses loopback, private, link-local
+(including `169.254.169.254`), CGNAT, multicast, unspecified and reserved
+addresses (IPv4 and IPv6), dials the checked IP, re-checks every redirect (max 3),
+allows only http(s) on ports 80/443, sends no cookies or auth, caps HTML at 1 MB
+and images at 5 MB, and uses 4 s per request / 10 s total with
+`User-Agent: zachbednarke.com inspiration preview (+https://zachbednarke.com)`.
+YouTube uses public oEmbed (falling back to `hqdefault.jpg`); TikTok uses its public
+oEmbed; Instagram/Facebook get one Open Graph attempt and, behind a login wall,
+a generic title ("Instagram reel") and the hint "Add a screenshot for a preview" —
+login-page titles are never stored. Other pages use Open Graph, Twitter and JSON-LD
+`Product` offers; a page price fills `price_seen` (marked **auto**) only when no price
+was typed. The chosen preview image is copied into the private bucket so the board
+survives link rot; no board image loads from a third-party host.
+
+**Privacy.** Titles, descriptions and notes render with `textContent`; links pass
+`safeURL()`. Filters live in memory only; nothing about inspirations is written to
+localStorage, sessionStorage or query strings. YouTube and Instagram embeds are
+click-to-load and are built only from the validated media id. The YouTube iframe
+carries `referrerpolicy="strict-origin-when-cross-origin"` because the page's
+`no-referrer` policy can make the player refuse to play (Error 153). There is no CSP
+today; if one is added it needs
+`frame-src https://www.youtube-nocookie.com https://www.instagram.com` and
+`img-src 'self' https://storage.googleapis.com` (plus `blob:` for local upload previews).
+
+**Observatory link and search profile.** An entry may link (never automatically) to
+any `trumpet_horns` row the user owns; the detail suggests horns with the same maker
+and a model prefix/contains match (the seed suggests the Harrelson MUSE reference).
+Linked cards show "Tracked in Observatory · N live offers" (verified active offers) or
+"Acquired ✓"; Observatory listings gain `inspirationCount` and their detail shows
+"Inspiration (N)". `GET /v1/trumpets/profile` (and the machine profile) now include
+`inspirations: [{maker, model, tags, priority, why}]` — up to 100 live entries, no
+URLs or images — so the private search client learns what the owner is drawn to, the
+same way notes are already shared with it. The local runner applies a small bounded
+ranking bonus for inspired makers and tags.
+
+**Phone share sheet.** Shared links travel in the fragment, which is never sent to
+the server or written to Caddy logs, and the page rewrites it to `#inspiration`
+immediately.
+- iOS: create a Shortcut that *Receives URLs from the Share Sheet*, then
+  **Open URL** `https://zachbednarke.com/trumpets/#inspiration/add?url=[URL-encoded Shortcut Input]`
+  (optionally `&note=…`).
+- Android: use a bookmark or the HTTP Shortcuts app with the same URL.
+- Desktop bookmarklet:
+  `javascript:location='https://zachbednarke.com/trumpets/#inspiration/add?url='+encodeURIComponent(location.href)`
+
+API (all behind `trumpetPrivacy` + `authenticate`): `GET /v1/trumpets/inspiration?archived=0|1`,
+`POST /v1/trumpets/inspiration` (idempotent `clientCaptureId`), `POST /v1/trumpets/inspiration/seed`,
+`POST …/{id}/enrich[?force=1]`, `PATCH …/{id}`, `DELETE …/{id}` (permanent),
+`POST …/{id}/images`, `DELETE …/{id}/images/{imageId}`, `GET …/images/{imageId}`.
+
+[Inspiration board](screenshots/inspiration.png) · [Inspiration on a phone](screenshots/inspiration-mobile.png) ·
+[Inspiration detail](screenshots/inspiration-detail.png)

@@ -210,6 +210,11 @@ def normalize_product(product,url,source,profile):
     bonus+=sum(min(3,weight)*2 for term,weight in notes.get('favoredAttributes',{}).items() if term in text)
     penalty+=sum(min(3,weight)*2 for term,weight in notes.get('dislikedAttributes',{}).items() if term in text)
     bonus+=max(-6,min(6,notes.get('makerWeights',{}).get(maker.lower(),0)*2))
+    # Horn-inspiration board: makers and tags the owner saved (no URLs/images); bounded.
+    inspiration=profile.get('inspirations',[])
+    inspired_tags={str(t).lower() for i in inspiration for t in (i.get('tags') or [])}
+    inspired_makers={str(i.get('maker','')).lower() for i in inspiration if i.get('maker')}
+    bonus+=min(6,2*sum(1 for t in inspired_tags if t and t in text)+(3 if maker.lower() in inspired_makers else 0))
     for preference in notes.get('pricePreferences',[]):
         if preference['maker'].lower()==maker.lower() and preference['currency']==currency and price is not None and price>=preference['referencePrice']:
             penalty+=8; break

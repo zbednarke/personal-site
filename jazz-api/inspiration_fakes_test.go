@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -71,4 +72,12 @@ func (m *memoryObjects) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	w.Write(body)
+}
+
+// offlineResolver keeps the browser preview off the network: only literal
+// loopback fixture URLs (which skip DNS) can be fetched.
+type offlineResolver struct{}
+
+func (offlineResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return nil, errors.New("preview: network disabled")
 }
