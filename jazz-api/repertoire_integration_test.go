@@ -188,6 +188,9 @@ func TestRepertoireIntegration(t *testing.T) {
 	if practiced.PracticeStatus != "learning" || practiced.LastPracticedDate != "2026-10-09" || practiced.WeekPracticeMS != 120000 || practiced.TakeCount != 1 || practiced.Milestones["melodyByEar"] != "not_started" {
 		t.Fatalf("skylark after practice: %+v", practiced)
 	}
+	if week := load("2026-10-09").Week; week.PracticeMS != 120000 || week.JazzPracticeMS != 120000 {
+		t.Fatalf("week practice split: %+v", week)
+	}
 	if find(load("2026-10-12"), "skylark").WeekPracticeMS != 0 {
 		t.Fatal("last week's practice counted this week")
 	}

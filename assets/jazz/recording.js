@@ -814,7 +814,7 @@
         return;
       }
       result.recordings.forEach((recording) => {
-        const tune = DATA.repertoire.find((item) => item.id === recording.tuneId)?.title || "Open practice";
+        const tune = globalThis.JazzRepertoire?.title(recording.tuneId) || DATA.repertoire.find((item) => item.id === recording.tuneId)?.title || "Open practice";
         const skill = DATA.skills.find((item) => item.id === recording.skillIds?.[0])?.name || "General musicianship";
         const sessionTitle = recording.practiceSessionTitle || "Unassigned session";
         const blockTitle = recording.practiceBlockTitle || "";

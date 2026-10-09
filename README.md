@@ -48,6 +48,13 @@ modes, and synchronized drill attempts. Time in the tool is attributed to the
 corresponding daily practice block and appears in the normal session and archive
 totals.
 
+Repertoire (`/jazz/#repertoire`) tracks the set list: ten ballads learned
+deeply (melody by ear in two keys, lyrics, one transcription), upbeat set tunes
+and current pop, with goal progress, pace toward the spring target and a
+"could I hold a set tonight" check. Tunes link to practice sections, so time,
+notes and takes on a linked section become the tune's history without manual
+entry, and Practice now adds a linked section to today's plan.
+
 The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
 `deploy/Caddyfile.jazz.example` documents the path matcher and privacy headers;
 the live configuration reuses the existing Portal credential hash and forwards

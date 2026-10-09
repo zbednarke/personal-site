@@ -30,6 +30,7 @@
     </a>
     <div class="virtuoso-nav-links">
       <a class="active" href="#today" data-jazz-view="today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
+      <a href="#repertoire" data-jazz-view="repertoire"><span aria-hidden="true">♪</span>Repertoire</a>
       <a href="#guide-tones" data-jazz-view="guide-tones"><span aria-hidden="true">&#9835;</span>Guide tones</a>
       <a href="#effects" data-jazz-view="effects"><span aria-hidden="true">∿</span>Live effects</a>
       <a href="#archive" data-jazz-view="archive"><span aria-hidden="true">▱</span>Archive</a>
@@ -443,16 +444,30 @@
       <div class="skill-tree" id="skill-tree-grid"></div>
     </section>
 
-    <section class="section" id="repertoire" aria-labelledby="repertoire-title">
-      <div class="section-heading">
+    <section class="repertoire-screen" id="repertoire" aria-labelledby="repertoire-title" hidden>
+      <header class="archive-screen-header repertoire-screen-header">
         <div>
           <p class="eyebrow">The book</p>
-          <h2 id="repertoire-title">Repertoire roadmap</h2>
-          <p class="section-intro">Tunes are promoted through six stages. A star is not theory learned; it is a capability earned.</p>
+          <h1 id="repertoire-title">Repertoire</h1>
+          <p>Ten ballads deep, a set’s worth of upbeat tunes and a few crowd-pleasers, ready on demand.</p>
         </div>
-        <div class="legend" aria-label="Repertoire stage legend"><span>1 melody</span><span>3 changes</span><span>6 gig ready</span></div>
+        <div class="repertoire-header-actions">
+          <div class="repertoire-key-toggle" role="group" aria-label="Show keys as">
+            <button type="button" data-key-display="concert" aria-pressed="true">Concert</button>
+            <button type="button" data-key-display="bb-trumpet" aria-pressed="false">B♭ written</button>
+          </div>
+          <button class="button button-primary" id="add-tune-button" type="button">+ Add tune</button>
+        </div>
+      </header>
+      <p class="repertoire-status" id="repertoire-status" role="status"></p>
+      <div class="repertoire-goals" id="repertoire-goals"></div>
+      <div class="repertoire-overview">
+        <section class="repertoire-panel repertoire-pace" id="repertoire-pace" aria-labelledby="repertoire-pace-title"></section>
+        <section class="repertoire-panel repertoire-set" id="repertoire-set" aria-labelledby="repertoire-set-title"></section>
       </div>
-      <div class="repertoire-grid" id="repertoire-grid"></div>
+      <div id="repertoire-unlinked"></div>
+      <div id="repertoire-categories"></div>
+      <div id="repertoire-archived"></div>
     </section>
 
     <section class="section" id="roadmap" aria-labelledby="roadmap-title">
@@ -501,6 +516,7 @@
     <div>
       <strong>The Jazz Project</strong>
       <p id="sync-status">Progress is saved on this device while cloud storage connects.</p>
+      <p class="footer-note">Export and import cover the campaign file. Tunes live in the private repertoire service; the old roadmap stages in exported files are kept but no longer shown.</p>
     </div>
     <div class="data-actions">
       <button type="button" id="export-data">Export progress</button>
@@ -531,10 +547,50 @@
     <form class="section-form" id="section-form">
       <label><span>Section title</span><input id="new-section-title" name="title" maxlength="160" required placeholder="Ear training"></label>
       <label><span>Type</span><select id="new-section-type" name="type"><option value="fundamentals">Fundamentals</option><option value="technique">Technique</option><option value="scales">Scales</option><option value="listening">Listening</option><option value="tune">Tune / repertoire</option><option value="improvisation">Improvisation</option><option value="other">Other</option></select></label>
+      <label id="new-section-tune-field" hidden><span>Tune</span><select id="new-section-tune" name="tune"></select></label>
       <label><span>Target minutes</span><input id="new-section-minutes" name="minutes" type="number" min="1" max="360" value="10" required></label>
       <label class="section-form-wide"><span>Plan or instructions</span><textarea id="new-section-instructions" name="instructions" maxlength="2000" rows="4" placeholder="What will you work on?"></textarea></label>
       <p class="section-form-status" id="section-form-status" role="status"></p>
       <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-section-dialog" type="button">Cancel</button><button class="button button-primary" type="submit">Add section</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog tune-dialog" id="tune-dialog" aria-labelledby="tune-dialog-title">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close tune details">×</button>
+    <p class="eyebrow" id="tune-dialog-kicker">Tune</p>
+    <h2 id="tune-dialog-title">Tune</h2>
+    <div class="tune-tabs" role="tablist" aria-label="Tune sections">
+      <button type="button" role="tab" data-tune-tab="details" aria-selected="true" aria-controls="tune-dialog-body">Details</button>
+      <button type="button" role="tab" data-tune-tab="history" aria-selected="false" aria-controls="tune-dialog-body">History</button>
+    </div>
+    <div class="tune-dialog-body" id="tune-dialog-body" role="tabpanel"></div>
+  </dialog>
+
+  <dialog class="dialog section-dialog" id="tune-create-dialog" aria-labelledby="tune-create-title">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close add tune">×</button>
+    <p class="eyebrow">Repertoire</p>
+    <h2 id="tune-create-title">Add a tune</h2>
+    <form class="section-form" id="tune-create-form">
+      <input type="hidden" name="tuneId">
+      <label class="section-form-wide"><span>Title</span><input name="title" maxlength="160" required placeholder="Skylark"></label>
+      <label><span>Category</span><select name="category"><option value="ballad">Ballad</option><option value="upbeat">Upbeat set tune</option><option value="pop">Current pop</option><option value="standard">Other standard</option></select></label>
+      <label><span>Original key (concert)</span><input name="concertKey" maxlength="12" placeholder="Optional, e.g. Bb"></label>
+      <label class="section-form-wide"><span>Reference artist</span><input name="referenceArtist" maxlength="160" placeholder="Optional"></label>
+      <label class="section-form-wide checkbox"><input type="checkbox" name="chosen" checked><span>Counts toward its category goal</span></label>
+      <p class="section-form-status" id="tune-create-status" role="status"></p>
+      <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-tune-create" type="button">Cancel</button><button class="button button-primary" type="submit">Add tune</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog section-dialog" id="tune-practice-dialog" aria-labelledby="tune-practice-heading">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close practice now">×</button>
+    <p class="eyebrow">Practice now</p>
+    <h2 id="tune-practice-heading"><span id="tune-practice-title"></span></h2>
+    <form class="section-form tune-practice-form" id="tune-practice-form">
+      <fieldset class="section-form-wide focus-options"><legend>Focus</legend><div id="tune-practice-focus"></div></fieldset>
+      <label class="section-form-wide checkbox"><input type="checkbox" id="tune-practice-keep"><span>Keep in daily plan (carries forward each day)</span></label>
+      <p class="section-form-status" id="tune-practice-status" role="status"></p>
+      <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-tune-practice" type="button">Cancel</button><button class="button button-primary" type="submit">Add to today</button></div>
     </form>
   </dialog>
 
@@ -560,6 +616,8 @@
   <script src="../assets/jazz/practice-layout.js"></script>
   <script src="../assets/jazz/app.js"></script>
   <script src="../assets/jazz/practice-session.js"></script>
+  <script src="../assets/jazz/repertoire-model.js"></script>
+  <script src="../assets/jazz/repertoire.js"></script>
   <script src="../assets/jazz/lossless-recorder.js"></script>
   <script src="../assets/jazz/audio-analysis.js"></script>
   <script src="../assets/jazz/guide-tone-engine.js"></script>

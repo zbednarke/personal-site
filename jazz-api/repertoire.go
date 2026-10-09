@@ -543,6 +543,9 @@ type repertoireResponse struct {
 	Week struct {
 		Start string `json:"start"`
 		Today string `json:"today"`
+		// All practice and jazz-track (non-trumpet) practice this week, for the 50/50 split.
+		PracticeMS     int64 `json:"practiceMs"`
+		JazzPracticeMS int64 `json:"jazzPracticeMs"`
 	} `json:"week"`
 }
 
@@ -586,6 +589,16 @@ func (app *application) loadRepertoire(ctx context.Context, userID uuid.UUID, to
 	response.Week.Today = today
 	response.Week.Start = mondayOf(today)
 	if err := app.db.QueryRow(ctx, `SELECT set_target_date::text FROM repertoire_settings WHERE user_id=$1`, userID).Scan(&response.Settings.SetTargetDate); err != nil {
+		return response, err
+	}
+	if err := app.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(ms),0)::bigint, COALESCE(SUM(ms) FILTER (WHERE track <> 'trumpet'),0)::bigint FROM (
+			SELECT pb.track, LEAST(GREATEST(pb.elapsed_ms::bigint, COALESCE((
+			    SELECT SUM(r.duration_ms) FROM recordings r
+			    WHERE r.practice_block_id=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)), $3)::bigint AS ms
+			FROM practice_blocks pb
+			WHERE pb.user_id=$1 AND pb.practice_date >= $2::date AND pb.practice_date < $2::date + 7
+		) week`, userID, response.Week.Start, maxBlockElapsedMS).Scan(&response.Week.PracticeMS, &response.Week.JazzPracticeMS); err != nil {
 		return response, err
 	}
 	practice, err := loadTunePractice(ctx, app.db, userID, response.Week.Start, "")
