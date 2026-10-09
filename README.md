@@ -79,6 +79,9 @@ It reuses the Jazz Go/Postgres/gateway service. The daily runner searches across
 specialist and international sources and rechecks active offers; the existing
 ChatGPT search can read the private profile and submit verified daily reports.
 
+The **Horn inspiration** board (`/trumpets/#inspiration`, linked from `/jazz/`)
+captures trumpet links, screenshots and photos in a paste, privately.
+
 See [Trumpets setup, API, privacy, tests and screenshots](docs/trumpets/README.md).
 `./dev.ps1` also serves `http://localhost:4173/trumpets/` through the existing private
 production proxy. Deployment must protect the Trumpets page/assets/API in Caddy;
