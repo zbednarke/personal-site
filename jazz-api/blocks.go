@@ -22,6 +22,7 @@ type practiceBlock struct {
 	Category       string                  `json:"category"`
 	Track          string                  `json:"track"`
 	TargetMinutes  int                     `json:"targetMinutes"`
+	TuneID         string                  `json:"tuneId"`
 	Notes          string                  `json:"notes"`
 	ElapsedMS      int                     `json:"elapsedMs"`
 	RecordedMS     int                     `json:"recordedMs"`
@@ -56,6 +57,7 @@ type blockDefinition struct {
 	Category      string `json:"category"`
 	Track         string `json:"track"`
 	TargetMinutes int    `json:"targetMinutes"`
+	TuneID        string `json:"tuneId,omitempty"`
 }
 
 type bootstrapBlocksRequest struct {
@@ -70,6 +72,8 @@ type updateBlockRequest struct {
 	Status         *string `json:"status"`
 	TimerStartedAt *string `json:"timerStartedAt"`
 	CompletedAt    *string `json:"completedAt"`
+	// TuneID links the block to a repertoire tune; "" unlinks it.
+	TuneID *string `json:"tuneId"`
 }
 
 const legacyCombinedFundamentalsKey = "articulation-flexibility"
@@ -151,6 +155,19 @@ func (app *application) bootstrapPracticeBlocks(w http.ResponseWriter, r *http.R
 		app.serverError(w, err)
 		return
 	}
+	if hasBlockTunes(input.Blocks) {
+		if err := ensureRepertoireSeeded(r.Context(), tx, userID); err != nil {
+			app.serverError(w, err)
+			return
+		}
+		if err := validateBlockTunes(r.Context(), tx, userID, input.Blocks, effectiveBlockMode(input) == "initialize"); errors.Is(err, errUnknownTune) {
+			writeError(w, http.StatusUnprocessableEntity, "unknown tune")
+			return
+		} else if err != nil {
+			app.serverError(w, err)
+			return
+		}
+	}
 	if err := app.seedPracticeDay(r.Context(), tx, userID, sessionID, input); err != nil {
 		app.serverError(w, err)
 		return
@@ -209,11 +226,11 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 	}
 	var block practiceBlock
 	err = app.db.QueryRow(r.Context(), `
-		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,
+		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,COALESCE(tune_id,''),
 		       COALESCE(notes,''),elapsed_ms,status,timer_started_at,completed_at,updated_at
 		FROM practice_blocks WHERE id=$1 AND user_id=$2 AND removed_at IS NULL`, blockID, userID).
 		Scan(&block.ID, &block.SessionID, &block.PracticeDate, &block.BlockKey, &block.Position, &block.Title, &block.Instructions, &block.Category,
-			&block.Track, &block.TargetMinutes, &block.Notes, &block.ElapsedMS, &block.Status, &block.TimerStartedAt, &block.CompletedAt, &block.UpdatedAt)
+			&block.Track, &block.TargetMinutes, &block.TuneID, &block.Notes, &block.ElapsedMS, &block.Status, &block.TimerStartedAt, &block.CompletedAt, &block.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "practice block not found")
 		return
@@ -285,12 +302,27 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 	if block.Status != "completed" {
 		block.CompletedAt = nil
 	}
+	if input.TuneID != nil {
+		tuneID := strings.TrimSpace(*input.TuneID)
+		if tuneID != "" {
+			active, err := activeTuneIDs(r.Context(), app.db, userID, []string{tuneID})
+			if err != nil {
+				app.serverError(w, err)
+				return
+			}
+			if !active[tuneID] {
+				writeError(w, http.StatusUnprocessableEntity, "unknown tune")
+				return
+			}
+		}
+		block.TuneID = tuneID
+	}
 	reconcileBlockPracticeTime(&block)
 
 	err = app.db.QueryRow(r.Context(), `
-		UPDATE practice_blocks SET notes=NULLIF($1,''),elapsed_ms=$2,status=$3,timer_started_at=$4,completed_at=$5,updated_at=now()
+		UPDATE practice_blocks SET notes=NULLIF($1,''),elapsed_ms=$2,status=$3,timer_started_at=$4,completed_at=$5,tune_id=NULLIF($8,''),updated_at=now()
 		WHERE id=$6 AND user_id=$7 AND removed_at IS NULL
-		RETURNING updated_at`, block.Notes, block.ElapsedMS, block.Status, block.TimerStartedAt, block.CompletedAt, block.ID, userID).Scan(&block.UpdatedAt)
+		RETURNING updated_at`, block.Notes, block.ElapsedMS, block.Status, block.TimerStartedAt, block.CompletedAt, block.ID, userID, block.TuneID).Scan(&block.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "practice block not found")
 		return
@@ -315,7 +347,7 @@ func (app *application) loadPracticeBlocksForView(ctx context.Context, userID, s
 		return []practiceBlock{}, nil
 	}
 	rows, err := app.db.Query(ctx, `
-		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,
+		SELECT id,session_id,practice_date::text,block_key,position,title,COALESCE(instructions,''),category,track,target_minutes,COALESCE(tune_id,''),
 		       COALESCE(notes,''),elapsed_ms,status,timer_started_at,completed_at,updated_at
 		FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3 AND ($4 OR removed_at IS NULL) ORDER BY position,id`, sessionID, userID, practiceDate, includeRemoved)
 	if err != nil {
@@ -326,7 +358,7 @@ func (app *application) loadPracticeBlocksForView(ctx context.Context, userID, s
 	for rows.Next() {
 		var block practiceBlock
 		if err := rows.Scan(&block.ID, &block.SessionID, &block.PracticeDate, &block.BlockKey, &block.Position, &block.Title, &block.Instructions, &block.Category,
-			&block.Track, &block.TargetMinutes, &block.Notes, &block.ElapsedMS, &block.Status, &block.TimerStartedAt, &block.CompletedAt, &block.UpdatedAt); err != nil {
+			&block.Track, &block.TargetMinutes, &block.TuneID, &block.Notes, &block.ElapsedMS, &block.Status, &block.TimerStartedAt, &block.CompletedAt, &block.UpdatedAt); err != nil {
 			return nil, err
 		}
 		blocks = append(blocks, block)
@@ -411,4 +443,13 @@ func validBlockKey(value string) bool {
 		}
 	}
 	return true
+}
+
+func hasBlockTunes(blocks []blockDefinition) bool {
+	for _, block := range blocks {
+		if strings.TrimSpace(block.TuneID) != "" {
+			return true
+		}
+	}
+	return false
 }

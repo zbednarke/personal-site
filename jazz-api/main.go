@@ -286,6 +286,7 @@ func (app *application) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", app.health)
 	app.trumpetRoutes(mux)
+	app.repertoireRoutes(mux)
 	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
@@ -586,9 +587,10 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		}
 		var blockSessionID uuid.UUID
 		var recordingCount int
+		var blockTuneID string
 		queryErr := recordingTx.QueryRow(r.Context(), `
-			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready')),pb.removed_at IS NOT NULL
-			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2 FOR UPDATE OF pb`, blockID, userID).Scan(&blockSessionID, &recordingCount, &sectionRemoved)
+			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready')),pb.removed_at IS NOT NULL,COALESCE(pb.tune_id,'')
+			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2 FOR UPDATE OF pb`, blockID, userID).Scan(&blockSessionID, &recordingCount, &sectionRemoved, &blockTuneID)
 		if errors.Is(queryErr, pgx.ErrNoRows) || (input.PracticeSessionID != "" && blockSessionID.String() != input.PracticeSessionID) {
 			writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
 			return
@@ -602,6 +604,11 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		practiceBlockID = &blockID
+		// Takes in a tune-linked section count toward that tune even when an
+		// older client does not send the tune.
+		if strings.TrimSpace(input.TuneID) == "" {
+			input.TuneID = blockTuneID
+		}
 	}
 	objectName := fmt.Sprintf("users/%s/%s/%s/audio-master.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
 	videoObjectName := ""

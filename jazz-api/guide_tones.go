@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -284,8 +285,17 @@ func (app *application) guideToneDrillSummary(w http.ResponseWriter, r *http.Req
 		app.serverError(w, err)
 		return
 	}
+	summary, err := app.loadGuideToneSummary(r.Context(), userID, tuneID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (app *application) loadGuideToneSummary(ctx context.Context, userID uuid.UUID, tuneID string) (guideToneSummary, error) {
 	summary := guideToneSummary{TuneID: tuneID}
-	err = app.db.QueryRow(r.Context(), `
+	err := app.db.QueryRow(ctx, `
 		SELECT (SELECT COUNT(*)::int FROM guide_tone_drills WHERE user_id=$1 AND tune_id=$2 AND elapsed_ms>0),
 		       COUNT(*)::int,COUNT(*) FILTER (WHERE gta.correct)::int,
 		       COALESCE(AVG(gta.response_ms) FILTER (WHERE gta.correct),0)::int
@@ -294,11 +304,10 @@ func (app *application) guideToneDrillSummary(w http.ResponseWriter, r *http.Req
 		WHERE gta.user_id=$1 AND gtd.tune_id=$2`, userID, tuneID).
 		Scan(&summary.DrillCount, &summary.AttemptCount, &summary.CorrectCount, &summary.AverageResponseMS)
 	if err != nil {
-		app.serverError(w, err)
-		return
+		return summary, err
 	}
 	if summary.AttemptCount > 0 {
 		summary.Accuracy = math.Round((float64(summary.CorrectCount)/float64(summary.AttemptCount))*1000) / 10
 	}
-	writeJSON(w, http.StatusOK, summary)
+	return summary, nil
 }
