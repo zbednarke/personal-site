@@ -9,6 +9,19 @@
       "Bash(go *)"
     ]
   },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/gcloud-auth.sh\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
   "autoMode": {
     "allow": [
       "$defaults",
