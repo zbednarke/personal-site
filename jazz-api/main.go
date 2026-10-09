@@ -65,6 +65,10 @@ type application struct {
 	iamSigner   *iamcredentials.IamCredentialsClient
 	httpClient  *http.Client
 	logger      *slog.Logger
+	// objects and inspirationHTTP are nil in production (GCS and the safe
+	// preview client are used); tests inject fakes.
+	objects         objectStore
+	inspirationHTTP *http.Client
 }
 
 type contextKey string
@@ -897,6 +901,12 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 }
 
 func (app *application) signedRecordingObjectURL(ctx context.Context, objectName string, expires time.Time, query url.Values) (string, error) {
+	return app.signedObjectURL(ctx, objectName, expires, query)
+}
+
+// signedObjectURL is a V4 signed GET for any private bucket object (recordings
+// and inspiration images), signed through the IAM credentials API.
+func (app *application) signedObjectURL(ctx context.Context, objectName string, expires time.Time, query url.Values) (string, error) {
 	return storage.SignedURL(app.cfg.Bucket, objectName, &storage.SignedURLOptions{
 		GoogleAccessID:  app.cfg.ServiceAccountEmail,
 		Method:          http.MethodGet,

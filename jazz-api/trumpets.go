@@ -75,6 +75,8 @@ type trumpetListing struct {
 	PriceHistory    []json.RawMessage `json:"priceHistory"`
 	StatusHistory   []json.RawMessage `json:"statusHistory"`
 	PossibleRelists []string          `json:"possibleRelists"`
+	// Live horn-inspiration entries linked to this instrument.
+	InspirationCount int `json:"inspirationCount"`
 }
 type trumpetSourceCheck struct {
 	Source         string `json:"source"`
@@ -106,6 +108,16 @@ func (app *application) trumpetRoutes(mux *http.ServeMux) {
 		"PUT /v1/trumpets/listings/{id}/feedback":    app.saveTrumpetFeedback,
 		"DELETE /v1/trumpets/listings/{id}/feedback": app.deleteTrumpetFeedback,
 		"POST /v1/trumpets/seed":                     app.seedTrumpets,
+		// Horn inspiration board (same privacy headers and authentication).
+		"GET /v1/trumpets/inspiration":                          app.listInspirations,
+		"POST /v1/trumpets/inspiration":                         app.createInspiration,
+		"POST /v1/trumpets/inspiration/seed":                    app.seedInspiration,
+		"POST /v1/trumpets/inspiration/{id}/enrich":             app.enrichInspiration,
+		"PATCH /v1/trumpets/inspiration/{id}":                   app.patchInspiration,
+		"DELETE /v1/trumpets/inspiration/{id}":                  app.deleteInspiration,
+		"POST /v1/trumpets/inspiration/{id}/images":             app.uploadInspirationImage,
+		"DELETE /v1/trumpets/inspiration/{id}/images/{imageId}": app.deleteInspirationImage,
+		"GET /v1/trumpets/inspiration/images/{imageId}":         app.inspirationImageRedirect,
 	}
 	for path, h := range browser {
 		mux.Handle(path, app.trumpetPrivacy(app.authenticate(h)))
@@ -125,7 +137,7 @@ func (app *application) trumpetPrivacy(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		if r.Method != "GET" && (strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" || r.Header.Get("Sec-Fetch-Site") == "cross-site") {
+		if r.Method != "GET" && (!trumpetBodyTypeAllowed(r) || r.Header.Get("Sec-Fetch-Site") == "cross-site") {
 			writeError(w, 403, "JSON same-site request required")
 			return
 		}
@@ -138,6 +150,20 @@ func (app *application) trumpetPrivacy(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Mutations must be JSON, except raw inspiration image uploads, whose image
+// content types (like JSON) are not CORS-safelisted and so still need preflight.
+func trumpetBodyTypeAllowed(r *http.Request) bool {
+	contentType := strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])
+	if contentType == "application/json" {
+		return true
+	}
+	if r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/trumpets/inspiration/") && strings.HasSuffix(r.URL.Path, "/images") {
+		_, ok := inspirationImageTypes[strings.ToLower(contentType)]
+		return ok
+	}
+	return false
 }
 func (app *application) trumpetMachineAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -551,7 +577,8 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
  COALESCE((SELECT jsonb_build_object('rating',f.rating,'interestState',f.interest_state,'notes',f.notes,'favorite',f.favorite,
  'favoredAttributes',f.favored_attributes,'dislikedAttributes',f.disliked_attributes) FROM trumpet_feedback f WHERE f.horn_id=h.id),'{}'),
  COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence,'snapshot',o.snapshot) ORDER BY o.checked_at) FROM trumpet_observations o WHERE o.listing_id=l.id),'[]'),
- COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',e.kind,'oldStatus',e.old_status,'newStatus',e.new_status,'oldPrice',e.old_price,'newPrice',e.new_price,'currency',e.currency,'occurredAt',e.occurred_at,'detail',e.detail) ORDER BY e.occurred_at) FROM trumpet_events e WHERE e.listing_id=l.id),'[]')
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',e.kind,'oldStatus',e.old_status,'newStatus',e.new_status,'oldPrice',e.old_price,'newPrice',e.new_price,'currency',e.currency,'occurredAt',e.occurred_at,'detail',e.detail) ORDER BY e.occurred_at) FROM trumpet_events e WHERE e.listing_id=l.id),'[]'),
+ (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL)
  FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 ORDER BY l.first_seen DESC`, user)
 	if err != nil {
 		return nil, err
@@ -561,7 +588,7 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
 	for rows.Next() {
 		var l trumpetListing
 		var details, feedback, images, tags, prices, statuses []byte
-		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses); err != nil {
+		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount); err != nil {
 			return nil, err
 		}
 		for _, pair := range []struct {
@@ -751,7 +778,14 @@ var trumpetPriorityMakers = []string{"Taylor", "AR Resonance", "Harrelson", "Mon
 var trumpetPositiveTraits = []string{"raw brass", "aged brass", "patina", "engraving", "full gold plate", "mixed metals", "black hardware", "unusual bell geometry", "weird engineering", "one-off builds", "artist models", "provenance", "rare configurations", "unusually good value"}
 var trumpetSourceCatalog = []string{"Reverb", "HornTrader", "Austin Custom Brass", "Thompson Music", "J. Landress Brass", "Dillon Music", "Trent Austin", "Baltimore Brass", "Rich Ita", "Brass Ark", "Horn Stash", "Brass Exchange", "Mighty Quinn", "Ferguson Music", "Gamonbrass", "Dawkes", "Windblowers", "Phil Parker", "Trevor Jones", "John Packer", "TC Gakki / Japanese shops", "European specialist dealers", "eBay", "Marktplaats", "Auction houses", "Regional music shops", "Maker / demo inventory", "Credible private listings"}
 
-func trumpetSearchProfile(listings []trumpetListing) map[string]any {
+// trumpetSearchProfile builds the private search profile. Optional
+// inspirations ({maker, model, tags, priority, why}; no URLs or images) tell
+// the search what the owner is drawn to.
+func trumpetSearchProfile(listings []trumpetListing, inspirations ...[]map[string]any) map[string]any {
+	feed := []map[string]any{}
+	for _, list := range inspirations {
+		feed = append(feed, list...)
+	}
 	high := []trumpetListing{}
 	low := []trumpetListing{}
 	notes := []map[string]any{}
@@ -801,7 +835,7 @@ func trumpetSearchProfile(listings []trumpetListing) map[string]any {
 	}
 	return map[string]any{"version": 2, "notePreferences": trumpetNotePreferences(listings), "instrument": "professional Bb trumpet", "priorityMakers": trumpetPriorityMakers, "positiveTraits": trumpetPositiveTraits,
 		"instructions":        []string{"No strict warm/dark sound filter.", "Ordinary production Bach/Yamaha only when the specific horn is exceptional.", "Cover diverse specialist, regional, international and private sources; deliberately discover new sources.", "Exclude acquired instruments from alerts, including serial-confirmed relists; use them for comparison/provenance/setup/resale only.", "Use ratings and notes as ranking evidence; preserve all tracked offers, including sold records."},
-		"highlyRatedExamples": high, "negativelyRatedExamples": low, "notes": notes, "favoredAttributes": favored, "dislikedAttributes": disliked, "acquiredExclusions": excluded, "sourceCatalog": trumpetSourceCatalog}
+		"highlyRatedExamples": high, "negativelyRatedExamples": low, "notes": notes, "favoredAttributes": favored, "dislikedAttributes": disliked, "acquiredExclusions": excluded, "sourceCatalog": trumpetSourceCatalog, "inspirations": feed}
 }
 func (app *application) trumpetProfile(w http.ResponseWriter, r *http.Request) {
 	user, err := app.userID(r.Context())
@@ -814,7 +848,12 @@ func (app *application) trumpetProfile(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
-	profile := trumpetSearchProfile(listings)
+	inspirations, err := app.inspirationProfile(r.Context(), user)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	profile := trumpetSearchProfile(listings, inspirations)
 	universe, e := app.trumpetSourceUniverse(r.Context(), user)
 	if e != nil {
 		app.serverError(w, e)
