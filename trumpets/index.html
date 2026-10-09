@@ -9,6 +9,8 @@
     <link rel="stylesheet" href="/assets/trumpets/trumpets.css" />
     <script defer src="/assets/trumpets/model.js"></script>
     <script defer src="/assets/trumpets/app.js"></script>
+    <script defer src="/assets/trumpets/inspiration-model.js"></script>
+    <script defer src="/assets/trumpets/inspiration.js"></script>
   </head>
   <body>
     <main>
@@ -58,6 +60,8 @@
           All tracked <span id="all-count">0</span></button
         ><button id="candidates" aria-pressed="false">
           Candidates <span id="candidate-count">0</span></button
+        ><button id="inspiration" aria-pressed="false">
+          Inspiration <span id="inspiration-count">0</span></button
         ><span class="day-note">SELECTIVE SIGNAL / UTC</span>
       </nav>
       <details class="coverage">
@@ -143,6 +147,123 @@
         </p>
         <button id="browse-all" class="primary">Browse all tracked</button>
       </div>
+      <section
+        id="inspiration-board"
+        class="inspiration-board"
+        aria-label="Horn inspiration board"
+        hidden
+      >
+        <div class="capture-bar">
+          <form id="capture-form" class="capture-form" novalidate>
+            <label class="visually-hidden" for="inspiration-capture"
+              >Paste a link</label
+            ><input
+              id="inspiration-capture"
+              type="url"
+              inputmode="url"
+              autocomplete="off"
+              enterkeyhint="go"
+              placeholder="Paste a link or image · drop files anywhere"
+            /><button type="submit" class="primary" id="capture-add">Add</button
+            ><button
+              type="button"
+              id="capture-camera"
+              class="capture-camera"
+              aria-label="Add photos from camera or library"
+            >
+              📷
+            </button>
+            <input id="capture-file" type="file" accept="image/*" multiple hidden />
+          </form>
+          <details id="capture-why-toggle" class="capture-why">
+            <summary>＋ why?</summary>
+            <input
+              id="capture-why"
+              maxlength="4000"
+              placeholder="Why it inspires you (optional)"
+            />
+          </details>
+          <p id="capture-hint" class="capture-hint" role="status" aria-live="polite"></p>
+        </div>
+        <div id="quick-strip" class="quick-strip" hidden>
+          <span class="quick-label">JUST ADDED</span>
+          <div id="quick-priority" class="priority-chips" role="group" aria-label="Priority"></div>
+          <input
+            id="quick-maker"
+            list="inspiration-makers"
+            maxlength="80"
+            placeholder="Maker"
+            aria-label="Maker"
+          />
+          <input
+            id="quick-why"
+            maxlength="4000"
+            placeholder="Why it inspires you"
+            aria-label="Why it inspires you"
+          />
+          <button type="button" id="quick-close" class="quick-close" aria-label="Dismiss quick details">✕</button>
+        </div>
+        <form id="inspiration-filters" class="filters inspiration-filters" aria-label="Filter inspiration">
+          <label class="search-label"
+            ><span>SEARCH / WHY / TAGS</span
+            ><input name="search" type="search" placeholder="Harrelson, upswept bell, patina…"
+          /></label>
+          <button
+            id="inspiration-filter-toggle"
+            class="filter-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="inspiration-filter-options"
+          >
+            Filters &amp; sort
+          </button>
+          <div id="inspiration-filter-options" class="filter-options">
+            <label
+              ><span>MAKER</span
+              ><select name="maker">
+                <option value="">All makers</option>
+              </select></label
+            >
+            <label
+              ><span>SOURCE</span
+              ><select name="source">
+                <option value="">All sources</option>
+              </select></label
+            >
+            <label
+              ><span>SORT</span
+              ><select name="sort">
+                <option value="newest">Newest</option>
+                <option value="priority">Priority</option>
+                <option value="maker">Maker A–Z</option>
+                <option value="price">Price (by currency)</option>
+              </select></label
+            >
+            <div class="toggles">
+              <span id="priority-filter" class="priority-filter" role="group" aria-label="Priority filter"></span
+              ><label><input name="hasPrice" type="checkbox" /> Has price</label
+              ><label><input name="archived" type="checkbox" /> Show archived</label>
+            </div>
+            <div id="tag-filter" class="tag-filter" role="group" aria-label="Tag filter"></div>
+          </div>
+        </form>
+        <div class="results-line">
+          <span id="inspiration-result-count">Loading inspiration…</span
+          ><span>PRIVATE / LINKS, PHOTOS &amp; WHY</span>
+        </div>
+        <section id="inspiration-grid" class="inspiration-grid" aria-label="Inspiration entries"></section>
+        <div id="inspiration-empty" class="empty" hidden>
+          <span class="empty-mark">✦</span>
+          <h2>Nothing here yet.</h2>
+          <p id="inspiration-empty-copy">
+            Paste a link, paste or drop a screenshot, or tap 📷. On your phone,
+            share to the “Horn inspiration” Shortcut.
+          </p>
+        </div>
+        <div id="drop-overlay" class="drop-overlay" hidden aria-hidden="true">
+          <span>Drop to add</span>
+        </div>
+      </section>
       <footer>
         <span>TRUMPET OBSERVATORY <i>/</i> A PRIVATE FIELD NOTEBOOK</span
         ><span
@@ -206,6 +327,70 @@
         <h3>Market history</h3>
         <div id="history"></div>
       </section>
+      <section id="detail-inspiration" class="history detail-inspiration" hidden>
+        <h3 id="detail-inspiration-title">Inspiration</h3>
+        <div id="detail-inspiration-list" class="detail-inspiration-list"></div>
+      </section>
     </dialog>
+    <dialog id="inspiration-detail" aria-labelledby="inspiration-detail-title">
+      <div class="dialog-head">
+        <p class="eyebrow">HORN INSPIRATION</p>
+        <span id="inspiration-save" class="save-state" role="status" aria-live="polite"></span>
+        <button type="button" id="close-inspiration" aria-label="Close inspiration">✕</button>
+      </div>
+      <h2 id="inspiration-detail-title"></h2>
+      <div id="inspiration-media" class="inspiration-media"></div>
+      <div id="inspiration-thumbs" class="inspiration-thumbs"></div>
+      <p class="detail-links">
+        <a id="inspiration-original" target="_blank" rel="noopener noreferrer">Open original ↗</a
+        ><span id="inspiration-meta"></span>
+      </p>
+      <p id="inspiration-hint" class="field-help" hidden></p>
+      <form id="inspiration-form" novalidate>
+        <label>Title<input name="title" maxlength="300" placeholder="Leave empty to use the fetched title" /></label>
+        <label>Link<input name="url" type="url" inputmode="url" placeholder="https://…" /></label>
+        <div class="feedback-grid">
+          <label>Maker<input name="maker" list="inspiration-makers" maxlength="80" /></label
+          ><label>Model<input name="model" maxlength="120" /></label>
+        </div>
+        <fieldset class="priority-seg">
+          <legend>Priority</legend>
+          <div id="detail-priority" class="priority-chips" role="group" aria-label="Priority"></div>
+        </fieldset>
+        <label for="tag-entry">Tags</label>
+        <div class="chip-input">
+          <span id="tag-chips" class="tag-chips"></span
+          ><input id="tag-entry" name="tagEntry" list="inspiration-tags" placeholder="Add a tag…" maxlength="40" />
+        </div>
+        <label>Why it inspires me<textarea name="why" rows="4" maxlength="4000"></textarea></label>
+        <div class="price-grid">
+          <label>Price seen<input name="priceSeen" type="number" min="0" max="1000000" step="0.01" inputmode="decimal" /></label
+          ><label>Currency<input name="priceCurrency" maxlength="3" autocapitalize="characters" /></label
+          ><label>Seen on<input name="priceSeenOn" type="date" /></label>
+        </div>
+        <label class="favorite-input"><input type="checkbox" name="pinned" /> 📌 Pinned to the top</label>
+      </form>
+      <section class="history">
+        <h3>Observatory</h3>
+        <div id="inspiration-horn" class="inspiration-horn"></div>
+      </section>
+      <section class="history">
+        <h3>Images</h3>
+        <div id="inspiration-image-list" class="inspiration-image-list"></div>
+        <button type="button" id="inspiration-add-images" class="quiet">＋ Add images</button>
+        <input id="inspiration-detail-file" type="file" accept="image/*" multiple hidden />
+      </section>
+      <div class="detail-actions">
+        <button type="button" id="inspiration-refresh" class="quiet">↻ Refresh preview</button
+        ><button type="button" id="inspiration-archive" class="quiet">Archive</button
+        ><button type="button" id="inspiration-delete" class="danger">Delete permanently</button>
+      </div>
+    </dialog>
+    <datalist id="inspiration-makers"></datalist>
+    <datalist id="inspiration-tags"></datalist>
+    <div id="inspiration-toast" class="toast" role="status" aria-live="polite" hidden>
+      <span id="inspiration-toast-text"></span
+      ><button type="button" id="inspiration-toast-action"></button>
+    </div>
   </body>
 </html>

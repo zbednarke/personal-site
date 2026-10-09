@@ -97,19 +97,62 @@
       $("#refresh").disabled = false;
     }
   }
-  function setView(v) {
+  // Market sections hide while the Inspiration board is shown.
+  const marketSections = [".telemetry", "details.coverage", "#filters", ".results-line", "#cards", "#empty"];
+  function setView(v, { fromRoute = false } = {}) {
     view = v;
     for (const [id, val] of [
       ["today", "today"],
       ["all", "all"],
       ["candidates", "candidates"],
+      ["inspiration", "inspiration"],
     ]) {
       const button = $("#" + id);
       button.classList.toggle("selected", v === val);
       button.setAttribute("aria-pressed", String(v === val));
     }
+    const inspiring = v === "inspiration";
+    for (const selector of marketSections) {
+      const node = document.querySelector("main > " + selector);
+      if (node) node.hidden = inspiring;
+    }
+    $("#inspiration-board").hidden = !inspiring;
+    // The fragment never reaches the server; it only makes the board linkable.
+    if (!fromRoute) {
+      const target = inspiring ? "#inspiration" : "";
+      if (location.hash !== target && !(inspiring && location.hash.startsWith("#inspiration")))
+        history.replaceState(null, "", location.pathname + location.search + target);
+    }
+    window.InspirationBoard?.setActive(inspiring);
+    if (inspiring) return;
     render();
   }
+  // Hash routes: #inspiration, #inspiration/<id>, #inspiration/add?url=…&note=…
+  function route() {
+    const hash = location.hash || "";
+    if (!hash.startsWith("#inspiration")) {
+      if (view === "inspiration") setView("today", { fromRoute: true });
+      return;
+    }
+    if ($("#detail").open) $("#detail").close();
+    if (view !== "inspiration") setView("inspiration", { fromRoute: true });
+    window.InspirationBoard?.route(hash.slice("#inspiration".length));
+  }
+  window.addEventListener("hashchange", route);
+  // Deferred scripts (inspiration.js) have run by DOMContentLoaded.
+  document.addEventListener("DOMContentLoaded", route);
+  window.TrumpetApp = {
+    setView,
+    view: () => view,
+    // Observatory instruments for inspiration suggestions (no URLs or notes).
+    horns() {
+      const seen = new Map();
+      for (const l of board.listings)
+        if (l.hornId && !seen.has(l.hornId))
+          seen.set(l.hornId, { id: l.hornId, maker: l.maker, model: l.model, acquired: l.acquired });
+      return [...seen.values()];
+    },
+  };
   function filterState() {
     return {
       view,
@@ -378,7 +421,7 @@
     $("#universe-count").textContent = `${board.sourceUniverse.length} known domains · grows with discoveries`;
     if (!board.sourceUniverse.length) for (const s of board.sourceCatalog)
       if (!reported.has(s)) coverage.append(el("span", "coverage-chip unchecked", `${s} · not reported`));
-    $("#empty").hidden = rows.length > 0;
+    $("#empty").hidden = rows.length > 0 || view === "inspiration";
     $("#empty-copy").textContent =
       view === "candidates"
         ? "No matching candidates. Mark interest as pass to dismiss a lead; filter interest by pass to review dismissed leads."
@@ -482,7 +525,22 @@
           "No verified market observations yet. Historical references do not imply current availability.",
         ),
       );
+    renderDetailInspiration(l);
     $("#detail").showModal();
+  }
+  // "Inspiration (N)": thumbnails link to #inspiration/<id>.
+  function renderDetailInspiration(l) {
+    const section = $("#detail-inspiration"),
+      list = $("#detail-inspiration-list");
+    section.hidden = !l.inspirationCount;
+    list.replaceChildren();
+    if (!l.inspirationCount) return;
+    $("#detail-inspiration-title").textContent = `Inspiration (${l.inspirationCount})`;
+    const hornId = l.hornId;
+    window.InspirationBoard?.forHorn(hornId).then((items) => {
+      if (selected?.hornId !== hornId) return;
+      list.replaceChildren(...items.map((item) => window.InspirationBoard.thumbLink(item)));
+    });
   }
   $("#feedback-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -525,6 +583,7 @@
   $("#today").addEventListener("click", () => setView("today"));
   $("#all").addEventListener("click", () => setView("all"));
   $("#candidates").addEventListener("click", () => setView("candidates"));
+  $("#inspiration").addEventListener("click", () => setView("inspiration"));
   $("#browse-all").addEventListener("click", () => {
     if (view === "today") setView("all");
     else {

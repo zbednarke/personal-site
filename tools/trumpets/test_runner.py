@@ -14,6 +14,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(runner.products(page({'@graph':[PRODUCT]}))),1)
         c=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE)
         self.assertGreaterEqual(c['searchScore'],80);self.assertEqual(c['price'],2400);self.assertEqual(c['status'],'active')
+    def test_inspiration_feed_is_a_bounded_bonus(self):
+        base=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE)['searchScore']
+        inspired=dict(PROFILE,inspirations=[{'maker':'Taylor','model':'','tags':['raw brass','upswept bell'],'priority':'someday','why':'love it'}]*20)
+        boosted=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',inspired)['searchScore']
+        self.assertGreater(boosted,base)
+        self.assertLessEqual(boosted-base,6)
     def test_ambiguous_or_ordinary_not_invented(self):
         for offers in [{}, {'@type':'AggregateOffer','lowPrice':100}, {'price':100,'availability':'Maybe'}]:
             p=copy.deepcopy(PRODUCT);p['offers']=offers
