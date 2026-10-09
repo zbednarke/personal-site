@@ -6,7 +6,7 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
 1. Optional Cloud SQL backup (set the repository variable `JAZZ_CLOUD_SQL_INSTANCE`).
 2. `gcloud run deploy jazz-api --source jazz-api` in `parabolio-prod`. Startup
    applies the replay-safe migrations. Existing environment, secrets and settings
-   are kept. The API's `/healthz` must answer before the site is published.
+   are kept. The API's `/health` must answer before the site is published.
 3. A new static release on `actual-server` (`actual-budget-zb`, `us-west1-a`, over
    IAP) made by `deploy/publish-static-release.sh`: it copies the live release,
    overlays `index.html`, `.nojekyll`, `assets/`, `jazz/` and `trumpets/` from the
