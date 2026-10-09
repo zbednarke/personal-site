@@ -52,6 +52,10 @@ jobs:
           gcloud run deploy jazz-api --source jazz-api --quiet
           --project "$RUN_PROJECT" --region "$RUN_REGION"
           --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+      - name: Point traffic at the new revision
+        run: >-
+          gcloud run services update-traffic jazz-api --to-latest --quiet
+          --project "$RUN_PROJECT" --region "$RUN_REGION"
       - name: Check the API
         run: |
           url=$(gcloud run services describe jazz-api --project "$RUN_PROJECT" --region "$RUN_REGION" --format 'value(status.url)')
