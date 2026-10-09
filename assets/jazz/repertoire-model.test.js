@@ -97,6 +97,19 @@ test("merging after a conflict keeps non-conflicting local edits and lets the se
   assert.equal(merged.tune.revision, 5);
 });
 
+test("an archive or restore that hits a conflict is re-sent, not dropped", () => {
+  const base = tune("s", "ballad", { revision: 3 });
+  const local = { ...base, archivedAt: "2026-10-09T00:00:00Z" };
+  const server = { ...base, revision: 4, notes: "edited elsewhere" };
+  const merged = model.mergeServerTune(base, local, server);
+  assert.deepEqual(merged.patch, { archived: true });
+  assert.ok(merged.tune.archivedAt);
+  assert.equal(merged.tune.notes, "edited elsewhere");
+  const restored = model.mergeServerTune({ ...base, archivedAt: "x" }, base, { ...base, archivedAt: "x", revision: 4 });
+  assert.deepEqual(restored.patch, { archived: false });
+  assert.equal(restored.tune.archivedAt, undefined);
+});
+
 test("practice suggestions follow the by-ear-first path", () => {
   assert.equal(model.suggestFocus(tune("a", "ballad")), "melody");
   assert.equal(model.suggestFocus(tune("a", "ballad", { milestones: { melodyByEar: "solid" }, keysKnown: ["C"] })), "key");

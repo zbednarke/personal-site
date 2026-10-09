@@ -171,10 +171,10 @@
     return match && U.parseDateKey(match[1]) ? { date: match[1], recordingID: match[2] || "" } : null;
   }
 
-  async function openDeepLink(link) {
+  async function openDeepLink(link, { loadCalendar = false } = {}) {
     const date = U.parseDateKey(link.date);
     const month = new Date(date.getFullYear(), date.getMonth(), 1);
-    if (month.getTime() !== state.month.getTime()) {
+    if (loadCalendar || month.getTime() !== state.month.getTime()) {
       state.month = month;
       await loadMonth();
     }
@@ -187,7 +187,7 @@
     state.initialized = true;
     wireArchiveControls();
     if (deepLink) {
-      await openDeepLink(deepLink);
+      await openDeepLink(deepLink, { loadCalendar: true });
       return;
     }
     await loadMonth();

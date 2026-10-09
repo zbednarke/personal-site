@@ -214,6 +214,10 @@
     };
     EDITABLE.forEach((field) => consider(field, base[field], local[field], server[field], (value) => { tune[field] = value; patch[field] = value; }));
     consider("keysKnown", base.keysKnown, local.keysKnown, server.keysKnown, (value) => { tune.keysKnown = [...value]; patch.keysKnown = [...value]; });
+    consider("archived", Boolean(base.archivedAt), Boolean(local.archivedAt), Boolean(server.archivedAt), (value) => {
+      tune.archivedAt = value ? (local.archivedAt || new Date().toISOString()) : undefined;
+      patch.archived = value;
+    });
     STORED_MILESTONES.forEach((key) => consider(`milestones.${key}`, base.milestones?.[key], local.milestones?.[key], server.milestones?.[key], (value) => {
       tune.milestones[key] = value;
       patch.milestones = { ...(patch.milestones || {}), [key]: value };

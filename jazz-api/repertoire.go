@@ -316,7 +316,9 @@ func scanTune(row pgx.Row) (repertoireTune, error) {
 
 // loadTunePractice derives practice history per tune_id from linked blocks
 // (reconciled with their takes, like the archive), tagged takes outside any
-// block, and the take count. Nothing is copied into repertoire_tunes.
+// linked block, and the take count. A take belongs to its block's tune when the
+// block is linked, so relinking a section moves its takes too. Nothing is
+// copied into repertoire_tunes.
 func loadTunePractice(ctx context.Context, db dbQuerier, userID uuid.UUID, weekStart, onlyTune string) (map[string]tunePractice, error) {
 	rows, err := db.Query(ctx, `
 		WITH linked AS (
@@ -328,17 +330,17 @@ func loadTunePractice(ctx context.Context, db dbQuerier, userID uuid.UUID, weekS
 			WHERE pb.user_id=$1 AND pb.tune_id IS NOT NULL AND ($4='' OR pb.tune_id=$4)
 		),
 		loose AS (
-			SELECT r.tune_id, timezone('America/Los_Angeles', r.recorded_at)::date AS day, COALESCE(r.duration_ms,0)::bigint AS ms
-			FROM recordings r
-			WHERE r.user_id=$1 AND r.practice_block_id IS NULL AND COALESCE(r.tune_id,'')<>'' AND r.status IN ('uploading','ready')
+			SELECT r.tune_id, COALESCE(pb.practice_date, timezone('America/Los_Angeles', r.recorded_at)::date) AS day, COALESCE(r.duration_ms,0)::bigint AS ms
+			FROM recordings r LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
+			WHERE r.user_id=$1 AND pb.tune_id IS NULL AND COALESCE(r.tune_id,'')<>'' AND r.status IN ('uploading','ready')
 			  AND ($4='' OR r.tune_id=$4)
 		),
 		takes AS (
-			SELECT COALESCE(NULLIF(r.tune_id,''), pb.tune_id) AS tune_id,
+			SELECT COALESCE(pb.tune_id, NULLIF(r.tune_id,'')) AS tune_id,
 			       COALESCE(pb.practice_date, timezone('America/Los_Angeles', r.recorded_at)::date) AS day
 			FROM recordings r LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
-			WHERE r.user_id=$1 AND r.status IN ('uploading','ready') AND COALESCE(NULLIF(r.tune_id,''), pb.tune_id) IS NOT NULL
-			  AND ($4='' OR COALESCE(NULLIF(r.tune_id,''), pb.tune_id)=$4)
+			WHERE r.user_id=$1 AND r.status IN ('uploading','ready') AND COALESCE(pb.tune_id, NULLIF(r.tune_id,'')) IS NOT NULL
+			  AND ($4='' OR COALESCE(pb.tune_id, NULLIF(r.tune_id,''))=$4)
 		),
 		activity AS (
 			SELECT tune_id, day, ms FROM linked WHERE ms > 0
@@ -543,9 +545,11 @@ type repertoireResponse struct {
 	Week struct {
 		Start string `json:"start"`
 		Today string `json:"today"`
-		// All practice and jazz-track (non-trumpet) practice this week, for the 50/50 split.
-		PracticeMS     int64 `json:"practiceMs"`
-		JazzPracticeMS int64 `json:"jazzPracticeMs"`
+		// All practice, jazz-track (non-trumpet) practice and tune-linked jazz
+		// practice this week, for the 50/50 split and the repertoire share.
+		PracticeMS           int64 `json:"practiceMs"`
+		JazzPracticeMS       int64 `json:"jazzPracticeMs"`
+		RepertoirePracticeMS int64 `json:"repertoirePracticeMs"`
 	} `json:"week"`
 }
 
@@ -592,13 +596,14 @@ func (app *application) loadRepertoire(ctx context.Context, userID uuid.UUID, to
 		return response, err
 	}
 	if err := app.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(ms),0)::bigint, COALESCE(SUM(ms) FILTER (WHERE track <> 'trumpet'),0)::bigint FROM (
-			SELECT pb.track, LEAST(GREATEST(pb.elapsed_ms::bigint, COALESCE((
+		SELECT COALESCE(SUM(ms),0)::bigint, COALESCE(SUM(ms) FILTER (WHERE track <> 'trumpet'),0)::bigint,
+		       COALESCE(SUM(ms) FILTER (WHERE track <> 'trumpet' AND tune_id IS NOT NULL),0)::bigint FROM (
+			SELECT pb.track, pb.tune_id, LEAST(GREATEST(pb.elapsed_ms::bigint, COALESCE((
 			    SELECT SUM(r.duration_ms) FROM recordings r
 			    WHERE r.practice_block_id=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)), $3)::bigint AS ms
 			FROM practice_blocks pb
 			WHERE pb.user_id=$1 AND pb.practice_date >= $2::date AND pb.practice_date < $2::date + 7
-		) week`, userID, response.Week.Start, maxBlockElapsedMS).Scan(&response.Week.PracticeMS, &response.Week.JazzPracticeMS); err != nil {
+		) week`, userID, response.Week.Start, maxBlockElapsedMS).Scan(&response.Week.PracticeMS, &response.Week.JazzPracticeMS, &response.Week.RepertoirePracticeMS); err != nil {
 		return response, err
 	}
 	practice, err := loadTunePractice(ctx, app.db, userID, response.Week.Start, "")
@@ -1250,12 +1255,14 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 		       COALESCE(r.notes,''),COALESCE(r.tune_id,''),COALESCE(r.practice_block_id::text,''),COALESCE(pb.title,''),
 		       COALESCE(pb.practice_date, timezone('America/Los_Angeles', r.recorded_at)::date)::text
 		FROM recordings r LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
-		WHERE r.user_id=$1 AND r.status IN ('ready','uploading') AND (r.tune_id=$2 OR pb.tune_id=$2)
-		ORDER BY r.recorded_at,r.id`, userID, tuneID)
+		WHERE r.user_id=$1 AND r.status IN ('ready','uploading') AND (pb.tune_id=$2 OR (pb.tune_id IS NULL AND r.tune_id=$2))
+		  AND ($3='' OR COALESCE(pb.practice_date, timezone('America/Los_Angeles', r.recorded_at)::date) < $3::date)
+		ORDER BY r.recorded_at,r.id`, userID, tuneID, before)
 	if err != nil {
 		return nil, "", err
 	}
 	recordings := []tuneHistoryRecording{}
+	byBlock := map[string][]blockRecordingSummary{}
 	for recordingRows.Next() {
 		var item tuneHistoryRecording
 		if err := recordingRows.Scan(&item.ID, &item.Status, &item.ContentType, &item.MediaKind, &item.DurationMS, &item.RecordedAt, &item.TakeNumber,
@@ -1264,6 +1271,9 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 			return nil, "", err
 		}
 		recordings = append(recordings, item)
+		if item.PracticeBlockID != "" {
+			byBlock[item.PracticeBlockID] = append(byBlock[item.PracticeBlockID], blockRecordingSummary{Status: item.Status, DurationMS: item.DurationMS})
+		}
 	}
 	recordingRows.Close()
 	if err := recordingRows.Err(); err != nil {
@@ -1271,7 +1281,8 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 	}
 	blockRows, err := app.db.Query(ctx, `
 		SELECT id,practice_date::text,title,COALESCE(notes,''),elapsed_ms,target_minutes,status,removed_at IS NOT NULL,category,track,updated_at,completed_at
-		FROM practice_blocks WHERE user_id=$1 AND tune_id=$2 ORDER BY practice_date DESC,position,id`, userID, tuneID)
+		FROM practice_blocks WHERE user_id=$1 AND tune_id=$2 AND ($3='' OR practice_date < $3::date)
+		ORDER BY practice_date DESC,position,id`, userID, tuneID, before)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1282,7 +1293,7 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 		}
 		return byDay[date]
 	}
-	claimed := map[string]bool{}
+	linked := map[string]bool{}
 	for blockRows.Next() {
 		var block practiceBlock
 		var removed bool
@@ -1291,13 +1302,9 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 			blockRows.Close()
 			return nil, "", err
 		}
-		for _, recording := range recordings {
-			if recording.PracticeBlockID == block.ID.String() {
-				block.Recordings = append(block.Recordings, blockRecordingSummary{Status: recording.Status, DurationMS: recording.DurationMS})
-			}
-		}
+		block.Recordings = byBlock[block.ID.String()]
 		reconcileBlockPracticeTime(&block)
-		claimed[block.ID.String()] = true
+		linked[block.ID.String()] = true
 		if block.ElapsedMS == 0 && block.Notes == "" && len(block.Recordings) == 0 {
 			continue
 		}
@@ -1312,15 +1319,14 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 	for _, recording := range recordings {
 		entry := day(recording.PracticeDate)
 		entry.Recordings = append(entry.Recordings, recording)
-		if recording.PracticeBlockID == "" {
+		// Linked blocks already include their takes; other tagged takes add their own time.
+		if !linked[recording.PracticeBlockID] {
 			entry.PracticeMS += int64(recording.DurationMS)
 		}
 	}
 	dates := make([]string, 0, len(byDay))
 	for date := range byDay {
-		if before == "" || date < before {
-			dates = append(dates, date)
-		}
+		dates = append(dates, date)
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 	nextBefore := ""

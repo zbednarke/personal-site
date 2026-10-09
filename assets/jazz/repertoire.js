@@ -125,12 +125,25 @@
   }
 
   function applyResponse(result) {
-    state.tunes = (result.tunes || []).map(M.deriveTuneState);
-    state.archived = Array.isArray(result.archived) ? result.archived.map(M.deriveTuneState) : [];
+    // A refresh can land after a save it raced; keep tunes with edits in flight
+    // or a newer confirmed revision instead of reverting them.
+    const server = [...(result.tunes || []), ...(Array.isArray(result.archived) ? result.archived : [])];
+    const confirmed = new Map();
+    const incoming = server.map((tune) => {
+      const known = state.confirmed.get(tune.tuneId);
+      if (state.chains.has(tune.tuneId) || (known && known.revision > tune.revision)) {
+        confirmed.set(tune.tuneId, known || tune);
+        return byId(tune.tuneId) || M.deriveTuneState(tune);
+      }
+      confirmed.set(tune.tuneId, tune);
+      return M.deriveTuneState(tune);
+    });
+    state.tunes = incoming.filter((tune) => !tune.archivedAt);
+    state.archived = incoming.filter((tune) => tune.archivedAt);
     state.unlinked = result.unlinked || [];
     state.settings = { setTargetDate: result.settings?.setTargetDate || DATA.repertoirePace.targetDate };
     state.week = { ...state.week, ...(result.week || {}) };
-    state.confirmed = new Map([...state.tunes, ...state.archived].map((tune) => [tune.tuneId, tune]));
+    state.confirmed = confirmed;
     state.loaded = true;
     state.error = "";
   }
@@ -346,7 +359,7 @@
       : pace.onPace ? "on pace" : `${pace.behind} behind`;
     const weekMinutes = state.tunes.reduce((sum, tune) => sum + Number(tune.weekPracticeMs || 0), 0);
     const jazzShare = state.week.practiceMs ? Math.round((state.week.jazzPracticeMs / state.week.practiceMs) * 100) : 0;
-    const repertoireShare = state.week.jazzPracticeMs ? Math.round((weekMinutes / state.week.jazzPracticeMs) * 100) : 0;
+    const repertoireShare = state.week.jazzPracticeMs ? Math.min(100, Math.round((Number(state.week.repertoirePracticeMs || 0) / state.week.jazzPracticeMs) * 100)) : 0;
     const suggestion = M.suggestTuneOfWeek(state.tunes, DATA.repertoireGoals);
     container.innerHTML = `
       <p class="eyebrow">Pace · ${DATA.repertoirePace.tunesPerWeek} tune/week</p>
@@ -845,7 +858,11 @@
     container.dataset.practiceBlockId = practiceBlockId || "";
     container._onUnlink = onUnlink;
     if (!state.loaded) {
-      container.innerHTML = '<p class="tune-progress-loading">Loading tune progress…</p>';
+      container.innerHTML = state.error
+        ? `<p class="tune-progress-loading">Tune progress unavailable: ${escapeHTML(state.error)}</p>`
+        : '<p class="tune-progress-loading">Loading tune progress…</p>';
+      // Retry only after a successful load; a failure waits for the next refresh.
+      if (!state.loading && state.error) return;
       load().then(() => { if (container.isConnected) renderTuneCard(container, tuneId, practiceBlockId, { onUnlink }); });
       return;
     }
@@ -899,6 +916,7 @@
     if (!container) return;
     if (!state.loaded) {
       container.innerHTML = "";
+      if (!state.loading && state.error) return;
       load().then(() => { if (container.isConnected) renderLinkPicker(container, onChoose); });
       return;
     }

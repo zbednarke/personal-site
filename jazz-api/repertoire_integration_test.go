@@ -259,6 +259,27 @@ func TestRepertoireIntegration(t *testing.T) {
 		t.Fatalf("history events do not link to the practice day: %+v", history.Events)
 	}
 
+	// A take belongs to its section's tune, so relinking the section moves it,
+	// and the tune card and history agree.
+	relinked := uuid.New()
+	exec(`INSERT INTO practice_blocks (id,session_id,user_id,practice_date,block_key,position,title,category,track,target_minutes,elapsed_ms,tune_id) VALUES ($1,$2,$3,'2026-10-09','relink',9,'Relink','repertoire','musician',10,0,'old-folks')`, relinked, sessionID, userID)
+	exec(`INSERT INTO recordings (id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,expected_size_bytes,duration_ms,recorded_at,status,tune_id) VALUES ($1,$2,$3,$4,'test','c.wav','audio/wav',10,60000,now(),'ready','old-folks')`, uuid.New(), userID, sessionID.String(), relinked)
+	call(app.updatePracticeBlock, "PATCH", "/", map[string]string{"id": relinked.String()}, map[string]any{"tuneId": "bye-bye-blackbird"}, 200)
+	afterRelink := load("2026-10-09")
+	if find(afterRelink, "old-folks").TakeCount != 0 || find(afterRelink, "bye-bye-blackbird").TakeCount != 1 || find(afterRelink, "bye-bye-blackbird").TotalPracticeMS != 60000 {
+		t.Fatalf("relinked take: old folks %+v blackbird %+v", find(afterRelink, "old-folks"), find(afterRelink, "bye-bye-blackbird"))
+	}
+	var oldFolks struct {
+		Days []tuneHistoryDay `json:"days"`
+	}
+	_ = json.Unmarshal(call(app.repertoireTuneHistory, "GET", "/", map[string]string{"tuneId": "old-folks"}, nil, 200), &oldFolks)
+	if len(oldFolks.Days) != 0 {
+		t.Fatalf("relinked take still in the old tune's history: %+v", oldFolks.Days)
+	}
+	if week := load("2026-10-09").Week; week.RepertoirePracticeMS != 180000 || week.JazzPracticeMS != 180000 {
+		t.Fatalf("week repertoire share: %+v", week)
+	}
+
 	// 8. Orphan tune practice is reported and can be adopted with its exact id.
 	exec(`INSERT INTO practice_blocks (id,session_id,user_id,practice_date,block_key,position,title,category,track,target_minutes,elapsed_ms,tune_id) VALUES ($1,$2,$3,'2026-10-08','old-tune',5,'Old tune','repertoire','musician',10,300000,'mystery-tune')`, uuid.New(), sessionID, userID)
 	orphans := load("2026-10-09").Unlinked
