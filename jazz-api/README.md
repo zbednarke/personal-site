@@ -52,6 +52,19 @@ gcloud run deploy jazz-api --source . --region us-central1 \
   --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
 ```
 
+To try a feature branch against real data without changing the live site,
+deploy a tagged revision that receives no traffic, then point the local pages at
+it. Startup migrations run against the shared database, so only do this for
+branches whose migrations are additive.
+
+```sh
+gcloud run deploy jazz-api --source . --region us-central1 --project parabolio-prod \
+  --tag repertoire --no-traffic \
+  --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+# from the repo root, with the tag URL printed by the deploy:
+./dev.ps1 -ApiUrl https://repertoire---jazz-api-<hash>-uc.a.run.app
+```
+
 ## Playback optimization
 
 Browser-created WebM and fragmented MP4 recordings can require long scans before

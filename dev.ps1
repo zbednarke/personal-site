@@ -1,3 +1,7 @@
+# -ApiUrl points the pages at another revision of the data service, such as a
+# tagged no-traffic Cloud Run revision deployed from a feature branch.
+param([string]$ApiUrl = "")
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = $PSScriptRoot
@@ -9,9 +13,14 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gatewayKey)) {
     throw "Could not load the local Jazz gateway credential from Google Cloud."
 }
 
-$apiURL = (& gcloud run services describe jazz-api --project=parabolio-prod --region=us-central1 --format="value(status.url)").Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($apiURL)) {
-    throw "Could not locate the Jazz data service in Google Cloud."
+if ([string]::IsNullOrWhiteSpace($ApiUrl)) {
+    $apiURL = (& gcloud run services describe jazz-api --project=parabolio-prod --region=us-central1 --format="value(status.url)").Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($apiURL)) {
+        throw "Could not locate the Jazz data service in Google Cloud."
+    }
+} else {
+    $apiURL = $ApiUrl.Trim()
+    Write-Host "Using the data service at $apiURL"
 }
 
 $env:JAZZ_DEV_GATEWAY_KEY = $gatewayKey
