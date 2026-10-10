@@ -4,8 +4,14 @@ class PCMRecorderProcessor extends AudioWorkletProcessor {
     this.buffer = new Float32Array(4096);
     this.length = 0;
     this.recording = true;
+    this.paused = false;
     this.port.onmessage = (event) => {
-      if (event.data?.type === "flush") {
+      if (event.data?.type === "pause") {
+        this.flush();
+        this.paused = true;
+      } else if (event.data?.type === "resume") {
+        this.paused = false;
+      } else if (event.data?.type === "flush") {
         this.flush();
         this.recording = false;
         this.port.postMessage({ type: "flushed" });
@@ -24,7 +30,7 @@ class PCMRecorderProcessor extends AudioWorkletProcessor {
   process(inputs, outputs) {
     outputs.forEach((output) => output.forEach((channel) => channel.fill(0)));
     const input = inputs[0]?.[0];
-    if (!this.recording || !input) return true;
+    if (!this.recording || this.paused || !input) return true;
     let offset = 0;
     while (offset < input.length) {
       const count = Math.min(input.length - offset, this.buffer.length - this.length);

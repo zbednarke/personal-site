@@ -1,6 +1,6 @@
 "use strict";
 
-// Pitch engine: autocorrelation pitch detection + dual-tap granular pitch shifter.
+// Jazz Project effects engine: autocorrelation pitch detection + dual-tap granular pitch shifter.
 // Modes: off (dry passthrough, tuner still runs), tune (autotune), harmony (diatonic voices).
 
 class PitchEngine extends AudioWorkletProcessor {

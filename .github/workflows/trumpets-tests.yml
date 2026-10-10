@@ -1,0 +1,54 @@
+name: Trumpet and Jazz tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        # Google's Docker Hub mirror avoids Docker Hub's anonymous pull rate limit.
+        image: mirror.gcr.io/library/postgres:16
+        env:
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TRUMPETS_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
+      JAZZ_LAYOUT_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: jazz-api/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: All Go and database tests
+        working-directory: jazz-api
+        run: go test ./...
+      - name: Existing Jazz and new trumpet JavaScript tests
+        run: node --test assets/jazz/*.test.js assets/trumpets/*.test.js
+      - name: Search/recheck adapters
+        run: python -m unittest discover -s tools/trumpets -p 'test_*.py'
+      - name: Install browser test dependency
+        run: npm install --no-save --package-lock=false playwright@1.58.2
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Browser integration and screenshots
+        run: node tools/trumpets/browser-check.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trumpet-visual-verification
+          path: docs/trumpets/screenshots/*.png

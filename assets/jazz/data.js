@@ -140,6 +140,33 @@ globalThis.JAZZ_DATA = {
     ],
   },
 
+  tunes: [
+    {
+      id: "blue-bossa",
+      title: "Blue Bossa",
+      concertKey: "C minor",
+      meter: "4/4",
+      bars: [
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "F", quality: "m7", beats: 4 }],
+        [{ root: "F", quality: "m7", beats: 4 }],
+        [{ root: "D", quality: "m7b5", beats: 4 }],
+        [{ root: "G", quality: "7b9", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "Eb", quality: "m7", beats: 4 }],
+        [{ root: "Ab", quality: "7", beats: 4 }],
+        [{ root: "Db", quality: "maj7", beats: 4 }],
+        [{ root: "Db", quality: "maj7", beats: 4 }],
+        [{ root: "D", quality: "m7b5", beats: 4 }],
+        [{ root: "G", quality: "7b9", beats: 4 }],
+        [{ root: "C", quality: "m7", beats: 4 }],
+        [{ root: "D", quality: "m7b5", beats: 2 }, { root: "G", quality: "7b9", beats: 2 }],
+      ],
+    },
+  ],
+
   skills: [
     {
       id: "sound",
@@ -443,6 +470,8 @@ globalThis.JAZZ_DATA = {
     },
   ],
 
+  // Legacy roadmap: the saved tune list now lives in the repertoire API. These
+  // remain as title fallbacks and for old campaign JSON (state.repertoire).
   repertoire: [
     { id: "blue-bossa", title: "Blue Bossa", lesson: "Minor ii–V · Latin feel", current: true },
     { id: "autumn-leaves", title: "Autumn Leaves", lesson: "Major & minor ii–V–I" },
@@ -461,6 +490,25 @@ globalThis.JAZZ_DATA = {
     "Can solo",
     "From memory",
     "Gig ready",
+  ],
+
+  repertoireGoals: {
+    ballad: { target: 10, measure: "deeplyLearned" },
+    upbeat: { target: 8, measure: "gigReady" },
+    pop: { target: 5, measure: "gigReady" },
+  },
+  // The server's set target date wins when present. Week 1 of the pace starts at startDate.
+  repertoirePace: { tunesPerWeek: 1, targetDate: "2027-03-20", startDate: "2026-10-05" },
+  // About one 60–75 minute restaurant set.
+  setRules: { minBallads: 2, minUpbeat: 6, minPop: 2, minTotal: 12 },
+  repertoireFocusPresets: [
+    { key: "melody", label: "Learn melody by ear", minutes: 15, instructions: "Put on the reference recording and find the melody on the horn by ear, phrase by phrase. No chart. Sing each phrase before you play it." },
+    { key: "key", label: "New key", minutes: 15, instructions: "Play the melody by ear in a new key. Start from the first note, keep the shape, and fix wrong turns by ear rather than by theory. Add the key to the tune when it holds up." },
+    { key: "lyrics", label: "Lyrics", minutes: 10, instructions: "Speak the lyrics in rhythm, sing them, then play the melody while hearing the words. Let the words shape the phrasing." },
+    { key: "transcribe", label: "Transcribe", minutes: 20, instructions: "Loop one phrase of the reference recording, sing it, find it on the horn and play along until it sits. For pop tunes, take the vocal line or the horn hook." },
+    { key: "changes", label: "Changes + ii–V–I", minutes: 15, instructions: "Map the form. Play roots, then guide tones through each ii–V–I, then arpeggiate through the whole form from memory." },
+    { key: "improvise", label: "Improvise", minutes: 15, instructions: "Take a few choruses over a backing track. Start from the melody and embellish it before leaving it. Record one take." },
+    { key: "set", label: "Run it for the set", minutes: 10, instructions: "Play it top to bottom as you would on the gig: count-off, head, a short solo, head out and the ending. Record the take." },
   ],
 
   roadmap: [
@@ -513,4 +561,26 @@ globalThis.JAZZ_DATA = {
     { title: "The paid call", detail: "Get paid because another musician trusted you." },
     { title: "Clave unlocked", detail: "Join or sub with a Latin band." },
   ],
+};
+
+// Date-specific additions are included when that local practice day opens.
+globalThis.JAZZ_DATA.scheduledSessions = [{
+  practiceDate: "2026-09-10",
+  after: "horn-down-listening",
+  id: "easy-to-love-transcription-2026-09-10",
+  time: "20 min",
+  minutes: 20,
+  track: "language",
+  category: "transcription",
+  title: "Prelude to a Kiss: transcribe and play",
+  detail: "Work on Prelude to a Kiss. Listen and sing one short phrase, then find its rhythm and notes by ear. Write it on manuscript paper, enter the same phrase in MuseScore Studio, and compare notation. Play along slowly, matching articulation and phrasing. Record your phrase and note the next timestamp to learn. If two bars feel dense, learn just one musical gesture.",
+  win: "One short phrase you can sing and play; a recording and a clear starting point for next time.",
+}];
+globalThis.JAZZ_DATA.sessionsForDate = function (practiceDate) {
+  const sessions = [...this.sessions];
+  for (const session of this.scheduledSessions.filter(item => item.practiceDate === practiceDate)) {
+    const index = sessions.findIndex(item => item.id === session.after);
+    sessions.splice(index < 0 ? sessions.length : index + 1, 0, session);
+  }
+  return sessions;
 };

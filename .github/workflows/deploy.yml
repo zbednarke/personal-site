@@ -1,0 +1,72 @@
+name: Deploy
+# Every merge to main deploys once its tests pass: the API to Cloud Run first
+# (startup applies replay-safe migrations), then the static site as a new
+# release on the site VM. One-time setup: docs/deploy.md.
+on:
+  workflow_run:
+    workflows: ["Trumpet and Jazz tests"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+env:
+  RUN_PROJECT: parabolio-prod
+  RUN_REGION: us-central1
+  SITE_PROJECT: actual-budget-zb
+  SITE_ZONE: us-west1-a
+  SITE_VM: actual-server
+jobs:
+  deploy:
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Resolve commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Back up the database before migrations
+        if: vars.JAZZ_CLOUD_SQL_INSTANCE != ''
+        run: >-
+          gcloud sql backups create --project "$RUN_PROJECT"
+          --instance "${{ vars.JAZZ_CLOUD_SQL_INSTANCE }}"
+          --description "Before deploy ${{ steps.commit.outputs.sha }}"
+      - name: Deploy the API
+        # Keeps the service's existing environment, secrets and settings.
+        run: >-
+          gcloud run deploy jazz-api --source jazz-api --quiet
+          --project "$RUN_PROJECT" --region "$RUN_REGION"
+          --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+      - name: Point traffic at the new revision
+        run: >-
+          gcloud run services update-traffic jazz-api --to-latest --quiet
+          --project "$RUN_PROJECT" --region "$RUN_REGION"
+      - name: Check the API
+        run: |
+          url=$(gcloud run services describe jazz-api --project "$RUN_PROJECT" --region "$RUN_REGION" --format 'value(status.url)')
+          curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/health"
+      - name: Package the static site
+        run: tar -czf "site-${{ steps.commit.outputs.sha }}.tar.gz" index.html .nojekyll assets jazz trumpets
+      - name: Publish the static release
+        run: |
+          sha=${{ steps.commit.outputs.sha }}
+          flags=(--project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet)
+          gcloud compute scp "${flags[@]}" "site-$sha.tar.gz" deploy/publish-static-release.sh "$SITE_VM:/tmp/"
+          gcloud compute ssh "$SITE_VM" "${flags[@]}" --command "sudo bash /tmp/publish-static-release.sh /tmp/site-$sha.tar.gz $sha && rm -f /tmp/publish-static-release.sh"
+      - name: Check the site
+        run: curl --fail --silent --show-error --output /dev/null --retry 3 https://zachbednarke.com/

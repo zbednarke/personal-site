@@ -8,7 +8,7 @@
   const RECORDING_MODE_STORAGE_KEY = "zach-jazz-recording-mode-v1";
   const VIDEO_RESOLUTION_STORAGE_KEY = "zach-jazz-video-resolution-v1";
   const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
-  const { MAX_TAKE_DURATION_MS, shouldAutoFinish } = globalThis.JazzRecordingPolicy;
+  const { MAX_TAKE_DURATION_MS, VIDEO_DATA_FLUSH_MS, preferredVideoType, shouldAutoFinish, supportsChunkFlush } = globalThis.JazzRecordingPolicy;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
@@ -17,12 +17,15 @@
   let recordingCameraStream = null;
   let videoRecordingStream = null;
   let videoRecorder = null;
+  let videoDataTimer = null;
   let videoChunks = [];
   let videoContentType = "";
   let losslessRecorder = null;
   let fxRecorder = null;
   let activeFxPreset = "";
   let startedAt = 0;
+  let pausedAt = null;
+  let pausedDuration = 0;
   let recordedAt = "";
   let timerID = null;
   let autoStopID = null;
@@ -51,7 +54,7 @@
     if (state) state.textContent = message;
     if (!notify) return;
     dispatchEvent(new CustomEvent("jazz:recording-state", {
-      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry },
+      detail: { blockId: activeBlockContext?.id || "", message, phase, canRetry, paused: pausedAt !== null },
     }));
   }
 
@@ -75,7 +78,7 @@
   }
 
   function updateTimer() {
-    const elapsed = performance.now() - startedAt;
+    const elapsed = (pausedAt ?? performance.now()) - startedAt - pausedDuration;
     const timer = $("#recording-timer");
     if (timer) timer.textContent = formatTimer(elapsed);
     if (shouldAutoFinish(elapsed) && losslessRecorder && !captureFinalizing) stopRecording({ automatic: true });
@@ -158,7 +161,11 @@
 
   function setPreflightVisible(visible) {
     const preflight = $("#audio-preflight");
-    if (preflight) preflight.hidden = !visible;
+    if (preflight) preflight.hidden = false;
+    if (!visible) {
+      const status = $("#input-signal-status");
+      if (status) { status.textContent = "Mic off"; status.dataset.tone = "waiting"; }
+    }
   }
 
   function drawWaveforms(samples) {
@@ -340,6 +347,9 @@
   }
 
   function stopCapture() {
+    pausedAt = null;
+    pausedDuration = 0;
+    $("#pause-recording")?.setAttribute("hidden", "");
     clearInterval(timerID);
     timerID = null;
     clearTimeout(autoStopID);
@@ -359,19 +369,8 @@
     if (stopButton) stopButton.disabled = true;
   }
 
-  function preferredVideoType() {
-    if (!globalThis.MediaRecorder) return "";
-    return [
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8,opus",
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/webm",
-      "video/mp4",
-    ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
-  }
-
   function startVideoRecording(audioStream, activeCameraStream) {
-    const mimeType = preferredVideoType();
+    const mimeType = preferredVideoType(globalThis.MediaRecorder?.isTypeSupported?.bind(globalThis.MediaRecorder));
     if (!mimeType) throw new Error("Video recording is not supported in this browser");
     videoRecordingStream = new MediaStream([
       ...activeCameraStream.getVideoTracks(),
@@ -388,12 +387,23 @@
     videoRecorder.addEventListener("dataavailable", (event) => {
       if (event.data?.size) videoChunks.push(event.data);
     });
-    videoRecorder.start(1000);
+    // Starting without a timeslice lets the recorder finalize a seekable
+    // container. Chromium's fragmented MP4 remains seekable across requestData
+    // drains, so long recordings can still release encoded data periodically.
+    // Its WebM muxer does not, so WebM fallbacks stay as one final chunk.
+    videoRecorder.start();
+    if (supportsChunkFlush(mimeType)) {
+      videoDataTimer = setInterval(() => {
+        if (videoRecorder?.state === "recording") videoRecorder.requestData();
+      }, VIDEO_DATA_FLUSH_MS);
+    }
   }
 
   function finishVideoRecording() {
     if (!videoRecorder) return Promise.resolve(null);
     const recorder = videoRecorder;
+    clearInterval(videoDataTimer);
+    videoDataTimer = null;
     const settings = recordingCameraStream?.getVideoTracks()[0]?.getSettings?.() || {};
     return new Promise((resolve, reject) => {
       recorder.addEventListener("error", (event) => reject(event.error || new Error("Video recording failed")), { once: true });
@@ -417,6 +427,8 @@
   }
 
   function discardVideoRecording() {
+    clearInterval(videoDataTimer);
+    videoDataTimer = null;
     if (!videoRecorder) {
       videoChunks = [];
       return Promise.resolve();
@@ -471,7 +483,11 @@
       }
       if (recordingCameraStream) startVideoRecording(stream, recordingCameraStream);
       recordedAt = new Date().toISOString();
+      pausedAt = null;
+      pausedDuration = 0;
       startedAt = performance.now();
+      const pauseButton = $("#pause-recording");
+      if (pauseButton) { pauseButton.hidden = false; pauseButton.textContent = "Pause"; pauseButton.disabled = false; }
       updateTimer();
       timerID = setInterval(updateTimer, 250);
       autoStopID = setTimeout(() => stopRecording({ automatic: true }), MAX_TAKE_DURATION_MS);
@@ -502,9 +518,48 @@
     }
   }
 
+  function togglePause() {
+    if (!losslessRecorder || captureFinalizing) return;
+    const resume = pausedAt !== null;
+    try {
+      // Video and its audio share one recorder. PCM receives the same transition
+      // in the same task; its partial buffer is preserved at each pause boundary.
+      if (videoRecorder) {
+        if (resume) videoRecorder.resume();
+        else videoRecorder.pause();
+      }
+      if (resume) {
+        losslessRecorder.resume();
+        pausedDuration += performance.now() - pausedAt;
+        pausedAt = null;
+        const remaining = MAX_TAKE_DURATION_MS - (performance.now() - startedAt - pausedDuration);
+        autoStopID = setTimeout(() => stopRecording({ automatic: true }), Math.max(0, remaining));
+      } else {
+        losslessRecorder.pause();
+        pausedAt = performance.now();
+        clearTimeout(autoStopID);
+        autoStopID = null;
+      }
+      updateTimer();
+      const button = $("#pause-recording");
+      if (button) button.textContent = resume ? "Pause" : "Resume";
+      $("#recording-light")?.classList.toggle("active", resume);
+      setMonitorStatus(resume ? "Recording with the selected microphone." : "Paused — preview and tuner remain live; nothing is being recorded.", resume ? "live" : "");
+      setRecorderState(resume ? "Recording resumed — play the take" : "Paused — not recording. Resume when ready, or finish this take.", "recording");
+    } catch (error) {
+      // Finish the captured media if a recorder cannot follow the transition.
+      setServiceStatus(`Pause/resume failed: ${error.message}. Finishing the captured take.`, "error");
+      stopRecording();
+    }
+  }
+
   function stopRecording(options = {}) {
     if (!losslessRecorder || captureFinalizing) return;
     captureFinalizing = true;
+    clearInterval(timerID);
+    clearTimeout(autoStopID);
+    const pauseButton = $("#pause-recording");
+    if (pauseButton) pauseButton.disabled = true;
     const stopButton = $("#stop-recording");
     if (stopButton) stopButton.disabled = true;
     const automatic = options.automatic === true;
@@ -646,6 +701,7 @@
         fxPreset: capture.fxPreset || "",
       }),
     });
+    capture.sectionRemoved = Boolean(initialized.sectionRemoved);
     try {
       const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0) + (capture.fxBlob?.size || 0);
       const progressFor = (offset, assetBytes) => (percent) => {
@@ -681,7 +737,7 @@
   function uploadMessage(job) {
     if (job.status === "queued") return "Take queued for private upload";
     if (job.status === "uploading") return `Uploading privately - ${job.progress}%`;
-    if (job.status === "complete") return "Uploaded privately";
+    if (job.status === "complete") return job.payload.sectionRemoved ? "Saved in Previous work; its section was removed" : "Uploaded privately";
     return `Take is safe in this tab. Upload failed: ${job.error}`;
   }
 
@@ -800,7 +856,7 @@
         return;
       }
       result.recordings.forEach((recording) => {
-        const tune = DATA.repertoire.find((item) => item.id === recording.tuneId)?.title || "Open practice";
+        const tune = globalThis.JazzRepertoire?.title(recording.tuneId) || DATA.repertoire.find((item) => item.id === recording.tuneId)?.title || "Open practice";
         const skill = DATA.skills.find((item) => item.id === recording.skillIds?.[0])?.name || "General musicianship";
         const sessionTitle = recording.practiceSessionTitle || "Unassigned session";
         const blockTitle = recording.practiceBlockTitle || "";
@@ -1081,6 +1137,7 @@
   globalThis.JazzRecording = {
     startForBlock,
     stop: stopRecording,
+    togglePause,
     cancel: cancelRecording,
     retry: retryUpload,
     play: playRecording,
@@ -1141,11 +1198,12 @@
   });
   uploadQueue = new globalThis.JazzUploadQueue(uploadRecording, handleUploadState);
   addEventListener("beforeunload", (event) => {
-    if (!uploadQueue.hasPending()) return;
+    if (!stream && !captureFinalizing && !uploadQueue.hasPending()) return;
     event.preventDefault();
     event.returnValue = "";
   });
   $("#start-recording")?.addEventListener("click", startGeneralRecording);
+  $("#pause-recording")?.addEventListener("click", togglePause);
   $("#stop-recording")?.addEventListener("click", stopRecording);
   $("#refresh-recordings")?.addEventListener("click", loadRecordings);
   navigator.mediaDevices?.addEventListener?.("devicechange", () => updateMicrophones().catch(() => {}));

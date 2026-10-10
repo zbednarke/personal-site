@@ -6,6 +6,7 @@
   if (!U) return;
 
   const $ = (selector, root = document) => root.querySelector(selector);
+  let effectsResizeObserver = null;
   const state = {
     month: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     selectedDate: U.dateKey(new Date()),
@@ -108,28 +109,87 @@
   }
 
   function visibleView() {
-    return location.hash === "#archive" ? "archive" : "today";
+    if (location.hash === "#archive" || location.hash.startsWith("#archive/")) return "archive";
+    if (location.hash === "#repertoire" || location.hash.startsWith("#repertoire/") || location.hash.startsWith("#repertoire?")) return "repertoire";
+    if (location.hash === "#guide-tones") return "guide-tones";
+    if (location.hash === "#studio") return "studio";
+    if (location.hash === "#effects") return "effects";
+    return "today";
+  }
+
+  function resizeEffectsFrame() {
+    const frame = $("#effects-frame");
+    const frameBody = frame?.contentDocument?.body;
+    if (!frame || !frameBody) return;
+    frame.style.height = `${Math.max(720, frameBody.scrollHeight + 2)}px`;
+  }
+
+  function watchEffectsFrameSize() {
+    const frame = $("#effects-frame");
+    const frameDocument = frame?.contentDocument;
+    if (!frameDocument) return;
+    effectsResizeObserver?.disconnect();
+    effectsResizeObserver = new ResizeObserver(resizeEffectsFrame);
+    if (frameDocument.body) effectsResizeObserver.observe(frameDocument.body);
+    resizeEffectsFrame();
   }
 
   function route() {
     const view = visibleView();
     document.body.classList.toggle("virtuoso-today", view === "today");
     document.body.classList.toggle("virtuoso-archive", view === "archive");
+    document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
+    document.body.classList.toggle("virtuoso-studio", view === "studio");
+    document.body.classList.toggle("virtuoso-effects", view === "effects");
+    document.body.classList.toggle("virtuoso-repertoire", view === "repertoire");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
-    $("#mobile-view-label").textContent = view === "archive" ? "Archive" : "Today";
+    $("#guide-tones").hidden = view !== "guide-tones";
+    $("#studio").hidden = view !== "studio";
+    $("#effects").hidden = view !== "effects";
+    $("#repertoire").hidden = view !== "repertoire";
+    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", repertoire: "Repertoire", today: "Today" };
+    $("#mobile-view-label").textContent = labels[view];
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;
       link.classList.toggle("active", active);
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
-    if (view === "archive" && !state.initialized) initializeArchive();
+    const deepLink = archiveDeepLink();
+    if (view === "archive" && !state.initialized) initializeArchive(deepLink);
+    else if (view === "archive" && deepLink) openDeepLink(deepLink);
+    if (view === "repertoire") globalThis.JazzRepertoire?.route();
+    if (view === "effects") requestAnimationFrame(resizeEffectsFrame);
+    if (view !== "effects") $("#effects-frame")?.contentWindow?.postMessage({ type: "jazz:effects-stop" }, location.origin);
+    document.dispatchEvent(new CustomEvent("jazz:view-change", { detail: { view } }));
   }
 
-  async function initializeArchive() {
+  // #archive/2026-10-08 opens a day; #archive/2026-10-08/<recording id> also plays that take.
+  function archiveDeepLink() {
+    const match = /^#archive\/(\d{4}-\d{2}-\d{2})(?:\/([0-9a-f-]{36}))?$/.exec(location.hash);
+    return match && U.parseDateKey(match[1]) ? { date: match[1], recordingID: match[2] || "" } : null;
+  }
+
+  async function openDeepLink(link, { loadCalendar = false } = {}) {
+    const date = U.parseDateKey(link.date);
+    const month = new Date(date.getFullYear(), date.getMonth(), 1);
+    if (loadCalendar || month.getTime() !== state.month.getTime()) {
+      state.month = month;
+      await loadMonth();
+    }
+    await selectDay(link.date);
+    const recording = (state.day?.recordings || []).find((item) => item.id === link.recordingID);
+    if (recording) selectRecording(recording);
+  }
+
+  async function initializeArchive(deepLink = null) {
     state.initialized = true;
     wireArchiveControls();
+    if (deepLink) {
+      await openDeepLink(deepLink, { loadCalendar: true });
+      return;
+    }
     await loadMonth();
     await selectDay(state.selectedDate);
   }
@@ -373,7 +433,7 @@
   }
 
   function renderPlayerMetadata(recording) {
-    const tune = globalThis.JAZZ_DATA?.repertoire?.find((item) => item.id === recording.tuneId)?.title || "";
+    const tune = globalThis.JazzRepertoire?.title(recording.tuneId) || globalThis.JAZZ_DATA?.repertoire?.find((item) => item.id === recording.tuneId)?.title || "";
     const format = recording.mediaKind === "video"
       ? `${recording.videoWidth || "?"}×${recording.videoHeight || "?"} video + WAV master`
       : (recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType || "Audio");
@@ -433,6 +493,13 @@
   }
 
   function wireMedia(media, asset, retry) {
+    const syncNativeDuration = () => {
+      const nativeDuration = Number(media.duration);
+      if (!Number.isFinite(nativeDuration) || nativeDuration <= 0) return;
+      state.expectedDuration = nativeDuration;
+      $("#archive-player-seek").max = String(nativeDuration);
+      $("#archive-player-duration").textContent = U.formatPlaybackTime(nativeDuration);
+    };
     const update = () => {
       const current = Math.min(state.expectedDuration, Math.max(0, Number(media.currentTime || 0)));
       $("#archive-player-seek").value = String(current);
@@ -444,6 +511,10 @@
       else if (media.ended) setPlayerState("Finished");
     };
     ["play", "pause", "timeupdate", "seeking", "seeked", "ended", "volumechange"].forEach((event) => media.addEventListener(event, update));
+    ["loadedmetadata", "durationchange"].forEach((event) => media.addEventListener(event, () => {
+      syncNativeDuration();
+      update();
+    }));
     media.addEventListener("error", () => {
       if (media !== state.media) return;
       if (retry < 1 && state.currentRecording) {
@@ -453,6 +524,7 @@
         setPlayerState("Playback interrupted");
       }
     });
+    syncNativeDuration();
     update();
   }
 
@@ -585,5 +657,7 @@
   }
 
   window.addEventListener("hashchange", route);
+  window.addEventListener("resize", resizeEffectsFrame);
+  $("#effects-frame")?.addEventListener("load", watchEffectsFrameSize);
   route();
 })();

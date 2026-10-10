@@ -1,0 +1,505 @@
+# Private Trumpet Observatory
+
+`/trumpets/` is a framework-free board backed by the existing Go `jazz-api`
+service and PostgreSQL database. The database, rather than a conversation, is
+its accumulated market memory. Jazz continues to use its existing routes.
+
+## What is implemented
+
+- Today shows meaningful new listings, newly discovered offers, price drops,
+  rediscoveries and status changes occurring since midnight **UTC**. All tracked
+  includes sold, removed, stale and acquired instruments. History is retained.
+- Cards show photos when verified, maker/model, price/currency/shipping, seller,
+  source, status, rationale, tags, rating, interest, favorites and private notes.
+  The instrument-study illustration is a placeholder, not a listing photograph.
+- Filters compose across maker, source, status, finish/features text, interest,
+  favorites and active-only. Sorting includes percentage price drop and oldest
+  unchecked. Prices sort **within currency groups**; no exchange rate is guessed.
+- Feedback belongs to a physical horn and is shared across confirmed relists.
+  Explicit liked/disliked attributes and ratings inform the baseline runner's
+  ranking. Freeform notes and examples are available to a more capable search
+  client, including the existing ChatGPT workflow, through the private profile.
+- Source coverage reports checked, failed and skipped sources. Unreported catalog
+  sources remain visibly unreported. A checked source means its search results
+  were inspected, **not** that every inventory page was exhaustively crawled.
+- A daily GitHub workflow runs broad search, deliberately searches for new sources,
+  revalidates all active offers, submits observations and records coverage. It is
+  disabled until deployment, secrets and the repository variable are configured.
+  No remote deployment or changes to an existing ChatGPT task are made by this PR.
+
+## Data and dedupe
+
+Migration `021_trumpet_board.sql` adds instruments (`trumpet_horns`), offers
+(`trumpet_listings`), horn feedback, runs, source checks, observations and events.
+Core ownership, URL/source identities, money, status and timestamps are relational;
+variable technical specifications, tags/images and attribute lists use JSONB.
+Composite foreign keys enforce ownership between related records. Startup migrations
+remain replayable, matching the existing service's migration convention.
+
+URLs normalize scheme/host, trailing slash, fragment and common tracking parameters
+while preserving meaningful query parameters. `(owner, canonical URL)` and
+`(owner, source, source listing ID)` identify an offer. A maker and serial number
+identify a physical horn across sources. A verified `hornId` can explicitly link
+an instrument without a serial. Matching photos or distinctive provenance on the
+same maker/model produce **possible relist suggestions**, without automatic merging.
+Conflicting serial numbers never become fuzzy matches. Exact historical seed models
+can attach to their first compatible verified offer; later different horns remain
+separate. Price and status changes are server-detected, never trusted alert labels.
+
+Ingestion is transactional and serialized per owner. A report's `externalId` is an
+idempotency key: a replay returns its original run/status without adding history.
+Use a new ID for additional work, including a corrected partial report. Observations
+preserve daily unchanged prices too. The first-seen timestamp never resets.
+A `combined`/`recheck` run with active instruments still unchecked that UTC day is
+recorded **partial**, even if the client claimed success. Failed/ambiguous checks
+preserve prior facts and leave instruments due. The board shows stale references
+and all last-check dates; the runner never treats a blocked/login page as “sold”.
+
+Acquisition is an instrument-level exclusion: it applies to all confirmed offers,
+removes old events from Today's alerts and survives subsequent ingestion or feedback
+reset. Acquired data remains available for comparisons, provenance, setup or resale.
+The purchased Taylor Chicago 46 II / Harrelson-modified build is seeded acquired;
+the same recognizable build is also excluded during ingestion when its serial is
+unknown. Ordinary Taylor Chicago II instruments are not excluded by that rule.
+
+## Historical seeds
+
+The first empty-board visit submits an idempotent authenticated `POST /seed`.
+Twenty-one references include the requested bought Taylor, 1948 Olds #27907,
+MUSE, upswept Taylor, Adams A4, Lawler C7, OIRAM II, Dorotea, David Castro Bravura,
+Yamaha 921X #002, gold B5, LOTUS Solo Max, Feroce, Faddis bundle, HC1, Meha,
+Opera Premiere, Calicchio/Van Laar historical placeholders, GERDT and Concept TT.
+
+Unknown URLs, sellers, prices, dates and photos stay unknown. References start
+stale, with no fabricated last-check time or fresh-listing event. The Calicchio
+and unusual Van Laar placeholders are explicitly incomplete, not live offers.
+Seeds never overwrite saved feedback or previously verified offers. Searches can
+supply their seed listing ID to enrich a reference, or add a separate verified offer
+with a shared physical horn identity. Use `GET /machine/listings` for that comparison.
+
+## Authentication and deployment
+
+1. Build/deploy `jazz-api` with the existing Cloud Run process. Startup applies
+   migration 021 to the existing PostgreSQL database; no new database or GCS bucket
+   is needed. Back up the database through the usual deployment process.
+2. Expand the site's existing **private path matcher** to include `/trumpets`,
+   `/trumpets/*` and `/assets/trumpets/*`, **before** serving those files. Add the
+   `/trumpets/api/*` reverse proxy from `deploy/Caddyfile.jazz.example`.
+   Reuse the existing authenticated identity and gateway secret; overwrite client
+   identity headers at the gateway. Validate Caddy before reload.
+3. Preserve whichever existing login is deployed. The example uses Basic Auth;
+   the repository also supports `jazz-auth`'s seven-day cookie. For the cookie
+   deployment retain its existing `route @jazz_private` authentication gate and
+   forward `X-Jazz-User {http.request.header.X-Jazz-User}` as on Jazz, rather than
+   replacing it with a new Basic Auth gate. The expanded matcher includes Trumpets
+   in both authentication and privacy headers. `deploy/verify-jazz-auth.py` now
+   checks Trumpets too. Do not rerun the one-time login installer on an already
+   installed cookie deployment merely to add this route.
+4. After validating and reloading the private routes, publish `trumpets/` and
+   `assets/trumpets/` in the existing static release. Switch the release symlink
+   atomically and keep the previous release and Caddy configuration for rollback.
+5. Generate a **random token of at least 32 bytes**, store the plaintext only in
+   Secret Manager / the runner's secret store, and compute its SHA-256 hex digest.
+   Configure **Cloud Run** with `TRUMPETS_MACHINE_TOKEN_SHA256` (the digest) and
+   `TRUMPETS_MACHINE_USER` (the same verified login subject, e.g. `zach`). The
+   machine API fails closed if either is missing. Its owner is fixed server-side;
+   a supplied username header cannot select another user's notes. Rotate by replacing
+   the token in the client and the digest in Cloud Run. Never commit either a token
+   file, private profile snapshot, search report with feedback, or a cloud credential.
+6. In GitHub Actions configure secrets `TRUMPETS_API_URL` (Cloud Run service base
+   URL), `TRUMPETS_MACHINE_TOKEN` (plaintext **secret**) and either
+   `BRAVE_SEARCH_API_KEY` or `OPENAI_API_KEY`.
+   Set repository variable `TRUMPETS_DAILY_ENABLED=true` only after verification.
+   The workflow runs at **13:17 UTC daily** and supports manual dispatch. Its log
+   contains run ID/status/counts only, never the private profile/notes. No feedback
+   is uploaded as an artifact. Check provider quotas and allow the required destinations
+   if your runner has an outbound allowlist.
+7. Verify anonymous page, assets and API/profile requests return 401; authenticated
+   requests work; direct Cloud Run browser routes reject absent gateway headers;
+   machine routes reject missing/wrong bearer tokens; cross-site writes return 403.
+
+The API returns `private, no-store`, `noindex` and `no-referrer`; no CORS grants
+are added. Browser data is not copied to localStorage, URL query parameters or
+analytics. Notes render as text, never HTML. No private listing/profile is exposed
+through the service's existing public recording-share routes. Static source code and
+placeholder illustrations contain no private feedback.
+
+## Search clients and daily revalidation
+
+The adaptive runner plans 36 distinct source domains per run, six rotating maker/model searches, four exploration searches and four deliberate new-source searches. The domain universe starts with 57 international dealer, maker, community, auction and classified domains, then grows from useful verified offers and unverified leads. Sources include specialist dealers, Japanese
+and European shops, auctions, regional shops, maker/demo inventory and credible
+private offers; Reverb is only one group. Every active offer due that UTC day is
+fetched separately, even if it did not occur in fresh search results.
+
+If no Brave key is configured, `OPENAI_API_KEY` enables OpenAI web search through
+the Responses API (default model `gpt-4.1-mini`, configurable with
+`TRUMPETS_SEARCH_MODEL`). Only URLs from completed web-tool search sources are
+used; generated prose is never taken as listing evidence. Dealer searches filter
+returned URLs to the requested domains. Private notes are not sent to the search
+provider. Both providers feed the same source-page verification, normalization,
+dedupe and feedback scoring pipeline.
+Temporary OpenAI HTTP/rate-limit/network errors get at most three attempts with
+bounded backoff. Authentication failures are not retried. Exhausted failures remain
+visible as partial coverage, never invented results. Progress logs contain only
+source name, status and counts.
+
+### VM-hosted daily job
+
+When GitHub Actions secret administration is unavailable, the same runner can run
+on the existing Caddy VM. Install it as `/opt/trumpets/runner.py`; put the service
+and timer from `deploy/trumpets-research.*` in `/etc/systemd/system/`. Create
+`/etc/trumpets/runner.env` owned by root with mode **0600**, containing
+`TRUMPETS_API_URL`, `TRUMPETS_MACHINE_TOKEN`, and the selected provider's API key.
+Obtain credentials through Secret Manager; never put this file in a static release.
+
+The service runs as a dynamically allocated unprivileged user, with a read-only
+filesystem and private temporary directory. The timer runs at **13:17 UTC** with
+persistent catch-up after downtime. Enable with
+`systemctl enable --now trumpets-research.timer`, and run the first search with
+`systemctl start trumpets-research.service`. A partial report exits 2 and is
+retained in the board, leaving unsupported active listings due for revalidation.
+Use `journalctl -u trumpets-research.service` for run ID/status/counts only.
+Enable **one** scheduler; keep `TRUMPETS_DAILY_ENABLED` unset for VM scheduling.
+
+This conservative adapter ingests **unambiguous individual Product JSON-LD offers**.
+It rejects aggregate prices, ordinary Bach/Yamaha without exceptional evidence,
+non-trumpets and obvious non-Bb models; it has no warm/dark sound filter. It scores
+priority makers/features and the owner's favored/disliked attributes. It interprets explicit sentiment phrases in freeform notes locally, including likes/dislikes of finishes and engineering, and style-positive but price-negative reactions. These bounded signals improve ranking without becoming hard filters. Unrecognized prose remains available to authenticated research clients; the runner does not claim arbitrary natural-language understanding or exhaustive access to unsupported sites.
+Unsupported/private/login/anti-bot pages and denied requests are reported; no
+availability or price is invented. HTTP 404/410 becomes removed, explicit structured
+sold/out-of-stock becomes sold, and a returning active offer becomes rediscovered.
+Published dates, when supplied by a source, distinguish new listings from newly
+found old offers. URL fetches restrict public HTTPS and reject private-network
+addresses and unsafe redirects. Search result pages can require a specialized
+adapter or human/ChatGPT verification, which the same ingestion protocol accepts.
+
+Local runner setup (values come from a secret store, not a committed env file):
+
+```sh
+python tools/trumpets/runner.py
+python tools/trumpets/runner.py --prepare /tmp/private-trumpet-context.json
+python tools/trumpets/runner.py --report /tmp/verified-trumpet-run.json
+```
+
+`--prepare` writes profile, all tracked records and the due queue with mode 0600.
+Keep that file private and remove it after use. Give the existing ChatGPT daily search
+workflow access to the authenticated profile/all-tracked/due endpoints, then submit
+its verified daily report. This replaces reliance on remembered conversation history.
+No access to previous chat contents or its current scheduled task was assumed.
+
+Machine endpoints under the Cloud Run base URL, using `Authorization: Bearer …`:
+
+| Endpoint                            | Purpose                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET /v1/trumpets/machine/profile`  | Ratings, notes, liked/disliked attributes, examples, maker/source priorities, acquired exclusions |
+| `GET /v1/trumpets/machine/listings` | All tracked offers/history, today's meaningful events, latest coverage and successful runs        |
+| `GET /v1/trumpets/machine/due`      | Active/stale offers not verified that UTC day; acquired instruments excluded                      |
+| `POST /v1/trumpets/machine/runs`    | Atomic verified findings/rechecks and source coverage; idempotent external ID                     |
+
+Browser endpoints use the existing gateway auth under `/trumpets/api/v1/trumpets/`:
+`GET listings`, `GET profile`, `POST seed` with `{}`, and
+`PUT listings/{id}/feedback` (full feedback replacement, nullable 1–5 rating).
+`DELETE listings/{id}/feedback` resets ratings/notes/preferences/favorite for the
+shared physical horn; it does not delete history or reverse acquisition. Writes
+require `Content-Type: application/json`; the existing cookie gate and API origin
+checks reject cross-site writes. Every query and mutation is owner-scoped.
+
+Example normalized machine report (fictional values; use verified listing facts):
+
+```json
+{
+  "externalId": "chatgpt-2026-10-05-01",
+  "kind": "combined",
+  "status": "partial",
+  "error": "One active dealer page was blocked; left due for recheck.",
+  "sources": [
+    {
+      "source": "Independent dealer",
+      "status": "checked",
+      "candidates": 1,
+      "note": "Offer verified."
+    },
+    {
+      "source": "Reverb",
+      "status": "skipped",
+      "candidates": 0,
+      "note": "Unavailable this run."
+    }
+  ],
+  "listings": [
+    {
+      "maker": "Lawler",
+      "model": "C7",
+      "serialNumber": "",
+      "title": "Lawler C7 Bb trumpet",
+      "description": "Source-grounded description",
+      "url": "https://example.com/verified-offer",
+      "source": "Independent dealer",
+      "sourceListingId": "offer-123",
+      "seller": "Verified seller",
+      "location": "",
+      "price": 3000,
+      "currency": "USD",
+      "shipping": null,
+      "postedAt": null,
+      "status": "active",
+      "discoveryType": "newly discovered",
+      "images": [],
+      "searchScore": 85,
+      "searchRationale": "Verified interesting configuration",
+      "details": { "finish": "raw brass", "notableFeatures": ["custom bell"] },
+      "tags": ["raw brass"],
+      "evidence": "Offer page checked today"
+    }
+  ]
+}
+```
+
+For an existing offer include its `id` and full normalized fields from the board/due
+response; the server detects changes. Do not send read-only `firstSeen`, `feedback`
+or history properties as candidate input. Known current URLs/source IDs also dedupe
+without an ID. `new listing`, `newly discovered` and `rediscovered` are ingestion
+classifications; `price drop` and `status change` are server-derived events.
+Use `partial`/`failed` honestly and record failed/skipped sources explicitly.
+
+## Tests and visual verification
+
+```sh
+cd jazz-api
+TRUMPETS_TEST_DATABASE_URL='postgres://.../disposable' \
+JAZZ_LAYOUT_TEST_DATABASE_URL='postgres://.../disposable' go test ./...
+cd ..
+node --test assets/jazz/*.test.js assets/trumpets/*.test.js
+python -m unittest discover -s tools/trumpets -p 'test_*.py'
+```
+
+Database tests create/drop isolated random schemas. They apply all migrations twice,
+exercise report replay, URL and source-ID dedupe, cross-source serial identity,
+feedback CRUD and ownership, price/status histories, bought-horn exclusion and
+incomplete daily rechecks. Unit tests cover auth, profile construction, URL shaping,
+ranking/filtering, source adapters and unsupported/ambiguous observations.
+
+With Playwright installed and a disposable PostgreSQL URL, run:
+
+```sh
+TRUMPETS_TEST_DATABASE_URL='postgres://.../disposable' \
+CHROMIUM_PATH=/path/to/chromium node tools/trumpets/browser-check.cjs
+```
+
+This starts the test-only Go preview on loopback, verifies real API feedback
+persistence after reload, ratings, filters and favorites, checks 320/390/768/1440px layouts, 44px phone touch targets, collapsible mobile
+filters and notes-dialog/page horizontal overflow and JS errors, then drives the
+inspiration board (seed and fixture enrichment, paste-to-capture, duplicate toast,
+📷 upload at 390px, clipboard image paste, two-file drop, quick priority, filters,
+detail autosave, click-to-load embed referrer policy, Observatory link and the
+share-sheet route), captures screenshots, then deletes its schema. Inspiration
+previews come from loopback fixtures and an in-memory bucket; no third party is contacted.
+`TRUMPETS_GO` can select a local Go executable. Test fixtures are clearly labeled;
+their prices, seller and illustrated images are synthetic, never market evidence.
+The regular `dev.ps1` now serves `/trumpets/` with the existing **production** data
+proxy as well as Jazz; use the isolated preview for tests.
+
+[Desktop Today](screenshots/today.png) · [All tracked](screenshots/all-tracked.png) ·
+[Mobile](screenshots/mobile.png) · [Mobile notes](screenshots/mobile-notes.png)
+
+
+## Expanded discovery and candidate review
+
+Candidates accumulates worthwhile search leads when a dealer blocks access or lacks
+an unambiguous offer. These are explicitly unverified: no invented price, stock,
+posted date, serial number or photo, and no market observations or Today alerts.
+Rating, notes and favorites work privately. Set interest to `pass` to dismiss a lead
+and exclude it from automated rediscovery/rechecks. Select the `pass` interest
+filter to revisit dismissed leads. Acquired leads remain accessible in All tracked. Leads are retried daily; an
+unambiguous verified offer promotes the same row, preserving first seen, feedback
+and URL identity. Search hints cannot downgrade verified price/status history.
+Acquired horns remain excluded from new-listing alerts.
+
+Runs rotate 36 individual domains from the accumulated universe, with bounded slots for previously useful sources and priority for never/oldest-searched domains. Six maker/model queries rotate across the nine seed queries; four unfamiliar-maker/international exploration queries and four new-source queries run every day. At least 25% of the planned queries explore beyond the shortlist. New-source queries exclude known domains; accepted useful new domains persist automatically.
+Those extra queries exclude Reverb to encourage other sources; its dedicated source
+search remains enabled. Citation titles are accepted only for actual web-tool URLs.
+Parsers accept individual Product JSON-LD offers, dealer product metadata with
+explicit price/currency/stock, and Shopify product JSON with explicit variant stock
+and cart currency. Ambiguous variant prices and related products are rejected.
+Shopify’s scaled prices are divided by 100 even for JPY; yen display uses whole units. Unverified leads have a lower triage threshold
+(45 versus 55 for verified active offers).
+
+Discovery is bounded to 240 page inspections and 35 minutes after starting the run;
+active listing rechecks happen first, then up to 40 queued leads. Remaining promising result URLs can still enter
+the queue. Source coverage records actual checks and unsupported pages, rather than
+claiming exhaustive inventory. Authenticated clients can consume all freeform feedback;
+the automated runner consumes structured preferences, explicit note signals and passes. Raw private notes never leave the private API in public search queries.
+
+Deployment adds replay-safe migration `022_trumpet_candidates.sql`, API/UI changes
+and the updated stdlib runner. No Caddy, Cloud Run environment or secret changes are
+required. Deploy the API before the runner/UI to support `verificationState`.
+The existing VM timer stays daily at 13:17 UTC; the expanded runner uses a versioned
+run idempotency key; each invocation has its own ID so an incomplete run can be retried that day without replaying the old failure.
+[Candidate queue screenshot](screenshots/candidates.png) uses synthetic data.
+
+
+## Persistent adaptive watch (migration 023)
+
+`trumpet_sources` stores owner-scoped domains, geography/specialty, first seen,
+last searched/live/useful timestamps, query success, pages opened, verified
+observations and confirmed stale-page counts. Bootstrap domains are merged with
+stored sources rather than used as a whitelist. Rotation schedules 36 unique
+source families/domains (eBay country aliases do not consume two slots). It keeps
+at most eight useful-source slots; never/oldest searched sources fill the rest.
+Discovery admits at most six findings and twelve fetched pages per domain per run
+so easy marketplaces cannot flood the board. Active rechecks are exempt from these
+caps and run first on every invocation, including same-day manual reruns. Sources
+from legacy tracked offers are also carried into rotation. Skipped queries do not
+advance source rotation or success counters. The source universe panel separates **searched domains**, **live
+page domains**, and **known domains**; a query success never implies current stock.
+Counts are observations, not a claim of exhaustive dealer inventory.
+
+The profile now includes `sourceUniverse`, `watchPolicy`, and `notePreferences`.
+An explicit “love the engineering / raw brass, but too expensive” note retains
+those style signals and mildly penalizes same-maker offers at or above that
+example's observed asking price in the same currency. “Don't like gold plate”
+reduces that attribute's weight. Adjustments are bounded; acquired exclusion is
+physical-horn scoped and exploration stays reserved. No note text is sent to Brave
+or OpenAI search queries. Unsupported language remains private raw feedback for
+other authenticated research clients.
+
+All verified observations carry description/condition/configuration/provenance
+snapshots. Changes produce `details change` events; whitespace-only description
+changes are ignored. Every price movement remains in history. Alerts require a
+same-currency drop of at least **3%**, or an increase of at least **15%**; currency
+changes and minor adjustments do not imply comparable discounts. New sold offers
+are saved as asking-price history without new-discovery alerts. When at least three
+other verified, distinct same-model horns have same-currency observed asking prices,
+comparisons use their median, clearly labeled as asking prices, not sale values.
+
+Today consumes a separate `alerts` array: at most eight ranked verified physical
+horns, excluding acquired, passed and unverified leads. No meaningful signal means
+an empty feed. `events` and full offer histories remain available to authenticated
+clients. Canonical URLs remove common eBay tracking; marketplace listing IDs are
+also extracted. Serial-confirmed cross-posts share private feedback; candidate
+promotion merges onto the verified horn while retaining both notes. Exact image
+matches require matching model and named seller for automatic linking; weaker
+matches stay explicitly unconfirmed. All tracked groups physical horns and prefers
+active seller-direct offers, with alternate direct links/prices/statuses accessible
+inside the card. All individual offers/history remain in Postgres.
+
+Rechecks use live pages. Exact-product headings and explicit stock badges override
+stale structured stock (related-product/footer badges are ignored). Sold/expired
+badges become sold; pending/reserved/temporarily unavailable become stale until
+revalidated. HTTP 404/410 becomes removed. Unsupported or blocked active pages keep
+the previous facts and leave the run partial and the offer due. Freshly posted
+classification requires a seller date within the last 24 hours; missing, older or
+future dates are newly discovered instead. Queued candidates remain unverified
+until an unambiguous source offer is available.
+
+Deploy the API first: startup applies replay-safe `023_trumpet_watch.sql` after a
+Cloud SQL backup. Preserve existing Cloud Run environment, secrets, resources and
+Caddy routes. Then replace `/opt/trumpets/runner.py` and overlay the trumpet static
+assets atomically on the existing site release. The daily VM timer remains **13:17
+UTC**. No new secret or scheduler is required. The previous API/runner remain
+compatible with the additive migration for rollback; avoid deleting source/history
+rows. Run one manual combined search after rollout and check authenticated coverage,
+remaining active rechecks, Today and the mobile source universe.
+
+[Mobile source universe](screenshots/mobile-coverage.png) uses synthetic fixtures.
+
+## Horn inspiration (migration 025)
+
+`/trumpets/#inspiration` is a personal board for horns that inspire: YouTube
+Shorts, Instagram reels, retailer pages, screenshots and photos, each with an
+optional line about *why*. It is a view inside the Observatory, so it inherits
+the `@jazz_private` Caddy matcher, the `/trumpets/api/*` proxy and
+`trumpetPrivacy` (`private, no-store`, `noindex`, `no-referrer`) with no Caddy change.
+
+**Capture.** Paste a link into the capture bar (a single link pasted into the
+empty bar submits at once, with Undo), press Enter, paste or drop images anywhere
+on the board, or tap 📷. Each image becomes its own entry; uploads run two at a
+time with a local preview and Retry. A "Just added" strip offers one-tap priority
+(Just inspiration / Someday / Want / Actively hunting), maker and why. Everything
+except the link or image is optional; the detail dialog edits the rest with a
+600 ms autosave carrying `expectedRevision` (409 → non-conflicting fields are
+re-applied; the server wins on the same field).
+
+**Storage.**
+- Rows: `horn_inspirations` and `horn_inspiration_images` in `jazz_project`;
+  `horn_inspiration_seeds` remembers that the Harrelson starter card was offered,
+  so it is never recreated after archive or permanent delete.
+- Image bytes: the existing private `GCS_BUCKET` under
+  `inspiration/<user>/<inspiration>/<image>.<jpg|png|webp|gif>`, written by the API
+  (raw body `POST /v1/trumpets/inspiration/{id}/images`, ≤ 10 MB, sniffed type
+  must match the declared type, ≤ 12,000 px), so the bucket CORS is unchanged.
+  Phones re-encode to JPEG q0.85 with a ≤ 2048 px long edge first (GIFs keep animation).
+- Serving: `GET /v1/trumpets/inspiration/images/{id}` checks ownership and
+  302-redirects to a 10-minute V4 signed URL (`Cache-Control: private, max-age=300`).
+  No image URL is permanent and no image is committed to git.
+- The `renders/` lifecycle rule does not touch `inspiration/`. Permanent delete
+  removes the rows, then deletes objects best-effort; failures are logged as
+  orphaned objects. `inspiration/` objects without rows can be swept manually
+  (list the prefix and compare with `horn_inspiration_images.object_name`);
+  automated sweeping is out of scope.
+
+**Link identity.** `canonicalInspirationURL` (Go; mirrored in
+`assets/trumpets/inspiration-model.js`, both tested against
+`jazz-api/testdata/inspiration_urls.json`) builds on `canonicalTrumpetURL` and
+strips share parameters (`si`, `is`, `igsh`, `mibextid`, TikTok `_r`/`_t`, …)
+without changing Observatory listing identities. YouTube Shorts canonicalize to
+`https://youtube.com/shorts/<id>`; `youtu.be`/`watch`/`live`/`embed` links to
+`https://youtube.com/watch?v=<id>` (keeping `t`). Dedupe uses the provider media id
+when present, otherwise the canonical URL: a live duplicate returns 409 ("Already on
+your board"), an archived one offers Restore.
+
+**Preview fetching (SSRF-safe).** The browser calls `POST …/{id}/enrich` after
+capture (no background goroutines; the board retries pending entries older than a
+minute, three at a time). Only the canonical URL leaves the server; notes never do.
+The dedicated client resolves each host and refuses loopback, private, link-local
+(including `169.254.169.254`), CGNAT, multicast, unspecified and reserved
+addresses (IPv4 and IPv6), dials the checked IP, re-checks every redirect (max 3),
+allows only http(s) on ports 80/443, sends no cookies or auth, caps HTML at 1 MB
+and images at 5 MB, and uses 4 s per request / 10 s total with
+`User-Agent: zachbednarke.com inspiration preview (+https://zachbednarke.com)`.
+YouTube uses public oEmbed (falling back to `hqdefault.jpg`); TikTok uses its public
+oEmbed; Instagram/Facebook get one Open Graph attempt and, behind a login wall,
+a generic title ("Instagram reel") and the hint "Add a screenshot for a preview" —
+login-page titles are never stored. Other pages use Open Graph, Twitter and JSON-LD
+`Product` offers; a page price fills `price_seen` (marked **auto**) only when no price
+was typed. The chosen preview image is copied into the private bucket so the board
+survives link rot; no board image loads from a third-party host.
+
+**Privacy.** Titles, descriptions and notes render with `textContent`; links pass
+`safeURL()`. Filters live in memory only; nothing about inspirations is written to
+localStorage, sessionStorage or query strings. YouTube and Instagram embeds are
+click-to-load and are built only from the validated media id. The YouTube iframe
+carries `referrerpolicy="strict-origin-when-cross-origin"` because the page's
+`no-referrer` policy can make the player refuse to play (Error 153). There is no CSP
+today; if one is added it needs
+`frame-src https://www.youtube-nocookie.com https://www.instagram.com` and
+`img-src 'self' https://storage.googleapis.com` (plus `blob:` for local upload previews).
+
+**Observatory link and search profile.** An entry may link (never automatically) to
+any `trumpet_horns` row the user owns; the detail suggests horns with the same maker
+and a model prefix/contains match (the seed suggests the Harrelson MUSE reference).
+Linked cards show "Tracked in Observatory · N live offers" (verified active offers) or
+"Acquired ✓"; Observatory listings gain `inspirationCount` and their detail shows
+"Inspiration (N)". `GET /v1/trumpets/profile` (and the machine profile) now include
+`inspirations: [{maker, model, tags, priority, why}]` — up to 100 live entries, no
+URLs or images — so the private search client learns what the owner is drawn to, the
+same way notes are already shared with it. The local runner applies a small bounded
+ranking bonus for inspired makers and tags.
+
+**Phone share sheet.** Shared links travel in the fragment, which is never sent to
+the server or written to Caddy logs, and the page rewrites it to `#inspiration`
+immediately.
+- iOS: create a Shortcut that *Receives URLs from the Share Sheet*, then
+  **Open URL** `https://zachbednarke.com/trumpets/#inspiration/add?url=[URL-encoded Shortcut Input]`
+  (optionally `&note=…`).
+- Android: use a bookmark or the HTTP Shortcuts app with the same URL.
+- Desktop bookmarklet:
+  `javascript:location='https://zachbednarke.com/trumpets/#inspiration/add?url='+encodeURIComponent(location.href)`
+
+API (all behind `trumpetPrivacy` + `authenticate`): `GET /v1/trumpets/inspiration?archived=0|1`,
+`POST /v1/trumpets/inspiration` (idempotent `clientCaptureId`), `POST /v1/trumpets/inspiration/seed`,
+`POST …/{id}/enrich[?force=1]`, `PATCH …/{id}`, `DELETE …/{id}` (permanent),
+`POST …/{id}/images`, `DELETE …/{id}/images/{imageId}`, `GET …/images/{imageId}`.
+
+[Inspiration board](screenshots/inspiration.png) · [Inspiration on a phone](screenshots/inspiration-mobile.png) ·
+[Inspiration detail](screenshots/inspiration-detail.png)

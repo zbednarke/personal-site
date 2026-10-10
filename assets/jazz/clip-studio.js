@@ -1,0 +1,1025 @@
+(() => {
+  "use strict";
+
+  const API_BASE = "./api/v1";
+  const STORAGE_PREFIX = "jazz.clip-studio.output.v1";
+  const PLAYER_CACHE_LIMIT = 2;
+  const PLAYBACK_EXPIRY_MARGIN_MS = 30 * 1000;
+  const U = globalThis.JazzArchiveUtils;
+  const Model = globalThis.JazzClipStudioModel;
+  if (!U || !Model) return;
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const state = {
+    date: U.dateKey(new Date()), initialized: false, recordings: [], candidates: [], analysis: null,
+    current: null, currentRecording: null, currentMode: "idle", media: null,
+    loadRequest: 0, playbackRequest: 0, resumeAfterLoad: false, savePromise: Promise.resolve(), saveTimers: new Map(),
+    playbackURLs: new Map(), players: new Map(), playerLoads: new Map(), playerUse: 0, warmToken: 0,
+    project: Model.createProject(U.dateKey(new Date())), draggedOutputIndex: -1, addMode: false, addModeBusy: false, loadingDay: false,
+  };
+
+  async function api(path, options = {}) {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) },
+    });
+    const body = response.status === 204 ? null : await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body?.error || `Request failed (${response.status})`);
+    return body;
+  }
+
+  function escapeHTML(value) {
+    const span = document.createElement("span");
+    span.textContent = String(value ?? "");
+    return span.innerHTML;
+  }
+
+  function recordingFor(value) {
+    const recordingID = value?.recordingId || value?.RecordingID;
+    return state.recordings.find((recording) => recording.id === recordingID);
+  }
+
+  function titleFor(recording) {
+    return recording?.practiceBlockTitle || recording?.practiceSessionTitle || "Open practice";
+  }
+
+  function formatClock(milliseconds) {
+    return U.formatPlaybackTime(Math.max(0, Number(milliseconds || 0)) / 1000);
+  }
+
+  function setStatus(message, tone = "") {
+    const element = $("#studio-status");
+    element.textContent = message;
+    element.dataset.tone = tone;
+  }
+
+  function setRenderStatus(message, tone = "") {
+    const element = $("#studio-render-status");
+    element.textContent = message;
+    element.dataset.tone = tone;
+  }
+
+  function localID() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    return `clip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function projectStorageKey(date = state.date) {
+    return `${STORAGE_PREFIX}:${date}`;
+  }
+
+  function loadProject() {
+    try {
+      const raw = localStorage.getItem(projectStorageKey());
+      state.project = Model.normalizeProject(raw ? JSON.parse(raw) : null, state.date);
+    } catch {
+      state.project = Model.createProject(state.date);
+    }
+    $("#studio-output-title").value = state.project.title;
+    renderOutputTimeline();
+  }
+
+  function persistProject() {
+    localStorage.setItem(projectStorageKey(), JSON.stringify(state.project));
+  }
+
+  globalThis.JazzClipStudioDownloads = {
+    selection(id) {
+      const candidate = id ? state.candidates.find(c => c.id === id) : (state.currentMode === 'candidate' ? state.current : null);
+      const recording = recordingFor(candidate);
+      if (state.loadingDay || !candidate || !recording) throw new Error('Choose a clip after this day finishes loading.');
+      const title = `${state.date} ${titleFor(recording)} ${U.takeLabel(recording)} ${formatClock(candidate.startMs)}-${formatClock(candidate.endMs)}`;
+      return Model.clipDownloadPayload(title, candidate, recording.durationMs);
+    },
+  };
+
+  globalThis.JazzClipStudioLocal = {
+    restorePrevious() {
+      const saved = localStorage.getItem(`${projectStorageKey()}:before-local-draft`);
+      if (!saved) throw new Error("There is no previous local-draft timeline for this day");
+      state.project = Model.normalizeProject(JSON.parse(saved), state.date);
+      persistProject(); $("#studio-output-title").value = state.project.title; renderOutputTimeline();
+    },
+    async snapshot() {
+      if (!state.initialized || state.loadingDay) throw new Error("Open Clip Studio and wait for the day to load");
+      const date = state.date;
+      const candidates = state.candidates.filter(c => c.reviewStatus !== "rejected").map(c => ({ ...c }));
+      if (!candidates.length) throw new Error("Add manual moments or scan for suggestions first");
+      const ids = new Set(candidates.map(c => c.recordingId));
+      const recordings = state.recordings.filter(r => ids.has(r.id)).map(r => ({ ...r }));
+      const sources = [];
+      for (const r of recordings) {
+        const audio = await api(`/recordings/${r.id}/playback-url?asset=audio`, { method: "POST", body: "{}" });
+        const video = r.mediaKind === "video" ? await api(`/recordings/${r.id}/playback-url?asset=video`, { method: "POST", body: "{}" }) : null;
+        sources.push({ id: r.id, title: titleFor(r), durationMs: r.durationMs, audioUrl: audio.url, videoUrl: video?.url || null });
+      }
+      return { date, candidates, recordings: sources };
+    },
+    importDraft({ date, project }) {
+      if (state.date !== date) throw new Error(`Select ${date} in Clip Studio, then open the draft again`);
+      const normalized = Model.normalizeProject(project, date);
+      if (!normalized.clips.length || normalized.clips.length !== project?.clips?.length) throw new Error("Invalid draft timeline");
+      for (const clip of normalized.clips) {
+        const candidate = state.candidates.find(c => c.id === clip.candidateId && c.reviewStatus !== "rejected");
+        if (!candidate || candidate.recordingId !== clip.recordingId || clip.startMs < candidate.startMs || clip.endMs > candidate.endMs) throw new Error("A candidate changed or was rejected. Generate a new draft using the latest moments.");
+      }
+      if (JSON.stringify(state.project) === JSON.stringify(normalized)) return;
+      const backupKey = `${projectStorageKey()}:before-local-draft`;
+      localStorage.setItem(`${backupKey}:${Date.now()}`, JSON.stringify(state.project));
+      localStorage.setItem(backupKey, JSON.stringify(state.project));
+      state.project = normalized;
+      persistProject();
+      $("#studio-output-title").value = normalized.title;
+      renderOutputTimeline();
+
+    },
+  };
+
+  function initialize() {
+    if (state.initialized) return;
+    state.initialized = true;
+    loadProject();
+    $("#studio-date").value = state.date;
+    $("#studio-date").max = U.dateKey(new Date());
+    $("#studio-date").addEventListener("change", (event) => loadDay(event.target.value));
+    $("#studio-previous-day").addEventListener("click", () => shiftDay(-1));
+    $("#studio-next-day").addEventListener("click", () => shiftDay(1));
+    $("#studio-scan").addEventListener("click", () => scanDay(false));
+    $("#studio-add-clip").addEventListener("click", () => setAddClipMode(!state.addMode));
+    $("#studio-start").addEventListener("input", () => updateBoundaryFromInputs("start"));
+    $("#studio-end").addEventListener("input", () => updateBoundaryFromInputs("end"));
+    $("#studio-candidate-notes").addEventListener("input", () => scheduleNoteSave());
+    $("#studio-candidate-notes").addEventListener("blur", () => saveNoteNow());
+    $("#studio-add-output").onclick = addCurrentToOutput;
+    $("#studio-split-clip").onclick = splitCurrentClip;
+    $("#studio-like").onclick = () => toggleCandidateLike(state.current);
+    $("#studio-reject").onclick = rejectCurrent;
+    $("#studio-output-title").addEventListener("input", (event) => {
+      state.project = { ...state.project, title: event.target.value.slice(0, 120) };
+      persistProject();
+    });
+    $("#studio-render").onclick = renderOutputMovie;
+    loadDay(state.date);
+  }
+
+  function shiftDay(delta) {
+    const date = U.parseDateKey(state.date);
+    if (!date) return;
+    date.setDate(date.getDate() + delta);
+    const next = U.dateKey(date);
+    if (next <= U.dateKey(new Date())) loadDay(next);
+  }
+
+  async function loadDay(date) {
+    if (!U.parseDateKey(date)) return;
+    const request = ++state.loadRequest;
+    state.loadingDay = true;
+    state.warmToken++;
+    if (state.date !== date) persistProject();
+    state.date = date;
+    setAddClipMode(false);
+    loadProject();
+    $("#studio-date").value = date;
+    document.dispatchEvent(new CustomEvent("jazz:studio-date-change", { detail: { date } }));
+    setStatus("Loading lossless masters");
+    setScanState("checking", "Checking analysis", "Loading this day’s analysis state…");
+    try {
+      const result = await api(`/studio/days/${date}`);
+      if (request !== state.loadRequest) return;
+      state.recordings = result.recordings || [];
+      state.candidates = result.candidates || [];
+      state.analysis = result.analysis || { needsScan: true };
+      state.current = null;
+      state.currentRecording = null;
+      closePreview();
+      render();
+      if (state.recordings.length && state.analysis.needsScan) {
+        await scanDay(true);
+      } else if (state.recordings.length) {
+        setScanState("complete", "Scan complete", scanDetail());
+        setStatus("Analysis active", "success");
+        warmDayMedia();
+      } else {
+        setScanState("idle", "Nothing to scan", "No completed recordings on this day.");
+        setStatus("No completed recordings");
+      }
+    } catch (error) {
+      if (request !== state.loadRequest) return;
+      state.recordings = [];
+      state.candidates = [];
+      render();
+      setScanState("error", "Scan unavailable", error.message);
+      setStatus(`Studio unavailable · ${error.message}`, "error");
+    } finally {
+      if (request === state.loadRequest) {
+        state.loadingDay = false;
+        syncAddClipControl();
+      }
+    }
+  }
+
+  function scanDetail() {
+    const analyzedAt = state.analysis?.analyzedAt ? new Date(state.analysis.analyzedAt) : null;
+    const when = analyzedAt && !Number.isNaN(analyzedAt.valueOf()) ? analyzedAt.toLocaleString() : "just now";
+    return `Waveform activity analysis completed ${when}. Rescanning regenerates unreviewed suggestions.`;
+  }
+
+  function setScanState(tone, label, detail) {
+    const menu = $("#studio-scan-menu");
+    menu.dataset.tone = tone;
+    $("#studio-scan-state").textContent = label;
+    $("#studio-scan-detail").textContent = detail;
+  }
+
+  async function scanDay(automatic) {
+    if (!state.recordings.length) return;
+    const scanDate = state.date;
+    const button = $("#studio-scan");
+    button.disabled = true;
+    setScanState("working", automatic ? "Analyzing automatically" : "Rescanning", "Finding sustained musical activity in the lossless masters…");
+    setStatus("Analysis running");
+    try {
+      const result = await api(`/studio/days/${scanDate}/scan`, { method: "POST", body: "{}" });
+      if (state.date !== scanDate) return;
+      state.candidates = result.candidates || [];
+      state.analysis = { needsScan: false, analyzedAt: new Date().toISOString(), version: "waveform-v1", recordingCount: result.scannedRecordings };
+      state.current = null;
+      state.currentRecording = null;
+      closePreview();
+      render();
+      setScanState("complete", "Scan complete", scanDetail());
+      setStatus("Analysis active", "success");
+      $("#studio-scan-menu").open = false;
+      warmDayMedia();
+    } catch (error) {
+      if (state.date !== scanDate) return;
+      setScanState("error", "Scan failed", error.message);
+      setStatus(`Scan failed · ${error.message}`, "error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function render() {
+    const duration = state.recordings.reduce((sum, recording) => sum + Number(recording.durationMs || 0), 0);
+    $("#studio-total-time").textContent = formatClock(duration);
+    $("#studio-take-count").textContent = String(state.recordings.length);
+    $("#studio-candidate-count").textContent = String(state.candidates.filter((item) => item.reviewStatus !== "rejected").length);
+    $("#studio-liked-count").textContent = String(state.candidates.filter(Model.candidateIsLiked).length);
+    syncAddClipControl();
+    renderRecordings();
+    renderCandidates();
+  }
+
+  function syncAddClipControl() {
+    const button = $("#studio-add-clip");
+    button.disabled = state.loadingDay || state.addModeBusy || !state.recordings.length;
+    button.setAttribute("aria-pressed", String(state.addMode));
+    button.textContent = state.addMode ? "Cancel adding" : "+ Add clip";
+    $("#studio-add-clip-hint").hidden = !state.addMode;
+    $("#studio-recordings").classList.toggle("adding-clip", state.addMode);
+  }
+
+  function setAddClipMode(active) {
+    state.addMode = Boolean(active);
+    syncAddClipControl();
+    if (state.addMode) setStatus("Click an empty point on a recording to add a ten-second clip");
+  }
+
+  function renderRecordings() {
+    const host = $("#studio-recordings");
+    if (!state.recordings.length) {
+      host.innerHTML = '<p class="clip-studio-empty">No completed recordings on this practice day.</p>';
+      return;
+    }
+    host.innerHTML = state.recordings.map((recording) => recordingMarkup(recording)).join("");
+    host.querySelectorAll("[data-studio-candidate]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (state.addMode) {
+        setStatus("That point is already inside a clip; choose an empty point");
+        return;
+      }
+      selectCandidate(button.dataset.studioCandidate);
+    }));
+    host.querySelectorAll("[data-boundary-candidate]").forEach((handle) => handle.addEventListener("pointerdown", (event) => beginBoundaryDrag(event, handle)));
+    host.querySelectorAll(".clip-studio-waveform").forEach((waveform) => waveform.addEventListener("click", (event) => {
+      if (event.target.closest("[data-studio-candidate],[data-boundary-candidate]")) return;
+      const recording = state.recordings.find((item) => item.id === waveform.dataset.recordingId);
+      if (!recording) return;
+      const bounds = waveform.getBoundingClientRect();
+      const percentage = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+      const clickMS = Math.round(Number(recording.durationMs || 0) * percentage);
+      if (state.addMode) createManualClip(recording, clickMS);
+      else browseRecording(recording, clickMS);
+    }));
+  }
+
+  async function createManualClip(recording, clickMS) {
+    if (state.addModeBusy) return;
+    const existing = state.candidates.filter((candidate) => candidate.recordingId === recording.id && candidate.reviewStatus !== "rejected");
+    const inside = existing.some((candidate) => clickMS >= candidate.startMs && clickMS <= candidate.endMs);
+    if (inside) {
+      setStatus("That point is already inside a clip; choose an empty point");
+      return;
+    }
+    const placement = Model.placeDefaultSourceClip(clickMS, Number(recording.durationMs || 0), existing);
+    if (!placement) {
+      setStatus("There is no open ten-second space near that point", "error");
+      return;
+    }
+    state.addModeBusy = true;
+    syncAddClipControl();
+    try {
+      const candidate = await api(`/studio/recordings/${recording.id}/candidates`, { method: "POST", body: JSON.stringify(placement) });
+      state.candidates.push(candidate);
+      setAddClipMode(false);
+      render();
+      await selectCandidate(candidate.id);
+      setStatus(`Manual clip added · ${formatClock(candidate.startMs)}–${formatClock(candidate.endMs)}`, "success");
+    } catch (error) {
+      setStatus(`Could not add clip · ${error.message}`, "error");
+    } finally {
+      state.addModeBusy = false;
+      syncAddClipControl();
+    }
+  }
+
+  function recordingMarkup(recording) {
+    const candidates = state.candidates.filter((candidate) => candidate.recordingId === recording.id && candidate.reviewStatus !== "rejected");
+    const duration = Math.max(1, Number(recording.durationMs || 0));
+    const peaks = Array.isArray(recording.waveformPeaks) ? recording.waveformPeaks : [];
+    const barCount = Math.min(120, peaks.length);
+    const sampled = Array.from({ length: barCount }, (_, index) => peaks[Math.floor((index / barCount) * peaks.length)] || 0);
+    const waveform = sampled.map((peak) => `<i style="height:${Math.max(3, Math.round(Number(peak) * 100))}%"></i>`).join("");
+    const regions = candidates.map((candidate) => regionMarkup(candidate, duration)).join("");
+    return `<article class="clip-studio-recording"><header><div><strong>${escapeHTML(titleFor(recording))}</strong><span>${escapeHTML(U.takeLabel(recording))} · ${recording.mediaKind === "video" ? "video + lossless WAV" : "lossless WAV"}</span></div><time>${formatClock(duration)}</time></header><div class="clip-studio-waveform" data-recording-id="${recording.id}" aria-label="${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))} waveform"><div class="studio-waveform-bars">${waveform}</div><div class="studio-waveform-regions">${regions}</div><div class="studio-playhead" data-playhead-recording="${recording.id}" hidden><i></i></div></div></article>`;
+  }
+
+  function regionMarkup(candidate, duration) {
+    const left = Math.max(0, Math.min(100, candidate.startMs / duration * 100));
+    const right = Math.max(left, Math.min(100, candidate.endMs / duration * 100));
+    const liked = Model.candidateIsLiked(candidate);
+    return `<div class="studio-clip-region${state.current?.id === candidate.id ? " active" : ""}${liked ? " liked" : ""}" data-region-id="${candidate.id}" style="left:${left}%;width:${Math.max(.35, right - left)}%"><button class="studio-region-hit" type="button" data-studio-candidate="${candidate.id}" aria-label="${liked ? "Liked clip" : "Edit candidate"} ${formatClock(candidate.startMs)} to ${formatClock(candidate.endMs)}"></button>${liked ? '<span class="studio-region-liked" aria-hidden="true">♥</span>' : ""}<button class="studio-clip-boundary left" type="button" data-boundary-candidate="${candidate.id}" data-boundary-edge="start" aria-label="Drag candidate in point"></button><button class="studio-clip-boundary right" type="button" data-boundary-candidate="${candidate.id}" data-boundary-edge="end" aria-label="Drag candidate out point"></button></div>`;
+  }
+
+  function renderCandidates() {
+    const host = $("#studio-candidate-list");
+    if (!state.candidates.length) {
+      host.innerHTML = `<p class="clip-studio-empty">${state.recordings.length ? "Analysis found no candidate regions yet." : "Recordings from the selected day will appear here."}</p>`;
+      return;
+    }
+    host.innerHTML = state.candidates.map((candidate, index) => {
+      const recording = recordingFor(candidate);
+      const reasons = Array.isArray(candidate.reasons) ? candidate.reasons : [];
+      const manual = candidate.source === "manual";
+      const label = candidate.reviewStatus === "rejected" ? "Rejected" : (manual ? "Manual clip" : `Suggestion ${index + 1}`);
+      const source = manual ? "Placed manually" : `${Math.round(Number(candidate.score || 0) * 100)}% activity confidence`;
+      const liked = Model.candidateIsLiked(candidate);
+      return `<article class="clip-candidate ${candidate.reviewStatus}${state.current?.id === candidate.id ? " active" : ""}"><div class="clip-candidate-toolbar"><span>${label}</span><button type="button" class="clip-download-button" data-download-candidate="${candidate.id}" aria-label="Download clip ${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))} ${formatClock(candidate.startMs)} to ${formatClock(candidate.endMs)}">↓ Download clip</button><button class="clip-candidate-like" type="button" data-like-candidate="${candidate.id}" aria-label="${liked ? "Unlike" : "Like"} ${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))}" aria-pressed="${liked}"${candidate.likePending ? " disabled" : ""}>♥ <b>${liked ? "Liked" : "Like"}</b></button></div><button class="clip-candidate-open" type="button" data-open-candidate="${candidate.id}"><strong>${escapeHTML(titleFor(recording))} · ${escapeHTML(U.takeLabel(recording))}</strong><time>${formatClock(candidate.startMs)} — ${formatClock(candidate.endMs)}</time><em>${source}</em></button><div class="clip-candidate-reasons">${reasons.map((reason) => `<span>${escapeHTML(reason)}</span>`).join("")}</div></article>`;
+    }).join("");
+    host.querySelectorAll("[data-open-candidate]").forEach((button) => button.addEventListener("click", () => selectCandidate(button.dataset.openCandidate)));
+    host.querySelectorAll("[data-like-candidate]").forEach((button) => button.addEventListener("click", () => {
+      const candidate = state.candidates.find((item) => item.id === button.dataset.likeCandidate);
+      toggleCandidateLike(candidate);
+    }));
+  }
+
+  async function selectCandidate(id) {
+    const candidate = state.candidates.find((item) => item.id === id);
+    const recording = recordingFor(candidate);
+    if (!candidate || !recording) return;
+    state.current = candidate;
+    state.currentRecording = recording;
+    state.currentMode = "candidate";
+    renderCandidates();
+    updateRegionSelection();
+    $("#studio-playback-mode").textContent = "Editing clip";
+    $("#studio-preview-title").textContent = `${Model.candidateIsLiked(candidate) ? "♥ " : ""}${titleFor(recording)} · ${U.takeLabel(recording)}`;
+    $("#studio-start").value = (candidate.startMs / 1000).toFixed(1);
+    $("#studio-end").value = (candidate.endMs / 1000).toFixed(1);
+    $("#studio-candidate-notes").value = candidate.notes || "";
+    $("#studio-editor").hidden = false;
+    $("#studio-raw-notice").hidden = true;
+    updateLikeControl();
+    updateSplitControl();
+    await loadPlayer(recording, candidate.startMs);
+  }
+
+  async function browseRecording(recording, startMS) {
+    state.current = null;
+    state.currentRecording = recording;
+    state.currentMode = "raw";
+    renderCandidates();
+    updateRegionSelection();
+    $("#studio-playback-mode").textContent = "Browsing raw recording";
+    $("#studio-preview-title").textContent = `${titleFor(recording)} · ${U.takeLabel(recording)}`;
+    $("#studio-editor").hidden = true;
+    const notice = $("#studio-raw-notice");
+    notice.textContent = "Browsing raw recording · playback continues until you pause it.";
+    notice.hidden = false;
+    await loadPlayer(recording, startMS);
+  }
+
+  async function previewOutputClip(clip) {
+    const recording = recordingFor(clip);
+    if (!recording) {
+      setRenderStatus("This source take is not part of the selected day.", "error");
+      return;
+    }
+    state.current = null;
+    state.currentRecording = recording;
+    state.currentMode = "output";
+    renderCandidates();
+    updateRegionSelection();
+    $("#studio-playback-mode").textContent = "Output clip preview";
+    $("#studio-preview-title").textContent = `${clip.title} · ${formatClock(clip.startMs)}–${formatClock(clip.endMs)}`;
+    $("#studio-editor").hidden = true;
+    const notice = $("#studio-raw-notice");
+    notice.textContent = "Output clip preview · this is the copied cut currently in the render timeline.";
+    notice.hidden = false;
+    await loadPlayer(recording, clip.startMs);
+  }
+
+  function playbackKey(recording) {
+    return `${recording.id}:${recording.mediaKind === "video" ? "video" : "audio"}`;
+  }
+
+  function playbackFresh(entry) {
+    return entry && entry.expiresAt > Date.now() + PLAYBACK_EXPIRY_MARGIN_MS;
+  }
+
+  async function playbackSource(recording) {
+    const key = playbackKey(recording);
+    const cached = state.playbackURLs.get(key);
+    if (playbackFresh(cached)) return cached;
+    if (cached?.promise) return cached.promise;
+    const asset = recording.mediaKind === "video" ? "video" : "audio";
+    const promise = api(`/recordings/${recording.id}/playback-url?asset=${asset}`, { method: "POST", body: "{}" }).then((result) => {
+      const entry = { url: result.url, expiresAt: Date.parse(result.expiresAt) || Date.now() + 9 * 60 * 1000 };
+      state.playbackURLs.set(key, entry);
+      return entry;
+    }).catch((error) => {
+      state.playbackURLs.delete(key);
+      throw error;
+    });
+    state.playbackURLs.set(key, { promise, expiresAt: 0 });
+    return promise;
+  }
+
+  function setBufferStatus(message = "") {
+    const status = $("#studio-buffer-status");
+    if (!status) return;
+    status.textContent = message;
+    status.hidden = !message;
+  }
+
+  function bindPlayer(media, recording) {
+    media.controls = true;
+    media.preload = "metadata";
+    media.playsInline = true;
+    media.dataset.recordingId = recording.id;
+    ["timeupdate", "seeking", "seeked", "play", "pause", "progress"].forEach((event) => media.addEventListener(event, updatePlayhead));
+    ["waiting", "stalled", "loadstart"].forEach((event) => media.addEventListener(event, () => {
+      if (state.media === media) setBufferStatus(event === "stalled" ? "Network stalled" : "Buffering…");
+    }));
+    ["canplay", "canplaythrough", "playing", "seeked", "loadeddata"].forEach((event) => media.addEventListener(event, () => {
+      if (state.media === media) setBufferStatus("");
+    }));
+    media.addEventListener("error", () => {
+      if (state.media === media) setBufferStatus("Playback error");
+    });
+  }
+
+  function releasePlayer(key) {
+    const entry = state.players.get(key);
+    if (!entry) return;
+    entry.media.pause();
+    entry.media.removeAttribute("src");
+    entry.media.load();
+    state.players.delete(key);
+  }
+
+  function trimPlayerCache(activeKey) {
+    while (state.players.size > PLAYER_CACHE_LIMIT) {
+      const oldest = [...state.players.entries()]
+        .filter(([key, entry]) => key !== activeKey && entry.media !== state.media)
+        .sort((left, right) => left[1].lastUsed - right[1].lastUsed)[0];
+      if (!oldest) return;
+      releasePlayer(oldest[0]);
+    }
+  }
+
+  async function cachedPlayer(recording, preload = "auto") {
+    const key = playbackKey(recording);
+    const existing = state.players.get(key);
+    if (existing && playbackFresh(existing)) {
+      existing.lastUsed = ++state.playerUse;
+      existing.media.preload = preload;
+      return existing;
+    }
+    if (existing) releasePlayer(key);
+    if (state.playerLoads.has(key)) {
+      const loading = await state.playerLoads.get(key);
+      loading.lastUsed = ++state.playerUse;
+      loading.media.preload = preload;
+      return loading;
+    }
+    const load = (async () => {
+      const source = await playbackSource(recording);
+      const ready = state.players.get(key);
+      if (ready && playbackFresh(ready)) return ready;
+      const media = document.createElement(recording.mediaKind === "video" ? "video" : "audio");
+      bindPlayer(media, recording);
+      media.preload = preload;
+      media.src = source.url;
+      media.load();
+      const entry = { media, expiresAt: source.expiresAt, lastUsed: ++state.playerUse };
+      state.players.set(key, entry);
+      trimPlayerCache(key);
+      return entry;
+    })();
+    state.playerLoads.set(key, load);
+    try {
+      return await load;
+    } finally {
+      if (state.playerLoads.get(key) === load) state.playerLoads.delete(key);
+    }
+  }
+
+  function seekMedia(media, startMS, resumePlayback, isCurrent) {
+    media.pause();
+    return new Promise((resolve) => {
+      const seek = () => {
+        if (!isCurrent()) {
+          resolve();
+          return;
+        }
+        const duration = Number.isFinite(media.duration) ? media.duration : Infinity;
+        media.currentTime = Math.max(0, Math.min(duration, Number(startMS || 0) / 1000));
+        updatePlayhead();
+        if (!resumePlayback) {
+          resolve(true);
+          return;
+        }
+        Promise.resolve(media.play()).then(() => resolve(true), () => resolve(false));
+      };
+      if (media.readyState >= 1) seek();
+      else media.addEventListener("loadedmetadata", seek, { once: true });
+    });
+  }
+
+  async function loadPlayer(recording, startMS) {
+    const request = ++state.playbackRequest;
+    const key = playbackKey(recording);
+    const warm = state.players.get(key);
+    const resumePlayback = state.resumeAfterLoad || Boolean(state.media && !state.media.paused);
+    state.resumeAfterLoad = resumePlayback;
+    state.media?.pause();
+    if (!warm) {
+      $("#studio-media").innerHTML = '<p class="clip-studio-empty">Loading private playback…</p>';
+      setBufferStatus("Preparing media…");
+    }
+    try {
+      const entry = await cachedPlayer(recording, "auto");
+      if (request !== state.playbackRequest || state.currentRecording?.id !== recording.id) return;
+      state.media = entry.media;
+      $("#studio-media").replaceChildren(entry.media);
+      const playbackContinued = await seekMedia(entry.media, startMS, resumePlayback, () => request === state.playbackRequest && state.currentRecording?.id === recording.id);
+      if (request !== state.playbackRequest || state.currentRecording?.id !== recording.id) return;
+      setBufferStatus(playbackContinued ? (entry.media.readyState >= 2 ? "" : "Buffering…") : "Press play to continue");
+    } catch (error) {
+      if (request !== state.playbackRequest) return;
+      $("#studio-media").innerHTML = `<p class="clip-studio-empty">Playback unavailable · ${escapeHTML(error.message)}</p>`;
+      setBufferStatus("");
+    } finally {
+      if (request === state.playbackRequest) state.resumeAfterLoad = false;
+    }
+  }
+
+  function warmDayMedia() {
+    const token = ++state.warmToken;
+    const ordered = [];
+    const seen = new Set();
+    [...state.candidates.map(recordingFor), ...state.recordings].forEach((recording) => {
+      if (!recording || seen.has(recording.id)) return;
+      seen.add(recording.id);
+      ordered.push(recording);
+    });
+    ordered.slice(0, 4).forEach((recording) => playbackSource(recording).catch(() => {}));
+    ordered.filter((recording) => recording.videoPlaybackOptimized).slice(0, PLAYER_CACHE_LIMIT).forEach(async (recording) => {
+      try {
+        await playbackSource(recording);
+        if (token !== state.warmToken) return;
+        await cachedPlayer(recording, "metadata");
+      } catch {}
+    });
+  }
+
+  function updatePlayhead() {
+    document.querySelectorAll("[data-playhead-recording]").forEach((playhead) => {
+      const active = state.currentRecording && playhead.dataset.playheadRecording === state.currentRecording.id && state.media;
+      playhead.hidden = !active;
+      if (!active) return;
+      const duration = Math.max(1, Number(state.currentRecording.durationMs || 0) / 1000);
+      playhead.style.left = `${Math.max(0, Math.min(100, Number(state.media.currentTime || 0) / duration * 100))}%`;
+    });
+    updateSplitControl();
+  }
+
+  function beginBoundaryDrag(event, handle) {
+    if (state.addMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      setStatus("That point is already on a clip boundary; choose an empty point");
+      return;
+    }
+    const candidate = state.candidates.find((item) => item.id === handle.dataset.boundaryCandidate);
+    const recording = recordingFor(candidate);
+    const waveform = handle.closest(".clip-studio-waveform");
+    const region = handle.closest(".studio-clip-region");
+    if (!candidate || !recording || !waveform || !region) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectCandidate(candidate.id);
+    handle.setPointerCapture?.(event.pointerId);
+    handle.classList.add("dragging");
+    const edge = handle.dataset.boundaryEdge;
+    const duration = Math.max(1, Number(recording.durationMs || 0));
+    const minimumGap = Math.max(500, Math.round(duration * .003));
+    const update = (pointerEvent) => {
+      const bounds = waveform.getBoundingClientRect();
+      const nextMS = Math.round(Math.max(0, Math.min(1, (pointerEvent.clientX - bounds.left) / bounds.width)) * duration);
+      if (edge === "start") candidate.startMs = Math.min(nextMS, candidate.endMs - minimumGap);
+      else candidate.endMs = Math.max(nextMS, candidate.startMs + minimumGap);
+      updateRegion(candidate, region, duration);
+      $("#studio-start").value = (candidate.startMs / 1000).toFixed(1);
+      $("#studio-end").value = (candidate.endMs / 1000).toFixed(1);
+      scheduleBoundarySave(candidate, 650, false);
+    };
+    const finish = () => {
+      handle.classList.remove("dragging");
+      handle.removeEventListener("pointermove", update);
+      handle.removeEventListener("pointerup", finish);
+      handle.removeEventListener("pointercancel", finish);
+      scheduleBoundarySave(candidate, 250, true);
+    };
+    handle.addEventListener("pointermove", update);
+    handle.addEventListener("pointerup", finish);
+    handle.addEventListener("pointercancel", finish);
+  }
+
+  function updateRegion(candidate, region, duration) {
+    const left = candidate.startMs / duration * 100;
+    const right = candidate.endMs / duration * 100;
+    region.style.left = `${left}%`;
+    region.style.width = `${Math.max(.35, right - left)}%`;
+  }
+
+  function updateRegionSelection() {
+    document.querySelectorAll("[data-region-id]").forEach((region) => region.classList.toggle("active", region.dataset.regionId === state.current?.id));
+  }
+
+  function updateBoundaryFromInputs(edge) {
+    const candidate = state.current;
+    const recording = state.currentRecording;
+    if (!candidate || !recording) return;
+    const duration = Number(recording.durationMs || 0);
+    const value = Math.round(Number(edge === "start" ? $("#studio-start").value : $("#studio-end").value) * 1000);
+    if (!Number.isFinite(value)) return;
+    if (edge === "start") candidate.startMs = Math.max(0, Math.min(value, candidate.endMs - 500));
+    else candidate.endMs = Math.min(duration, Math.max(value, candidate.startMs + 500));
+    $("#studio-start").value = (candidate.startMs / 1000).toFixed(1);
+    $("#studio-end").value = (candidate.endMs / 1000).toFixed(1);
+    const region = document.querySelector(`[data-region-id="${candidate.id}"]`);
+    if (region) updateRegion(candidate, region, Math.max(1, duration));
+    scheduleBoundarySave(candidate, 650, true);
+  }
+
+  function scheduleBoundarySave(candidate, delay, refresh) {
+    const key = `boundary:${candidate.id}`;
+    clearTimeout(state.saveTimers.get(key));
+    state.saveTimers.set(key, setTimeout(() => {
+      state.saveTimers.delete(key);
+      patchCandidate(candidate, { startMs: candidate.startMs, endMs: candidate.endMs }, "Clip boundaries synced", refresh);
+    }, delay));
+  }
+
+  function scheduleNoteSave() {
+    const candidate = state.current;
+    if (!candidate) return;
+    const notes = $("#studio-candidate-notes").value.trim();
+    const key = `note:${candidate.id}`;
+    clearTimeout(state.saveTimers.get(key));
+    state.saveTimers.set(key, setTimeout(() => {
+      state.saveTimers.delete(key);
+      patchCandidate(candidate, { notes }, "Editor note synced", false);
+    }, 700));
+  }
+
+  function saveNoteNow() {
+    const candidate = state.current;
+    if (!candidate) return;
+    const key = `note:${candidate.id}`;
+    clearTimeout(state.saveTimers.get(key));
+    state.saveTimers.delete(key);
+    patchCandidate(candidate, { notes: $("#studio-candidate-notes").value.trim() }, "Editor note synced", false);
+  }
+
+  function patchCandidate(candidate, payload, successMessage, refresh) {
+    state.savePromise = state.savePromise.catch(() => {}).then(async () => {
+      try {
+        const result = await api(`/studio/candidates/${candidate.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+        Object.assign(candidate, result);
+        setStatus(successMessage, "success");
+        if (refresh) refreshCandidateDisplays();
+        return result;
+      } catch (error) {
+        setStatus(`Could not save · ${error.message}`, "error");
+        return null;
+      }
+    });
+    return state.savePromise;
+  }
+
+  function updateLikeControl() {
+    const button = $("#studio-like");
+    const candidate = state.currentMode === "candidate" ? state.current : null;
+    if (!button || !candidate) return;
+    const liked = Model.candidateIsLiked(candidate);
+    button.setAttribute("aria-pressed", String(liked));
+    button.disabled = Boolean(candidate.likePending);
+    button.textContent = liked ? "♥ Liked" : "♡ Like clip";
+    if (state.currentRecording) {
+      $("#studio-preview-title").textContent = `${liked ? "♥ " : ""}${titleFor(state.currentRecording)} · ${U.takeLabel(state.currentRecording)}`;
+    }
+  }
+
+  function refreshCandidateDisplays() {
+    render();
+    renderOutputTimeline();
+    updatePlayhead();
+    updateRegionSelection();
+    updateLikeControl();
+  }
+
+  async function toggleCandidateLike(candidate) {
+    if (!candidate || candidate.likePending) return;
+    const previousStatus = candidate.reviewStatus;
+    const nextStatus = Model.nextLikeStatus(candidate);
+    candidate.reviewStatus = nextStatus;
+    candidate.likePending = true;
+    refreshCandidateDisplays();
+    const result = await patchCandidate(candidate, { reviewStatus: nextStatus }, nextStatus === "kept" ? "Clip liked" : "Like removed", false);
+    if (!result) candidate.reviewStatus = previousStatus;
+    candidate.likePending = false;
+    refreshCandidateDisplays();
+  }
+
+  function updateSplitControl() {
+    const button = $("#studio-split-clip");
+    if (!button) return;
+    const splitMS = Math.round(Number(state.media?.currentTime || 0) * 1000);
+    const valid = state.currentMode === "candidate" && state.current && state.media
+      && state.media.dataset.recordingId === state.currentRecording?.id
+      && splitMS - state.current.startMs >= 500 && state.current.endMs - splitMS >= 500;
+    button.disabled = !valid;
+    button.title = valid ? `Split at ${formatClock(splitMS)}` : "Move the playhead at least half a second inside the clip";
+  }
+
+  async function splitCurrentClip() {
+    const candidate = state.current;
+    const media = state.media;
+    if (!candidate || !media || state.currentMode !== "candidate") return;
+    const splitMS = Math.round(Number(media.currentTime || 0) * 1000);
+    if (splitMS - candidate.startMs < 500 || candidate.endMs - splitMS < 500) {
+      setStatus("Move the playhead at least half a second inside the clip", "error");
+      return;
+    }
+    const button = $("#studio-split-clip");
+    button.disabled = true;
+    const boundaryKey = `boundary:${candidate.id}`;
+    const noteKey = `note:${candidate.id}`;
+    clearTimeout(state.saveTimers.get(boundaryKey));
+    clearTimeout(state.saveTimers.get(noteKey));
+    state.saveTimers.delete(boundaryKey);
+    state.saveTimers.delete(noteKey);
+    const saved = await patchCandidate(candidate, {
+      startMs: candidate.startMs,
+      endMs: candidate.endMs,
+      notes: $("#studio-candidate-notes").value.trim(),
+    }, "Clip ready to split", false);
+    if (!saved) {
+      updateSplitControl();
+      return;
+    }
+    try {
+      const result = await api(`/studio/candidates/${candidate.id}/split`, { method: "POST", body: JSON.stringify({ splitMs: splitMS }) });
+      state.candidates = state.candidates.map((item) => item.id === result.left.id ? result.left : item);
+      state.candidates.push(result.right);
+      render();
+      await selectCandidate(result.right.id);
+      setStatus(`Clip split at ${formatClock(splitMS)}`, "success");
+    } catch (error) {
+      setStatus(`Could not split clip · ${error.message}`, "error");
+    } finally {
+      updateSplitControl();
+    }
+  }
+
+  async function rejectCurrent() {
+    const candidate = state.current;
+    if (!candidate) return;
+    await patchCandidate(candidate, { reviewStatus: "rejected", notes: $("#studio-candidate-notes").value.trim() }, "Suggestion rejected", true);
+  }
+
+  function addCurrentToOutput() {
+    const candidate = state.current;
+    const recording = state.currentRecording;
+    if (!candidate || !recording) return;
+    if (recording.mediaKind !== "video") {
+      setRenderStatus("Only takes with video can be added to a movie.", "error");
+      return;
+    }
+    const clip = {
+      id: localID(), candidateId: candidate.id, recordingId: recording.id,
+      startMs: candidate.startMs, endMs: candidate.endMs, title: titleFor(recording),
+      takeNumber: recording.takeNumber || 0, practiceDate: recording.practiceDate || state.date,
+      liked: Model.candidateIsLiked(candidate),
+    };
+    try {
+      state.project = Model.addClip(state.project, clip);
+      persistProject();
+      renderOutputTimeline();
+      setRenderStatus(`Added ${clip.title} · ${U.takeLabel(recording)} using the current boundaries.`, "success");
+    } catch (error) {
+      setRenderStatus(error.message, "error");
+    }
+  }
+
+  function renderOutputTimeline() {
+    const host = $("#studio-output-clips");
+    $("#studio-output-duration").textContent = formatClock(Model.totalDurationMS(state.project));
+    $("#studio-render").disabled = !state.project.clips.length;
+    if (!state.project.clips.length) {
+      host.innerHTML = "<p>Use Add to Output to begin an edit.</p>";
+      return;
+    }
+    host.innerHTML = state.project.clips.map((clip, index) => {
+      const take = clip.takeNumber ? ` · Take ${clip.takeNumber}` : "";
+      const sourceCandidate = state.candidates.find((candidate) => candidate.id === clip.candidateId);
+      const liked = sourceCandidate ? Model.candidateIsLiked(sourceCandidate) : Boolean(clip.liked);
+      return `<article class="studio-output-clip${liked ? " liked" : ""}" draggable="true" data-output-index="${index}" data-output-id="${clip.id}" style="--clip-weight:${Math.max(1, clip.endMs - clip.startMs)}"><button class="studio-output-grip" type="button" data-output-grip aria-label="Drag to reorder ${escapeHTML(clip.title)}">⠿</button><button class="studio-output-open" type="button" data-output-open="${clip.id}"><strong>${liked ? '<span class="studio-output-liked" aria-label="Liked clip">♥</span>' : ""}${escapeHTML(clip.title)}${take}</strong><span>${formatClock(clip.startMs)} — ${formatClock(clip.endMs)}</span></button><button class="studio-output-remove" type="button" data-output-remove="${clip.id}" aria-label="Remove ${escapeHTML(clip.title)} from output">×</button></article>`;
+    }).join("");
+    host.querySelectorAll("[data-output-open]").forEach((button) => button.addEventListener("click", () => {
+      const clip = state.project.clips.find((item) => item.id === button.dataset.outputOpen);
+      if (clip) previewOutputClip(clip);
+    }));
+    host.querySelectorAll("[data-output-remove]").forEach((button) => button.addEventListener("click", () => {
+      state.project = Model.removeClip(state.project, button.dataset.outputRemove);
+      persistProject();
+      renderOutputTimeline();
+    }));
+    host.querySelectorAll("[data-output-grip]").forEach((grip) => grip.addEventListener("pointerdown", (event) => beginOutputPointerDrag(event, grip)));
+    host.querySelectorAll("[data-output-index]").forEach((clip) => {
+      clip.addEventListener("dragstart", () => { state.draggedOutputIndex = Number(clip.dataset.outputIndex); clip.classList.add("dragging"); });
+      clip.addEventListener("dragend", () => { state.draggedOutputIndex = -1; clip.classList.remove("dragging"); });
+      clip.addEventListener("dragover", (event) => { event.preventDefault(); clip.classList.add("drop-target"); });
+      clip.addEventListener("dragleave", () => clip.classList.remove("drop-target"));
+      clip.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const target = Number(clip.dataset.outputIndex);
+        state.project = Model.moveClip(state.project, state.draggedOutputIndex, target);
+        persistProject();
+        renderOutputTimeline();
+      });
+    });
+  }
+
+  function beginOutputPointerDrag(event, grip) {
+    const source = grip.closest("[data-output-index]");
+    if (!source) return;
+    event.preventDefault();
+    let targetIndex = Number(source.dataset.outputIndex);
+    const clips = [...document.querySelectorAll(".studio-output-clip")];
+    source.classList.add("dragging");
+    grip.setPointerCapture?.(event.pointerId);
+    const update = (pointerEvent) => {
+      let nearest = targetIndex;
+      let distance = Infinity;
+      clips.forEach((clip) => {
+        const bounds = clip.getBoundingClientRect();
+        const nextDistance = Math.abs(pointerEvent.clientX - (bounds.left + bounds.width / 2));
+        if (nextDistance < distance) {
+          distance = nextDistance;
+          nearest = Number(clip.dataset.outputIndex);
+        }
+      });
+      targetIndex = nearest;
+      clips.forEach((clip) => clip.classList.toggle("drop-target", Number(clip.dataset.outputIndex) === targetIndex));
+    };
+    const finish = () => {
+      grip.removeEventListener("pointermove", update);
+      grip.removeEventListener("pointerup", finish);
+      grip.removeEventListener("pointercancel", finish);
+      clips.forEach((clip) => clip.classList.remove("dragging", "drop-target"));
+      state.project = Model.moveClip(state.project, Number(source.dataset.outputIndex), targetIndex);
+      persistProject();
+      renderOutputTimeline();
+    };
+    grip.addEventListener("pointermove", update);
+    grip.addEventListener("pointerup", finish);
+    grip.addEventListener("pointercancel", finish);
+  }
+
+  function startRenderEstimate(button) {
+    const host = $("#studio-render-progress");
+    const bar = $("#studio-render-progress-bar");
+    const label = $("#studio-render-progress-text");
+    const startedAt = Date.now();
+    const estimatedMS = Model.estimatedRenderMS(state.project);
+    host.hidden = false;
+    const tick = () => {
+      const elapsedMS = Date.now() - startedAt;
+      const fraction = Math.min(.95, elapsedMS / estimatedMS);
+      bar.style.width = `${Math.round(fraction * 100)}%`;
+      button.textContent = `Rendering · ${formatClock(elapsedMS)}`;
+      label.textContent = elapsedMS < estimatedMS
+        ? `${formatClock(elapsedMS)} elapsed · about ${formatClock(estimatedMS - elapsedMS)} remaining`
+        : `${formatClock(elapsedMS)} elapsed · finishing up (estimate was ${formatClock(estimatedMS)})`;
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    let settled = false;
+    return (completed) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      const elapsedMS = Date.now() - startedAt;
+      bar.style.width = completed ? "100%" : bar.style.width;
+      label.textContent = `${completed ? "Complete" : "Stopped"} after ${formatClock(elapsedMS)} · estimate was ${formatClock(estimatedMS)}`;
+    };
+  }
+
+  async function renderOutputMovie() {
+    state.project = { ...state.project, title: $("#studio-output-title").value.slice(0, 120) };
+    persistProject();
+    let payload;
+    try {
+      payload = Model.renderPayload(state.project);
+    } catch (error) {
+      setRenderStatus(error.message, "error");
+      return;
+    }
+    const button = $("#studio-render");
+    button.disabled = true;
+    const finishEstimate = startRenderEstimate(button);
+    setRenderStatus("Rendering 1080p video with universal AAC playback audio and a lossless ALAC master. Keep this page open.");
+    try {
+      const result = await api("/studio/renders", { method: "POST", body: JSON.stringify(payload) });
+      finishEstimate(true);
+      const link = document.createElement("a");
+      link.href = result.url;
+      link.download = result.filename || "jazz-practice.mp4";
+      link.rel = "noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      const audioQuality = result.quality?.audio || "audio quality not reported";
+      if (result.quality?.audioLossless === true) {
+        setRenderStatus(`Downloaded ${result.filename} · ${audioQuality}.`, "success");
+      } else {
+        setRenderStatus(`QUALITY NOTICE · Downloaded ${result.filename} with ${audioQuality}; this output is not confirmed lossless.`, "error");
+      }
+    } catch (error) {
+      finishEstimate(false);
+      setRenderStatus(`Render failed · ${error.message}`, "error");
+    } finally {
+      button.disabled = !state.project.clips.length;
+      button.textContent = "Render Output";
+    }
+  }
+
+  function closePreview() {
+    state.media?.pause();
+    state.media = null;
+    state.resumeAfterLoad = false;
+    state.playbackRequest++;
+    $("#studio-playback-mode").textContent = "Focused playback";
+    $("#studio-preview-title").textContent = "Choose a suggestion";
+    $("#studio-media").innerHTML = '<p class="clip-studio-empty">Choose a suggested region, or click anywhere in a waveform to browse a complete take.</p>';
+    $("#studio-editor").hidden = true;
+    $("#studio-raw-notice").hidden = true;
+    setBufferStatus("");
+    updatePlayhead();
+    updateSplitControl();
+  }
+
+  document.addEventListener("jazz:view-change", (event) => {
+    if (event.detail?.view === "studio") initialize();
+    else {
+      state.media?.pause();
+      state.resumeAfterLoad = false;
+      setAddClipMode(false);
+    }
+  });
+  if (location.hash === "#studio") initialize();
+})();

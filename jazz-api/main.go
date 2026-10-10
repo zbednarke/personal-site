@@ -65,6 +65,10 @@ type application struct {
 	iamSigner   *iamcredentials.IamCredentialsClient
 	httpClient  *http.Client
 	logger      *slog.Logger
+	// objects and inspirationHTTP are nil in production (GCS and the safe
+	// preview client are used); tests inject fakes.
+	objects         objectStore
+	inspirationHTTP *http.Client
 }
 
 type contextKey string
@@ -72,12 +76,12 @@ type contextKey string
 const userSubjectKey contextKey = "user-subject"
 
 type practiceEntry struct {
-	ID      string `json:"id"`
-	Date    string `json:"date"`
-	Minutes int    `json:"minutes"`
-	Track   string `json:"track"`
-	Note    string `json:"note"`
-	Preset  bool   `json:"preset,omitempty"`
+	ID      string  `json:"id"`
+	Date    string  `json:"date"`
+	Minutes float64 `json:"minutes"`
+	Track   string  `json:"track"`
+	Note    string  `json:"note"`
+	Preset  bool    `json:"preset,omitempty"`
 }
 
 type campaignState struct {
@@ -141,42 +145,43 @@ type recordingUpdateRequest struct {
 }
 
 type recordingRow struct {
-	ID               uuid.UUID `json:"id"`
-	ContentType      string    `json:"contentType"`
-	Codec            string    `json:"codec,omitempty"`
-	SizeBytes        int64     `json:"sizeBytes,omitempty"`
-	DurationMS       int       `json:"durationMs,omitempty"`
-	SampleRate       int       `json:"sampleRate,omitempty"`
-	Channels         int       `json:"channels,omitempty"`
-	RecordedAt       time.Time `json:"recordedAt"`
-	Status           string    `json:"status"`
-	TuneID           string    `json:"tuneId,omitempty"`
-	MissionID        string    `json:"missionId,omitempty"`
-	SkillIDs         []string  `json:"skillIds"`
-	TakeNumber       int       `json:"takeNumber,omitempty"`
-	Notes            string    `json:"notes,omitempty"`
-	SessionID        string    `json:"practiceSessionId,omitempty"`
-	SessionTitle     string    `json:"practiceSessionTitle,omitempty"`
-	BlockID          string    `json:"practiceBlockId,omitempty"`
-	BlockDate        string    `json:"practiceDate,omitempty"`
-	BlockKey         string    `json:"practiceBlockKey,omitempty"`
-	BlockTitle       string    `json:"practiceBlockTitle,omitempty"`
-	BlockCategory    string    `json:"practiceBlockCategory,omitempty"`
-	BlockTrack       string    `json:"practiceBlockTrack,omitempty"`
-	ObjectName       string    `json:"-"`
-	MediaKind        string    `json:"mediaKind"`
-	VideoContentType string    `json:"videoContentType,omitempty"`
-	VideoCodec       string    `json:"videoCodec,omitempty"`
-	VideoSizeBytes   int64     `json:"videoSizeBytes,omitempty"`
-	VideoWidth       int       `json:"videoWidth,omitempty"`
-	VideoHeight      int       `json:"videoHeight,omitempty"`
-	VideoFrameRate   float64   `json:"videoFrameRate,omitempty"`
-	VideoObjectName  string    `json:"-"`
-	FxContentType    string    `json:"fxContentType,omitempty"`
-	FxSizeBytes      int64     `json:"fxSizeBytes,omitempty"`
-	FxPreset         string    `json:"fxPreset,omitempty"`
-	FxObjectName     string    `json:"-"`
-	WaveformPeaks    []float64 `json:"waveformPeaks,omitempty"`
+	ID                     uuid.UUID `json:"id"`
+	ContentType            string    `json:"contentType"`
+	Codec                  string    `json:"codec,omitempty"`
+	SizeBytes              int64     `json:"sizeBytes,omitempty"`
+	DurationMS             int       `json:"durationMs,omitempty"`
+	SampleRate             int       `json:"sampleRate,omitempty"`
+	Channels               int       `json:"channels,omitempty"`
+	RecordedAt             time.Time `json:"recordedAt"`
+	Status                 string    `json:"status"`
+	TuneID                 string    `json:"tuneId,omitempty"`
+	MissionID              string    `json:"missionId,omitempty"`
+	SkillIDs               []string  `json:"skillIds"`
+	TakeNumber             int       `json:"takeNumber,omitempty"`
+	Notes                  string    `json:"notes,omitempty"`
+	SessionID              string    `json:"practiceSessionId,omitempty"`
+	SessionTitle           string    `json:"practiceSessionTitle,omitempty"`
+	BlockID                string    `json:"practiceBlockId,omitempty"`
+	BlockDate              string    `json:"practiceDate,omitempty"`
+	BlockKey               string    `json:"practiceBlockKey,omitempty"`
+	BlockTitle             string    `json:"practiceBlockTitle,omitempty"`
+	BlockCategory          string    `json:"practiceBlockCategory,omitempty"`
+	BlockTrack             string    `json:"practiceBlockTrack,omitempty"`
+	ObjectName             string    `json:"-"`
+	MediaKind              string    `json:"mediaKind"`
+	VideoContentType       string    `json:"videoContentType,omitempty"`
+	VideoCodec             string    `json:"videoCodec,omitempty"`
+	VideoSizeBytes         int64     `json:"videoSizeBytes,omitempty"`
+	VideoWidth             int       `json:"videoWidth,omitempty"`
+	VideoHeight            int       `json:"videoHeight,omitempty"`
+	VideoFrameRate         float64   `json:"videoFrameRate,omitempty"`
+	VideoObjectName        string    `json:"-"`
+	VideoPlaybackOptimized bool      `json:"videoPlaybackOptimized,omitempty"`
+	FxContentType          string    `json:"fxContentType,omitempty"`
+	FxSizeBytes            int64     `json:"fxSizeBytes,omitempty"`
+	FxPreset               string    `json:"fxPreset,omitempty"`
+	FxObjectName           string    `json:"-"`
+	WaveformPeaks          []float64 `json:"waveformPeaks,omitempty"`
 }
 
 func main() {
@@ -229,8 +234,11 @@ func main() {
 		Handler:           app.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       90 * time.Second,
+		// Clip Studio renders stream a bounded ten-minute movie through FFmpeg.
+		// Cloud Run owns the request deadline; a server-level write deadline would
+		// terminate valid renders before their signed download response is sent.
+		WriteTimeout: 0,
+		IdleTimeout:  90 * time.Second,
 	}
 	slog.Info("jazz API listening", "port", cfg.Port)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -287,7 +295,11 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 
 func (app *application) routes() http.Handler {
 	mux := http.NewServeMux()
+	// Cloud Run's front end answers /healthz itself, so external checks use /health.
+	mux.HandleFunc("GET /health", app.health)
 	mux.HandleFunc("GET /healthz", app.health)
+	app.trumpetRoutes(mux)
+	app.repertoireRoutes(mux)
 	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
@@ -298,9 +310,20 @@ func (app *application) routes() http.Handler {
 	mux.Handle("POST /v1/practice-sessions/{id}/activities", app.authenticate(http.HandlerFunc(app.createPracticeActivity)))
 	mux.Handle("GET /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.listPracticeBlocks)))
 	mux.Handle("POST /v1/practice-sessions/{id}/blocks", app.authenticate(http.HandlerFunc(app.bootstrapPracticeBlocks)))
+	mux.Handle("PUT /v1/practice-sessions/{id}/blocks/layout", app.authenticate(http.HandlerFunc(app.updatePracticeBlockLayout)))
 	mux.Handle("PATCH /v1/practice-blocks/{id}", app.authenticate(http.HandlerFunc(app.updatePracticeBlock)))
 	mux.Handle("GET /v1/archive/calendar", app.authenticate(http.HandlerFunc(app.archiveCalendar)))
 	mux.Handle("GET /v1/archive/days/{date}", app.authenticate(http.HandlerFunc(app.archiveDay)))
+	mux.Handle("GET /v1/studio/days/{date}", app.authenticate(http.HandlerFunc(app.clipStudioDay)))
+	mux.Handle("POST /v1/studio/days/{date}/scan", app.authenticate(http.HandlerFunc(app.scanClipStudioDay)))
+	mux.Handle("POST /v1/studio/recordings/{id}/candidates", app.authenticate(http.HandlerFunc(app.createManualClipCandidate)))
+	mux.Handle("PATCH /v1/studio/candidates/{id}", app.authenticate(http.HandlerFunc(app.updateClipCandidate)))
+	mux.Handle("POST /v1/studio/candidates/{id}/split", app.authenticate(http.HandlerFunc(app.splitClipCandidate)))
+	mux.Handle("POST /v1/studio/renders", app.authenticate(http.HandlerFunc(app.renderClipStudioMovie)))
+	mux.Handle("POST /v1/guide-tone-drills", app.authenticate(http.HandlerFunc(app.createGuideToneDrill)))
+	mux.Handle("PATCH /v1/guide-tone-drills/{id}", app.authenticate(http.HandlerFunc(app.updateGuideToneDrill)))
+	mux.Handle("POST /v1/guide-tone-drills/{id}/attempts", app.authenticate(http.HandlerFunc(app.createGuideToneAttempt)))
+	mux.Handle("GET /v1/guide-tone-drills/summary", app.authenticate(http.HandlerFunc(app.guideToneDrillSummary)))
 	mux.Handle("GET /v1/recordings", app.authenticate(http.HandlerFunc(app.listRecordings)))
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
@@ -314,7 +337,7 @@ func (app *application) routes() http.Handler {
 func (app *application) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providedKey := r.Header.Get("X-Jazz-Gateway-Key")
-		if !app.cfg.AllowInsecureLocal && subtle.ConstantTimeCompare([]byte(providedKey), []byte(app.cfg.GatewayKey)) != 1 {
+		if !app.cfg.AllowInsecureLocal && (app.cfg.GatewayKey == "" || subtle.ConstantTimeCompare([]byte(providedKey), []byte(app.cfg.GatewayKey)) != 1) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -477,7 +500,7 @@ func validateCampaignState(raw json.RawMessage) error {
 		}
 	}
 	for _, entry := range state.Practice {
-		if len(entry.ID) == 0 || len(entry.ID) > 160 || !datePattern.MatchString(entry.Date) || entry.Minutes < 1 || entry.Minutes > 360 || len(entry.Track) > 30 || len(entry.Note) > 100 {
+		if len(entry.ID) == 0 || len(entry.ID) > 160 || !datePattern.MatchString(entry.Date) || math.IsNaN(entry.Minutes) || math.IsInf(entry.Minutes, 0) || entry.Minutes <= 0 || entry.Minutes > 360 || len(entry.Track) > 30 || len(entry.Note) > 100 {
 			return errors.New("practice entry is invalid")
 		}
 	}
@@ -578,6 +601,15 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Capture data may finish uploading after another device removed its section.
+	// Retain the association in history; never discard an already captured take.
+	recordingTx, err := app.db.Begin(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer recordingTx.Rollback(r.Context())
+	sectionRemoved := false
 	var practiceBlockID *uuid.UUID
 	if input.PracticeBlockID != "" {
 		blockID, parseErr := uuid.Parse(input.PracticeBlockID)
@@ -587,9 +619,10 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		}
 		var blockSessionID uuid.UUID
 		var recordingCount int
-		queryErr := app.db.QueryRow(r.Context(), `
-			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready'))
-			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2`, blockID, userID).Scan(&blockSessionID, &recordingCount)
+		var blockTuneID string
+		queryErr := recordingTx.QueryRow(r.Context(), `
+			SELECT pb.session_id,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready')),pb.removed_at IS NOT NULL,COALESCE(pb.tune_id,'')
+			FROM practice_blocks pb WHERE pb.id=$1 AND pb.user_id=$2 FOR UPDATE OF pb`, blockID, userID).Scan(&blockSessionID, &recordingCount, &sectionRemoved, &blockTuneID)
 		if errors.Is(queryErr, pgx.ErrNoRows) || (input.PracticeSessionID != "" && blockSessionID.String() != input.PracticeSessionID) {
 			writeError(w, http.StatusUnprocessableEntity, "practice block is invalid")
 			return
@@ -603,6 +636,11 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		practiceBlockID = &blockID
+		// Takes in a tune-linked section count toward that tune even when an
+		// older client does not send the tune.
+		if strings.TrimSpace(input.TuneID) == "" {
+			input.TuneID = blockTuneID
+		}
 	}
 	objectName := fmt.Sprintf("users/%s/%s/%s/audio-master.%s", userID, recordedAt.UTC().Format("2006/01/02"), recordingID, extensionFor(baseType))
 	videoObjectName := ""
@@ -615,7 +653,7 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	}
 	skillJSON, _ := json.Marshal(input.SkillIDs)
 	waveformJSON, _ := json.Marshal(waveformPeaks)
-	_, err = app.db.Exec(r.Context(), `
+	_, err = recordingTx.Exec(r.Context(), `
 		INSERT INTO recordings
 		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
 		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate,waveform_peaks,
@@ -632,13 +670,17 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
+	if err := recordingTx.Commit(r.Context()); err != nil {
+		app.serverError(w, err)
+		return
+	}
 	uploadURL, err := app.createResumableUpload(r.Context(), recordingID, userID, objectName, baseType, input.SizeBytes, "audio", allowedUploadOrigin(r.Header.Get("Origin")))
 	if err != nil {
 		_, _ = app.db.Exec(r.Context(), `UPDATE recordings SET status='failed', updated_at=now() WHERE id=$1`, recordingID)
 		app.serverError(w, err)
 		return
 	}
-	response := map[string]any{"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName}
+	response := map[string]any{"id": recordingID, "uploadUrl": uploadURL, "objectName": objectName, "sectionRemoved": sectionRemoved}
 	if mediaKind == "video" {
 		videoUploadURL, videoErr := app.createResumableUpload(r.Context(), recordingID, userID, videoObjectName, videoType, input.VideoSizeBytes, "video", allowedUploadOrigin(r.Header.Get("Origin")))
 		if videoErr != nil {
@@ -927,6 +969,12 @@ func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Requ
 }
 
 func (app *application) signedRecordingObjectURL(ctx context.Context, objectName string, expires time.Time, query url.Values) (string, error) {
+	return app.signedObjectURL(ctx, objectName, expires, query)
+}
+
+// signedObjectURL is a V4 signed GET for any private bucket object (recordings
+// and inspiration images), signed through the IAM credentials API.
+func (app *application) signedObjectURL(ctx context.Context, objectName string, expires time.Time, query url.Values) (string, error) {
 	return storage.SignedURL(app.cfg.Bucket, objectName, &storage.SignedURLOptions{
 		GoogleAccessID:  app.cfg.ServiceAccountEmail,
 		Method:          http.MethodGet,
@@ -1218,7 +1266,9 @@ func readJSON(w http.ResponseWriter, r *http.Request, destination any) error {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }

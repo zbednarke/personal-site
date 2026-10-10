@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gcloud *)",
+      "Bash(env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud *)",
+      "Bash(mkfifo *)",
+      "Bash(tail -f *)",
+      "Bash(git *)",
+      "Bash(go *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/gcloud-auth.sh\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "The owner has authorized signing the gcloud CLI in to their Google account from a Claude session: running `gcloud auth login --no-launch-browser` and passing it the verification code they paste into the chat (including through a named pipe or stdin), and `gcloud auth activate-service-account` with a key from the environment.",
+      "The owner has authorized production deploys of this repository after a merge to main: `gcloud run deploy jazz-api` in project parabolio-prod, `gcloud sql backups create`, and publishing static releases to the VM actual-server in project actual-budget-zb with `gcloud compute scp` / `gcloud compute ssh --tunnel-through-iap` running deploy/publish-static-release.sh with sudo."
+    ]
+  }
+}

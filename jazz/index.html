@@ -30,7 +30,12 @@
     </a>
     <div class="virtuoso-nav-links">
       <a class="active" href="#today" data-jazz-view="today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
+      <a href="#repertoire" data-jazz-view="repertoire"><span aria-hidden="true">♪</span>Repertoire</a>
+      <a href="#guide-tones" data-jazz-view="guide-tones"><span aria-hidden="true">&#9835;</span>Guide tones</a>
+      <a href="#effects" data-jazz-view="effects"><span aria-hidden="true">∿</span>Live effects</a>
       <a href="#archive" data-jazz-view="archive"><span aria-hidden="true">▱</span>Archive</a>
+      <a href="#studio" data-jazz-view="studio"><span aria-hidden="true">✂</span>Clip studio</a>
+      <a href="/trumpets/#inspiration"><span aria-hidden="true">✦</span>Horn inspiration</a>
       <span class="disabled" title="Progress screen is coming later"><span aria-hidden="true">⌁</span>Progress</span>
     </div>
     <div class="virtuoso-nav-footer">
@@ -108,9 +113,19 @@
         </div>
       </header>
 
+      <p style="margin: 0 0 20px"><a class="section-tool-link" href="./plan/">Practice direction · Your next steps and saved plans →</a></p>
+
       <div class="today-workspace">
         <section class="practice-plan" aria-labelledby="practice-plan-title">
           <div class="workspace-label"><h2 id="practice-plan-title">Practice plan</h2><span>Recording drives practice time</span></div>
+          <div id="detached-section-recording" class="detached-section-recording" role="status" hidden><p></p><button id="finish-detached-recording" type="button">Stop recording</button></div>
+          <div id="detached-section-uploads" aria-live="polite"></div>
+          <div class="practice-edit-bar">
+            <label class="practice-edit-toggle"><input id="edit-practice-sections" type="checkbox" role="switch" aria-describedby="practice-edit-status"><span class="practice-edit-switch" aria-hidden="true"></span><span>Edit sections</span></label>
+            <button id="cancel-section-edits" type="button" hidden>Cancel edits</button>
+          </div>
+          <p id="practice-edit-status" class="practice-edit-status" role="status"></p>
+          <p id="practice-edit-help" class="practice-edit-help" hidden>Rename a section, drag a handle to reorder, or focus it and use the arrow keys. Delete marks a section for removal; Undo brings it back. Saved sections and their order carry into the next practice day.</p>
           <div class="session-list" id="session-list" aria-live="polite"></div>
           <button class="add-practice-section" id="add-practice-section" type="button"><span aria-hidden="true">＋</span>Add section</button>
         </section>
@@ -123,11 +138,21 @@
 
           <section class="current-section-stage">
             <div class="workspace-label"><h2>Current section</h2><span id="current-section-state">Ready</span></div>
-            <section class="audio-preflight" id="audio-preflight" hidden aria-label="Live microphone signal">
-              <div class="audio-preflight-head"><span><em>Live input</em><strong id="active-input-name">Default microphone</strong></span><small id="input-signal-status" data-tone="waiting">Listening…</small></div>
+            <section class="audio-preflight" id="audio-preflight" aria-label="Practice audio tools">
+              <div class="audio-preflight-head"><span><em>Live input</em><strong id="active-input-name">Default microphone</strong></span><small id="input-signal-status" data-tone="waiting">Mic off</small></div>
               <video class="live-camera-preview" id="live-camera-preview" autoplay muted playsinline hidden aria-label="Live camera preview"></video>
               <div class="input-meter" aria-label="Microphone input level"><span id="input-meter-fill"></span></div>
+              <div class="practice-tools-row">
               <div class="section-live-audio"><canvas class="recording-waveform" data-waveform aria-label="Live microphone waveform"></canvas><div class="tuner tuner-compact" data-tuner aria-live="polite"><span class="tuner-note" data-tuner-note>—</span><div class="tuner-detail"><strong>Tuner</strong><span data-tuner-frequency>A4 = 440 Hz</span></div><div class="tuner-track" aria-hidden="true"><span class="tuner-center"></span><span class="tuner-needle" data-tuner-needle></span></div></div></div>
+                <section class="practice-metronome" id="practice-metronome" aria-label="Metronome">
+                  <div class="metronome-heading"><strong>Metronome</strong><div id="metronome-beats" aria-hidden="true"></div></div>
+                  <div class="metronome-tempo-controls"><button id="metronome-slower" type="button" aria-label="Decrease tempo">−</button><label><input id="metronome-bpm" type="number" min="30" max="300" value="120" aria-label="Tempo in beats per minute"><span>BPM</span></label><button id="metronome-faster" type="button" aria-label="Increase tempo">+</button><button id="metronome-tap" type="button">Tap</button></div>
+                  <input id="metronome-tempo" type="range" min="30" max="300" value="120" aria-label="Tempo">
+                  <div class="metronome-options"><label>Beats <select id="metronome-meter" aria-label="Beats per bar"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option></select></label><label>Volume <input id="metronome-volume" type="range" min="0" max="100" value="35" aria-label="Click volume"></label></div>
+                  <div class="metronome-footer"><button id="metronome-toggle" class="button button-quiet" type="button" aria-pressed="false">Start</button><span id="metronome-status" role="status">Ready</span></div>
+                  <small class="metronome-hint">Headphones keep clicks out of takes.</small>
+                </section>
+              </div>
             </section>
             <div id="active-section-panel"></div>
           </section>
@@ -145,6 +170,20 @@
 
       <div class="week-card today-week-data" aria-hidden="true">
         <span id="week-hours">0.0</span><span id="week-percent">0%</span><span id="week-meter"></span><div id="week-chart"></div><p id="week-note"></p>
+      </div>
+    </section>
+
+    <section class="effects-screen" id="effects" aria-labelledby="effects-title" hidden>
+      <header class="effects-screen-header">
+        <div>
+          <p class="eyebrow">Practice tool 002</p>
+          <h1 id="effects-title">Live Effects</h1>
+          <p>Shape the Yamaha Silent Brass signal in real time, build layered sounds, and capture experiments.</p>
+        </div>
+        <div class="effects-safety-note"><span>Monitor safely</span><strong>Use headphones to prevent feedback</strong></div>
+      </header>
+      <div class="effects-frame-shell">
+        <iframe id="effects-frame" src="../assets/jazz/effects.html" title="Yamaha Silent Brass live effects" allow="microphone"></iframe>
       </div>
     </section>
 
@@ -243,6 +282,134 @@
       </div>
     </section>
 
+    <section class="clip-studio-screen" id="studio" aria-labelledby="clip-studio-title" hidden>
+      <header class="clip-studio-header">
+        <div>
+          <p class="eyebrow">Audio-first review</p>
+          <h1 id="clip-studio-title">Clip Studio</h1>
+          <p>Find the stretches where the horn is active, listen closely, and turn the best moments into an edit queue.</p>
+        </div>
+        <div class="clip-studio-header-tools">
+          <details class="studio-scan-menu" id="studio-scan-menu">
+            <summary><i></i><span id="studio-scan-state">Checking analysis</span></summary>
+            <div><strong id="studio-scan-detail">Loading this day’s analysis state…</strong><button type="button" id="studio-scan">Rescan this day</button></div>
+          </details>
+          <div class="clip-studio-date-nav">
+            <button type="button" id="studio-previous-day" aria-label="Previous day">‹</button>
+            <label><span>Practice day</span><input id="studio-date" type="date"></label>
+            <button type="button" id="studio-next-day" aria-label="Next day">›</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="clip-studio-summary" aria-live="polite">
+        <div><span>Recorded</span><strong id="studio-total-time">0:00</strong></div>
+        <div><span>Takes</span><strong id="studio-take-count">0</strong></div>
+        <div><span>Suggestions</span><strong id="studio-candidate-count">0</strong></div>
+        <div><span>Liked</span><strong id="studio-liked-count">0</strong></div>
+        <div class="clip-studio-summary-status"><span>Status</span><strong id="studio-status" role="status">Choose a practice day</strong></div>
+      </div>
+
+      <div class="clip-studio-workspace">
+        <section class="clip-studio-timeline" aria-labelledby="studio-timeline-title">
+          <header class="studio-timeline-header"><div><span>Day timeline</span><h2 id="studio-timeline-title">Recordings</h2></div><button type="button" id="studio-add-clip" aria-pressed="false">+ Add clip</button></header>
+          <p class="studio-add-clip-hint" id="studio-add-clip-hint" hidden>Click an empty point on a recording. The new clip will be ten seconds and move beside nearby clips as needed.</p>
+          <div id="studio-recordings"><p class="clip-studio-empty">Loading recordings…</p></div>
+        </section>
+
+        <div class="clip-studio-right-column">
+          <aside class="clip-studio-preview" id="studio-preview" aria-labelledby="studio-preview-title">
+            <header><span id="studio-playback-mode">Focused playback</span><small id="studio-buffer-status" hidden></small><h2 id="studio-preview-title">Choose a suggestion</h2></header>
+            <div id="studio-media"><p class="clip-studio-empty">Choose a suggested region, or click anywhere in a waveform to browse a complete take.</p></div>
+            <div class="clip-studio-editor" id="studio-editor" hidden>
+              <div class="clip-studio-boundaries">
+                <label><span>In · seconds</span><input id="studio-start" type="number" min="0" step="0.1"></label>
+                <label><span>Out · seconds</span><input id="studio-end" type="number" min="0" step="0.1"></label>
+              </div>
+              <div class="studio-clip-actions"><button type="button" class="clip-download-button" data-download-current>↓ Download clip</button><button type="button" id="studio-split-clip" disabled>Split at playhead</button><button class="studio-add-output" type="button" id="studio-add-output">Add to Output</button></div>
+              <label class="clip-studio-notes"><span>Editor note</span><textarea id="studio-candidate-notes" rows="4" maxlength="2000" placeholder="Why is this worth keeping? What needs trimming?"></textarea></label>
+              <div class="clip-studio-review-actions">
+                <button type="button" id="studio-like" aria-pressed="false">♡ Like clip</button>
+                <button type="button" id="studio-reject">Reject suggestion</button>
+              </div>
+            </div>
+            <div class="clip-studio-raw-notice" id="studio-raw-notice" hidden>Browsing raw recording · playback continues until you pause it.</div>
+          </aside>
+
+          <section class="clip-studio-candidates" aria-labelledby="studio-candidates-title">
+            <header><span>Listening queue</span><h2 id="studio-candidates-title">Suggested moments</h2></header>
+            <div id="studio-candidate-list"><p class="clip-studio-empty">Suggestions will appear after this day is analyzed.</p></div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="studio-output-dock" aria-labelledby="studio-output-title">
+        <div class="studio-output-heading"><span>Output timeline</span><strong id="studio-output-duration">00:00</strong></div>
+        <div class="studio-output-clips" id="studio-output-clips"><p>Use Add to Output to begin an edit.</p></div>
+        <div class="studio-render-controls">
+          <label><span>Project / filename</span><input id="studio-output-title" maxlength="120" value="Jazz practice"></label>
+          <details class="studio-quality"><summary>1080p · AAC + lossless master</summary><p><b>Video:</b> 1080p H.264, CRF 18<br><b>Default audio:</b> AAC 320 kbps for universal playback<br><b>Master audio:</b> lossless ALAC, 48 kHz, original levels<br>No normalization or transitions.</p></details>
+          <button type="button" id="studio-render">Render Output</button>
+          <div class="studio-render-progress" id="studio-render-progress" hidden><div><i id="studio-render-progress-bar"></i></div><span id="studio-render-progress-text">Preparing render…</span></div>
+          <span id="studio-render-status" role="status"></span>
+        </div>
+      </footer>
+    </section>
+
+    <section class="guide-tone-screen" id="guide-tones" aria-labelledby="guide-tone-title" hidden>
+      <header class="guide-tone-screen-header">
+        <div>
+          <p class="eyebrow">Practice tool 001</p>
+          <h1 id="guide-tone-title">Guide-tone reflex</h1>
+          <p>See the chord. Hear the landing spot. Play its third or seventh without a cheat sheet.</p>
+        </div>
+        <div class="guide-tone-session-summary" aria-live="polite">
+          <span>Synced history</span>
+          <strong id="guide-tone-history-accuracy">No attempts yet</strong>
+          <small id="guide-tone-history-detail">Blue Bossa</small>
+        </div>
+      </header>
+
+      <div class="guide-tone-toolbar" aria-label="Drill setup">
+        <label><span>Tune</span><select id="guide-tone-tune"><option value="blue-bossa">Blue Bossa</option></select></label>
+        <label><span>Instrument</span><select id="guide-tone-instrument"><option value="bb-trumpet">B&#9837; trumpet</option><option value="concert">Concert pitch</option></select></label>
+        <label><span>Mode</span><select id="guide-tone-mode"><option value="learn">Learn &middot; advance when correct</option><option value="tempo">Tempo &middot; follow the form</option></select></label>
+        <label class="guide-tone-tempo-field" for="guide-tone-tempo"><span>Tempo</span><span class="guide-tone-tempo-control"><input id="guide-tone-tempo" type="range" min="40" max="180" step="1" value="72"><output id="guide-tone-tempo-value" for="guide-tone-tempo">72 BPM</output></span></label>
+        <label><span>Microphone</span><select id="guide-tone-input"><option value="">Default microphone</option></select></label>
+      </div>
+
+      <div class="guide-tone-workspace">
+        <section class="guide-tone-chart-card" aria-labelledby="guide-tone-chart-title">
+          <header><div><span>Lead-sheet roadmap</span><h2 id="guide-tone-chart-title">Blue Bossa &middot; 16 bars</h2></div><small id="guide-tone-concert-note">Written pitch for B&#9837; trumpet</small></header>
+          <div class="guide-tone-chart" id="guide-tone-chart" aria-label="Blue Bossa chord form"></div>
+          <p class="guide-tone-chart-note">Chord symbols only&mdash;use your lead sheet for the copyrighted melody.</p>
+        </section>
+
+        <aside class="guide-tone-stage" aria-label="Current guide-tone prompt">
+          <div class="guide-tone-stage-top"><span id="guide-tone-location">Bar 1 of 16 &middot; Chorus 1</span><span id="guide-tone-clock">00:00</span></div>
+          <div class="guide-tone-prompt" id="guide-tone-prompt">
+            <span class="guide-tone-prompt-label">Current chord</span>
+            <strong class="guide-tone-chord" id="guide-tone-chord">Dm7</strong>
+            <p>Play the <b id="guide-tone-degree">3rd</b></p>
+            <div class="guide-tone-feedback" id="guide-tone-feedback" data-tone="idle" aria-live="polite">
+              <span id="guide-tone-detected-note">&mdash;</span>
+              <strong id="guide-tone-feedback-copy">Ready when you are</strong>
+              <small id="guide-tone-feedback-detail">The microphone grades pitch class in any octave.</small>
+            </div>
+          </div>
+          <div class="guide-tone-signal" aria-label="Microphone input level"><span id="guide-tone-signal-fill"></span></div>
+          <p class="guide-tone-mic-status" id="guide-tone-mic-status" role="status">Microphone is off.</p>
+          <div class="guide-tone-actions"><button class="guide-tone-start" id="guide-tone-start" type="button">Start drill</button><button class="guide-tone-stop" id="guide-tone-stop" type="button" hidden>Finish &amp; save</button></div>
+          <dl class="guide-tone-stats">
+            <div><dt>Accuracy</dt><dd id="guide-tone-accuracy">&mdash;</dd></div>
+            <div><dt>Streak</dt><dd id="guide-tone-streak">0</dd></div>
+            <div><dt>Response</dt><dd id="guide-tone-response">&mdash;</dd></div>
+            <div><dt>Attempts</dt><dd id="guide-tone-attempts">0</dd></div>
+          </dl>
+        </aside>
+      </div>
+    </section>
+
     <section class="section mission-section" aria-labelledby="mission-title">
       <div class="section-heading compact">
         <div>
@@ -278,16 +445,30 @@
       <div class="skill-tree" id="skill-tree-grid"></div>
     </section>
 
-    <section class="section" id="repertoire" aria-labelledby="repertoire-title">
-      <div class="section-heading">
+    <section class="repertoire-screen" id="repertoire" aria-labelledby="repertoire-title" hidden>
+      <header class="archive-screen-header repertoire-screen-header">
         <div>
           <p class="eyebrow">The book</p>
-          <h2 id="repertoire-title">Repertoire roadmap</h2>
-          <p class="section-intro">Tunes are promoted through six stages. A star is not theory learned; it is a capability earned.</p>
+          <h1 id="repertoire-title">Repertoire</h1>
+          <p>Ten ballads deep, a set’s worth of upbeat tunes and a few crowd-pleasers, ready on demand.</p>
         </div>
-        <div class="legend" aria-label="Repertoire stage legend"><span>1 melody</span><span>3 changes</span><span>6 gig ready</span></div>
+        <div class="repertoire-header-actions">
+          <div class="repertoire-key-toggle" role="group" aria-label="Show keys as">
+            <button type="button" data-key-display="concert" aria-pressed="true">Concert</button>
+            <button type="button" data-key-display="bb-trumpet" aria-pressed="false">B♭ written</button>
+          </div>
+          <button class="button button-primary" id="add-tune-button" type="button">+ Add tune</button>
+        </div>
+      </header>
+      <p class="repertoire-status" id="repertoire-status" role="status"></p>
+      <div class="repertoire-goals" id="repertoire-goals"></div>
+      <div class="repertoire-overview">
+        <section class="repertoire-panel repertoire-pace" id="repertoire-pace" aria-labelledby="repertoire-pace-title"></section>
+        <section class="repertoire-panel repertoire-set" id="repertoire-set" aria-labelledby="repertoire-set-title"></section>
       </div>
-      <div class="repertoire-grid" id="repertoire-grid"></div>
+      <div id="repertoire-unlinked"></div>
+      <div id="repertoire-categories"></div>
+      <div id="repertoire-archived"></div>
     </section>
 
     <section class="section" id="roadmap" aria-labelledby="roadmap-title">
@@ -336,6 +517,7 @@
     <div>
       <strong>The Jazz Project</strong>
       <p id="sync-status">Progress is saved on this device while cloud storage connects.</p>
+      <p class="footer-note">Export and import cover the campaign file. Tunes live in the private repertoire service; the old roadmap stages in exported files are kept but no longer shown.</p>
     </div>
     <div class="data-actions">
       <button type="button" id="export-data">Export progress</button>
@@ -366,10 +548,50 @@
     <form class="section-form" id="section-form">
       <label><span>Section title</span><input id="new-section-title" name="title" maxlength="160" required placeholder="Ear training"></label>
       <label><span>Type</span><select id="new-section-type" name="type"><option value="fundamentals">Fundamentals</option><option value="technique">Technique</option><option value="scales">Scales</option><option value="listening">Listening</option><option value="tune">Tune / repertoire</option><option value="improvisation">Improvisation</option><option value="other">Other</option></select></label>
+      <label id="new-section-tune-field" hidden><span>Tune</span><select id="new-section-tune" name="tune"></select></label>
       <label><span>Target minutes</span><input id="new-section-minutes" name="minutes" type="number" min="1" max="360" value="10" required></label>
       <label class="section-form-wide"><span>Plan or instructions</span><textarea id="new-section-instructions" name="instructions" maxlength="2000" rows="4" placeholder="What will you work on?"></textarea></label>
       <p class="section-form-status" id="section-form-status" role="status"></p>
       <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-section-dialog" type="button">Cancel</button><button class="button button-primary" type="submit">Add section</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog tune-dialog" id="tune-dialog" aria-labelledby="tune-dialog-title">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close tune details">×</button>
+    <p class="eyebrow" id="tune-dialog-kicker">Tune</p>
+    <h2 id="tune-dialog-title">Tune</h2>
+    <div class="tune-tabs" role="tablist" aria-label="Tune sections">
+      <button type="button" role="tab" data-tune-tab="details" aria-selected="true" aria-controls="tune-dialog-body">Details</button>
+      <button type="button" role="tab" data-tune-tab="history" aria-selected="false" aria-controls="tune-dialog-body">History</button>
+    </div>
+    <div class="tune-dialog-body" id="tune-dialog-body" role="tabpanel"></div>
+  </dialog>
+
+  <dialog class="dialog section-dialog" id="tune-create-dialog" aria-labelledby="tune-create-title">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close add tune">×</button>
+    <p class="eyebrow">Repertoire</p>
+    <h2 id="tune-create-title">Add a tune</h2>
+    <form class="section-form" id="tune-create-form">
+      <input type="hidden" name="tuneId">
+      <label class="section-form-wide"><span>Title</span><input name="title" maxlength="160" required placeholder="Skylark"></label>
+      <label><span>Category</span><select name="category"><option value="ballad">Ballad</option><option value="upbeat">Upbeat set tune</option><option value="pop">Current pop</option><option value="standard">Other standard</option></select></label>
+      <label><span>Original key (concert)</span><input name="concertKey" maxlength="12" placeholder="Optional, e.g. Bb"></label>
+      <label class="section-form-wide"><span>Reference artist</span><input name="referenceArtist" maxlength="160" placeholder="Optional"></label>
+      <label class="section-form-wide checkbox"><input type="checkbox" name="chosen" checked><span>Counts toward its category goal</span></label>
+      <p class="section-form-status" id="tune-create-status" role="status"></p>
+      <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-tune-create" type="button">Cancel</button><button class="button button-primary" type="submit">Add tune</button></div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog section-dialog" id="tune-practice-dialog" aria-labelledby="tune-practice-heading">
+    <button class="dialog-close" type="button" data-close-dialog aria-label="Close practice now">×</button>
+    <p class="eyebrow">Practice now</p>
+    <h2 id="tune-practice-heading"><span id="tune-practice-title"></span></h2>
+    <form class="section-form tune-practice-form" id="tune-practice-form">
+      <fieldset class="section-form-wide focus-options"><legend>Focus</legend><div id="tune-practice-focus"></div></fieldset>
+      <label class="section-form-wide checkbox"><input type="checkbox" id="tune-practice-keep"><span>Keep in daily plan (carries forward each day)</span></label>
+      <p class="section-form-status" id="tune-practice-status" role="status"></p>
+      <div class="dialog-actions section-form-actions"><button class="button button-quiet" id="cancel-tune-practice" type="button">Cancel</button><button class="button button-primary" type="submit">Add to today</button></div>
     </form>
   </dialog>
 
@@ -401,16 +623,27 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="../assets/jazz/data.js"></script>
+  <script src="../assets/jazz/practice-layout.js"></script>
   <script src="../assets/jazz/app.js"></script>
   <script src="../assets/jazz/practice-session.js"></script>
+  <script src="../assets/jazz/repertoire-model.js"></script>
+  <script src="../assets/jazz/repertoire.js"></script>
   <script src="../assets/jazz/lossless-recorder.js"></script>
   <script src="../assets/jazz/fx-chain.js"></script>
   <script src="../assets/jazz/audio-analysis.js"></script>
+  <script src="../assets/jazz/guide-tone-engine.js"></script>
   <script src="../assets/jazz/recording-policy.js"></script>
   <script src="../assets/jazz/upload-queue.js"></script>
   <script src="../assets/jazz/media-playback.js"></script>
   <script src="../assets/jazz/recording.js"></script>
+  <script src="../assets/jazz/metronome.js"></script>
   <script src="../assets/jazz/archive-utils.js"></script>
   <script src="../assets/jazz/archive.js"></script>
+  <script src="../assets/jazz/clip-studio-model.js"></script>
+  <script src="../assets/jazz/clip-studio.js"></script>
+  <script src="../assets/jazz/clip-download.js"></script>
+  <script src="../assets/jazz/highlight-local.js"></script>
+  <script src="../assets/jazz/finished-films.js"></script>
+  <script src="../assets/jazz/guide-tone-trainer.js"></script>
 </body>
 </html>

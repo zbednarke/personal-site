@@ -1,0 +1,18 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - pull
+      - us-central1-docker.pkg.dev/parabolio-prod/parabolio/jazz-video-index-repair:latest
+    allowFailure: true
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --cache-from
+      - us-central1-docker.pkg.dev/parabolio-prod/parabolio/jazz-video-index-repair:latest
+      - -f
+      - Dockerfile.repair
+      - -t
+      - us-central1-docker.pkg.dev/parabolio-prod/parabolio/jazz-video-index-repair:latest
+      - .
+images:
+  - us-central1-docker.pkg.dev/parabolio-prod/parabolio/jazz-video-index-repair:latest

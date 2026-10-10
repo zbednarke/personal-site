@@ -24,7 +24,7 @@
 
   let state = loadState();
   let activeTrack = "all";
-  let practiceSections = DATA.sessions.map((session, position) => ({ ...session, position }));
+  let practiceSections = DATA.sessionsForDate(localDateKey()).map((session, position) => ({ ...session, position }));
   let activeSkillId = null;
   let toastTimer = null;
   let syncRevision = loadSyncRevision();
@@ -41,10 +41,15 @@
   const takeNoteSaveChains = new Map();
   let activeSectionRecordingID = "";
   let activeSectionRecordingMessage = "";
+  let activeSectionRecordingPaused = false;
   let activeSectionRecordingPhase = "";
   const sectionUploadJobs = new Map();
   let recordingTimerSessionID = "";
   let selectedPracticeSectionID = "";
+  let practiceLayoutSaving = false;
+  let practiceLayoutDraft = null;
+  let practiceLayoutScope = "";
+  let practiceDrag = null;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -302,20 +307,43 @@
     return element.innerHTML;
   }
 
+  // Tune progress comes from the repertoire service; the legacy campaign map is
+  // only a fallback while it is unavailable. Seven milestones map onto the old
+  // six-star scale so XP stays comparable.
+  function repertoireStats() {
+    const repertoire = globalThis.JazzRepertoire;
+    if (!repertoire?.loaded()) {
+      return {
+        startedTunes: Object.values(state.repertoire).filter((stage) => Number(stage) > 0).length,
+        stages: Object.values(state.repertoire).reduce((sum, stage) => sum + Number(stage || 0), 0),
+        maxStages: DATA.repertoire.length * 6,
+      };
+    }
+    const tunes = repertoire.tunes();
+    const chosen = tunes.filter((tune) => tune.chosen);
+    const solidCount = (tune) => Object.values(tune.milestones || {}).filter((status) => status === "solid").length;
+    return {
+      startedTunes: tunes.filter((tune) => tune.practiceStatus !== "not_started").length,
+      stages: chosen.reduce((sum, tune) => sum + Math.round((6 * solidCount(tune)) / 7), 0),
+      maxStages: Math.max(1, chosen.length * 6),
+    };
+  }
+
   function renderStats() {
     const totalMinutes = state.practice.reduce((sum, item) => sum + Number(item.minutes || 0), 0);
-    const startedTunes = Object.values(state.repertoire).filter((stage) => Number(stage) > 0).length;
+    const tuneStats = repertoireStats();
+    const startedTunes = tuneStats.startedTunes;
     const bosses = Object.values(state.bosses).filter(Boolean).length;
     const skillLevels = Object.values(state.skillLevels).reduce((sum, level) => sum + Number(level || 0), 0);
     const objectives = Object.values(state.objectives).filter(Boolean).length;
-    const repertoireStages = Object.values(state.repertoire).reduce((sum, stage) => sum + Number(stage || 0), 0);
+    const repertoireStages = tuneStats.stages;
     const sceneSteps = Object.values(state.scene).filter(Boolean).length;
     const xp = totalMinutes + skillLevels * 80 + objectives * 35 + repertoireStages * 45 + bosses * 250 + sceneSteps * 90;
     const level = Math.floor(xp / 1000) + 1;
 
     const skillPart = skillLevels / (DATA.skills.length * MAX_SKILL_LEVEL);
     const missionPart = objectives / DATA.mission.objectives.length;
-    const tunePart = repertoireStages / (DATA.repertoire.length * 6);
+    const tunePart = repertoireStages / tuneStats.maxStages;
     const bossPart = bosses / DATA.bosses.length;
     const scenePart = sceneSteps / DATA.sceneSteps.length;
     const progress = Math.round((skillPart * 0.42 + missionPart * 0.16 + tunePart * 0.16 + bossPart * 0.18 + scenePart * 0.08) * 100);
@@ -346,16 +374,22 @@
   }
 
   function guidedBlockFor(session) {
-    return guidedBlocks.get(session.id) || null;
+    return guidedBlocks.get(session?.id) || null;
   }
 
   function applyPracticeBlocks(blocks) {
+    practiceDrag?.cancel?.();
+    const scope = blocks?.length ? `${blocks[0].practiceSessionId}/${blocks[0].practiceDate}` : practiceLayoutScope;
+    if (practiceLayoutDraft && practiceLayoutScope && scope !== practiceLayoutScope) {
+      practiceLayoutDraft = null;
+      showToast("The practice day changed. The previous day's edits were not applied to this day.");
+    }
+    if (practiceLayoutDraft) practiceLayoutScope = scope;
     guidedBlocks = new Map((blocks || []).map((block) => [block.blockKey, block]));
-    if (!blocks?.length) return;
-    practiceSections = [...blocks]
+    practiceSections = [...(blocks || [])]
       .sort((a, b) => Number(a.position) - Number(b.position))
       .map((block) => {
-        const curriculum = DATA.sessions.find((session) => session.id === block.blockKey) || {};
+        const curriculum = [...DATA.sessions, ...DATA.scheduledSessions].find((session) => session.id === block.blockKey) || {};
         const minutes = Number(block.targetMinutes || curriculum.minutes || 10);
         return {
           ...curriculum,
@@ -368,8 +402,11 @@
           title: block.title,
           detail: block.instructions || curriculum.detail || "Open practice block.",
           win: curriculum.win || "",
+          // The block's own link wins; older APIs without tuneId fall back to the curriculum.
+          tuneId: typeof block.tuneId === "string" ? block.tuneId : (curriculum.tuneId || ""),
         };
       });
+    if (practiceLayoutDraft) practiceLayoutDraft = globalThis.JazzPracticeLayout.reconcile(practiceLayoutDraft, practiceSections.map((session) => session.id));
   }
 
   async function hydrateGuidedBlocks() {
@@ -378,7 +415,7 @@
       return;
     }
     try {
-      const definitions = DATA.sessions.map((session, position) => ({
+      const definitions = DATA.sessionsForDate(localDateKey()).map((session, position) => ({
         blockKey: session.id,
         position,
         title: session.title,
@@ -386,6 +423,8 @@
         category: session.category,
         track: session.track,
         targetMinutes: session.minutes,
+        dayOnly: Boolean(session.practiceDate),
+        tuneId: session.tuneId || "",
       }));
       const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), definitions);
       applyPracticeBlocks(result.blocks || []);
@@ -394,6 +433,13 @@
         if (!block) return;
         const timer = timerFor(session);
         const targetMs = session.minutes * 60 * 1000;
+        // A refresh must not stop a local capture or pause another device's timer.
+        if (timer.running) return;
+        if (block.status === "running") {
+          timer.elapsedMs = Math.max(Number(timer.elapsedMs || 0), Number(block.elapsedMs || 0));
+          timer.startedAt = 0;
+          return;
+        }
         const localElapsed = Math.max(0, Number(timer.elapsedMs || 0));
         const cloudHasProgress = block.status !== "pending" || Number(block.elapsedMs) > 0;
         if (!cloudHasProgress && localElapsed > 0) {
@@ -417,7 +463,6 @@
         timer.running = false;
         timer.startedAt = 0;
         timer.completedAt = block.completedAt || timer.completedAt || "";
-        if (block.status === "running") saveTimerBlock(session, timer);
       });
       guidedBlocksReady = true;
       persistTimerState();
@@ -432,10 +477,14 @@
   async function saveTimerBlock(session, timer) {
     const block = guidedBlockFor(session);
     if (!block || typeof globalThis.JazzPracticeSession?.updateGuidedBlock !== "function") return;
+    // A paused take still owns the recorder. Keep the existing server lease
+    // alive without advancing elapsed practice time; other clients do not
+    // extrapolate cloud timers.
+    const held = activeSectionRecordingPaused && activeSectionRecordingID === block.id;
     const snapshot = {
       elapsedMs: Math.min(MAX_SECTION_PRACTICE_MS, Math.round(timer.elapsedMs)),
-      status: timer.running ? "running" : (timer.completed ? "completed" : (timer.elapsedMs > 0 ? "paused" : "pending")),
-      timerStartedAt: timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
+      status: (timer.running || held) ? "running" : (timer.completed ? "completed" : (timer.elapsedMs > 0 ? "paused" : "pending")),
+      timerStartedAt: held ? new Date().toISOString() : timer.running && timer.startedAt ? new Date(timer.startedAt).toISOString() : "",
       completedAt: timer.completed && !timer.running ? (timer.completedAt || new Date().toISOString()) : "",
     };
     const previous = timerSaveChains.get(session.id) || Promise.resolve();
@@ -448,6 +497,7 @@
     try {
       await save;
       updateSectionSyncStatus(session.id, "Saved", "saved");
+      if (session.tuneId) globalThis.JazzRepertoire?.invalidate(session.tuneId);
     } catch {
       updateSectionSyncStatus(session.id, "Sync pending", "pending");
     } finally {
@@ -500,7 +550,7 @@
       return `
         <article class="section-take" data-section-take="${recording.id}" data-duration-ms="${Number(recording.durationMs || 0)}">
           <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${isVideo ? " · Video" : ""}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
-          <div>
+          <div class="section-take-actions">
             <button type="button" data-section-play data-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Video" : "Play"}</button>
             ${isVideo ? `<button type="button" data-section-play data-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Audio</button>` : ""}
             <button class="take-download-button" type="button" data-section-download data-download-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
@@ -608,10 +658,18 @@
       notes.addEventListener("input", () => queueBlockNoteSave(session, notes.value));
       notes.addEventListener("blur", () => saveBlockNote(session));
     }
+    $("[data-section-pause]", card)?.addEventListener("click", () => {
+      globalThis.JazzRecording?.togglePause();
+      $("#active-section-panel [data-section-pause]")?.focus({ preventScroll: true });
+    });
     const recordButton = $("[data-section-record]", card);
     if (recordButton) recordButton.addEventListener("click", () => {
       if (activeSectionRecordingID === block?.id) {
         if (activeSectionRecordingPhase === "recording") globalThis.JazzRecording?.stop();
+        return;
+      }
+      if (practiceLayoutSaving || practiceLayoutDraft?.removed.includes(session.id)) {
+        showToast("Finish saving or undo this section's deletion before recording");
         return;
       }
       if (!block || !globalThis.JazzRecording?.startForBlock) {
@@ -767,6 +825,11 @@
   }
 
   function checkpointRecordingPractice() {
+    if (activeSectionRecordingPaused) {
+      const held = sessionForRecording(activeSectionRecordingID);
+      if (held) saveTimerBlock(held, timerFor(held));
+      return;
+    }
     const session = practiceSections.find((candidate) => candidate.id === recordingTimerSessionID);
     if (!session) return;
     const timer = timerFor(session);
@@ -775,6 +838,66 @@
     timer.startedAt = Date.now();
     persistTimerState();
     saveTimerBlock(session, timer);
+  }
+
+  function toolPracticeContext(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    const block = session ? guidedBlockFor(session) : null;
+    return session ? {
+      sectionID: session.id,
+      practiceBlockID: block?.id || "",
+      practiceSessionID: block?.practiceSessionId || "",
+      ready: Boolean(block),
+      recorderBusy: activeSectionRecordingPhase === "starting" || activeSectionRecordingPhase === "recording" || activeSectionRecordingPhase === "processing",
+    } : null;
+  }
+
+  async function beginToolPractice(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    if (!session) throw new Error("The matching practice section is unavailable");
+    const context = toolPracticeContext(sectionID);
+    if (context?.recorderBusy) throw new Error("Finish the current take before starting the guide-tone trainer");
+    const timer = timerFor(session);
+    if (!timer.running) {
+      timer.running = true;
+      timer.startedAt = Date.now();
+    }
+    persistTimerState();
+    renderSessions();
+    updateWeekLive();
+    await saveTimerBlock(session, timer);
+    return toolPracticeContext(sectionID);
+  }
+
+  async function checkpointToolPractice(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    if (!session) return;
+    const timer = timerFor(session);
+    if (!timer.running) return;
+    timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, elapsedFor(timer));
+    timer.startedAt = Date.now();
+    persistTimerState();
+    await saveTimerBlock(session, timer);
+  }
+
+  async function endToolPractice(sectionID) {
+    const session = practiceSections.find((candidate) => candidate.id === sectionID);
+    if (!session) return;
+    const timer = timerFor(session);
+    if (timer.running) {
+      timer.elapsedMs = Math.min(MAX_SECTION_PRACTICE_MS, elapsedFor(timer));
+      timer.running = false;
+      timer.startedAt = 0;
+    }
+    if (!timer.completed && timer.elapsedMs >= session.minutes * 60 * 1000) {
+      timer.completed = true;
+      timer.completedAt = new Date().toISOString();
+    }
+    persistTimerState();
+    syncGuidedPracticeEntry(session);
+    await saveTimerBlock(session, timer);
+    renderAll();
+    await logGuidedBlockToCloud(session);
   }
 
   function markGuidedGoalMet(session) {
@@ -874,7 +997,222 @@
     setText("today-stage-minutes", practicedMinutes);
   }
 
-  function renderSessions() {
+  function sectionDeleteReason(session) {
+    const block = guidedBlockFor(session);
+    if (!block) return "Waiting for this section to sync";
+    if (activeSectionRecordingID === block.id) return "Finish or cancel this take first";
+    const jobs = uploadJobsForBlock(block).filter((job) => job.phase !== "complete");
+    if (jobs.some((job) => job.phase === "failed")) return "Retry the failed upload before deleting this section";
+    if (jobs.length || (block.recordings || []).some((take) => take.status === "uploading")) return "Wait for this section's uploads to finish";
+    if (timerFor(session).running) return "Stop this section's timer first";
+    if (block.status === "running" && Date.now() - new Date(block.timerStartedAt).getTime() < 90000) return "Recording on another device; finish the take there first";
+    return "";
+  }
+
+  function renderSectionEditor() {
+    const toggle = $("#edit-practice-sections");
+    if (!toggle) return;
+    const detached = Boolean(activeSectionRecordingID && ![...guidedBlocks.values()].some((block) => block.id === activeSectionRecordingID));
+    const captureNotice = $("#detached-section-recording");
+    if (captureNotice) {
+      captureNotice.hidden = !detached;
+      $("p", captureNotice).textContent = activeSectionRecordingPhase === "processing" ? "Finishing your take. Its section was removed; the take will be saved in Previous work." : "This section was removed on another device. Your take is still active and will be saved in Previous work.";
+      $("button", captureNotice).disabled = activeSectionRecordingPhase !== "recording";
+    }
+    const detachedUploads = $("#detached-section-uploads");
+    if (detachedUploads) {
+      const blockIDs = new Set([...guidedBlocks.values()].map((block) => block.id));
+      detachedUploads.innerHTML = [...sectionUploadJobs.values()].filter((job) => !blockIDs.has(job.blockId) && job.phase !== "complete").map((job) => `<div class="detached-section-upload" data-upload-job="${escapeHTML(job.id)}"><strong>Take ${Number(job.takeNumber) || 1} · section removed</strong><span>${escapeHTML(job.message || "Saving to Previous work")}</span>${job.canRetry ? `<button type="button" data-retry-detached="${escapeHTML(job.id)}">Retry upload</button>` : ""}</div>`).join("");
+      detachedUploads.querySelectorAll("[data-retry-detached]").forEach((button) => button.addEventListener("click", () => globalThis.JazzRecording?.retry(button.dataset.retryDetached)));
+    }
+    toggle.checked = Boolean(practiceLayoutDraft);
+    toggle.disabled = practiceLayoutSaving || !guidedBlocksReady;
+    $("#practice-edit-help").hidden = !practiceLayoutDraft;
+    $("#cancel-section-edits").hidden = !practiceLayoutDraft;
+    $("#cancel-section-edits").disabled = practiceLayoutSaving;
+    $("#session-list").classList.toggle("editing-sections", Boolean(practiceLayoutDraft));
+    $("#practice-edit-status").textContent = practiceLayoutSaving ? "Saving changes…" : practiceLayoutDraft ? (globalThis.JazzPracticeLayout.dirty(practiceLayoutDraft) ? "Unsaved changes · switch off to save" : "Drag to reorder · switch off when done") : "";
+  }
+
+  async function finishSectionEdits() {
+    if (!practiceLayoutDraft || practiceLayoutSaving) return;
+    const model = globalThis.JazzPracticeLayout;
+    if (!model.dirty(practiceLayoutDraft)) {
+      practiceLayoutDraft = null;
+      renderSessions({ planOnly: true });
+      return;
+    }
+    if (Object.values(practiceLayoutDraft.renames || {}).some(change => !change.to.trim() || [...change.to].length > 160)) { showToast("Use section names from 1 to 160 characters"); renderSectionEditor(); return; }
+    const removedSections = practiceLayoutDraft.removed.map((id) => practiceSections.find((item) => item.id === id)).filter(Boolean);
+    const blocked = removedSections.find((session) => sectionDeleteReason(session));
+    if (blocked) {
+      showToast(`${blocked.title}: ${sectionDeleteReason(blocked)}. Undo its deletion or finish the take, then save.`);
+      renderSessions({ planOnly: true });
+      return;
+    }
+    practiceLayoutSaving = true;
+    const lockedNotes = removedSections.some((session) => session.id === selectedPracticeSectionID) ? $("#active-section-panel [data-section-notes]") : null;
+    if (lockedNotes) lockedNotes.readOnly = true;
+    renderSessions({ planOnly: true });
+    try {
+      for (const session of removedSections) {
+        const block = guidedBlockFor(session);
+        clearTimeout(noteSaveDelays.get(session.id));
+        noteSaveDelays.delete(session.id);
+        await (timerSaveChains.get(session.id) || Promise.resolve());
+        await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, { notes: block.notes || "" });
+      }
+      const kept = model.kept(practiceLayoutDraft);
+      const anchor = guidedBlockFor(practiceSections[0]);
+      await globalThis.JazzPracticeSession.updateGuidedLayout(anchor.practiceSessionId, anchor.practiceDate,
+        kept.map((id) => guidedBlocks.get(id).id), removedSections.map((session) => guidedBlockFor(session).id),
+        kept.filter(id => practiceLayoutDraft.renames?.[id]).map(id => ({ blockId: guidedBlocks.get(id).id, previousTitle: practiceLayoutDraft.renames[id].from, title: practiceLayoutDraft.renames[id].to })));
+      for (const id of kept) {
+        const change = practiceLayoutDraft.renames?.[id];
+        if (change) { practiceSections.find(s => s.id === id).title = change.to; guidedBlocks.get(id).title = change.to; }
+      }
+      const selectedHeading = $("#active-section-panel .selected-section-head h3");
+      if (selectedHeading) selectedHeading.textContent = practiceSections.find(s => s.id === selectedPracticeSectionID)?.title || selectedHeading.textContent;
+      practiceSections = kept.map((id, position) => ({ ...practiceSections.find((session) => session.id === id), position }));
+      removedSections.forEach((session) => guidedBlocks.delete(session.id));
+      practiceSections.forEach((session) => { guidedBlockFor(session).position = session.position; });
+      practiceLayoutDraft = null;
+      showToast(removedSections.length ? "Sections saved. Removed sections' notes and takes remain in Previous work." : "Section changes saved; recurring sections carry into the next practice day");
+    } catch (error) {
+      // Keep the draft on errors; reconcile server changes without losing local edits.
+      if (error.status === 409 || error.status === 404) await hydrateGuidedBlocks();
+      showToast(`Changes not saved: ${error.message}. Your edits are still open.`);
+    } finally {
+      practiceLayoutSaving = false;
+      if (lockedNotes) lockedNotes.readOnly = false;
+      renderSessions({ planOnly: practiceSections.some((session) => session.id === selectedPracticeSectionID) });
+    }
+  }
+
+  function stageSectionDeletion(session) {
+    if (!practiceLayoutDraft || practiceLayoutSaving) return;
+    const undoing = practiceLayoutDraft.removed.includes(session.id);
+    const reason = !undoing && sectionDeleteReason(session);
+    if (reason) { showToast(reason); return; }
+    practiceLayoutDraft = globalThis.JazzPracticeLayout.remove(practiceLayoutDraft, session.id);
+    renderSessions({ planOnly: true });
+    $(`[data-session-id="${session.id}"] [data-section-delete]`, $("#session-list"))?.focus();
+  }
+
+  function wireSectionDrag(handle, session) {
+    handle.addEventListener("keydown", (event) => {
+      if (!practiceLayoutDraft || practiceLayoutSaving || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const index = practiceLayoutDraft.order.indexOf(session.id);
+      const target = event.key === "Home" ? 0 : event.key === "End" ? practiceLayoutDraft.order.length - 1 : index + (event.key === "ArrowUp" ? -1 : 1);
+      practiceLayoutDraft = globalThis.JazzPracticeLayout.move(practiceLayoutDraft, session.id, target);
+      renderSessions({ planOnly: true });
+      $(`[data-session-id="${session.id}"] [data-section-drag]`, $("#session-list"))?.focus();
+      showToast(`${session.title} moved to position ${practiceLayoutDraft.order.indexOf(session.id) + 1}`);
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !practiceLayoutDraft || practiceLayoutSaving || handle.disabled) return;
+      const card = handle.closest(".plan-card");
+      const bounds = card.getBoundingClientRect();
+      const drag = { card, handle, id: session.id, pointerID: event.pointerId, startY: event.clientY, y: event.clientY, offsetY: event.clientY - bounds.top, bounds, ghost: null, frame: null };
+      practiceDrag = drag;
+      const captureTarget = $("#session-list");
+      captureTarget.setPointerCapture(event.pointerId);
+      $("#edit-practice-sections").disabled = true;
+      $("#cancel-section-edits").disabled = true;
+      $("#add-practice-section").disabled = true;
+      const place = () => {
+        if (!drag.ghost) return;
+        drag.ghost.style.transform = `translateY(${drag.y - drag.offsetY}px)`;
+        const others = [...$("#session-list").children].filter((item) => item !== card);
+        const index = globalThis.JazzPracticeLayout.insertionIndex(drag.y, others.map((item) => item.getBoundingClientRect()));
+        const before = others[index] || null;
+        if (card.nextElementSibling !== before) {
+          const positions = others.map((item) => [item, item.getBoundingClientRect().top]);
+          $("#session-list").insertBefore(card, before);
+          if (!matchMedia("(prefers-reduced-motion: reduce)").matches) positions.forEach(([item, top]) => {
+            const delta = top - item.getBoundingClientRect().top;
+            if (delta) item.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: 140, easing: "ease-out" });
+          });
+        }
+      };
+      const autoScroll = () => {
+        if (practiceDrag !== drag) return;
+        if (drag.ghost) {
+          const speed = drag.y < 80 ? -Math.min(14, (80 - drag.y) / 4) : drag.y > innerHeight - 80 ? Math.min(14, (drag.y - innerHeight + 80) / 4) : 0;
+          if (speed) { window.scrollBy(0, speed); place(); }
+        }
+        drag.frame = requestAnimationFrame(autoScroll);
+      };
+      const move = (moveEvent) => {
+        if (moveEvent.pointerId !== drag.pointerID) return;
+        drag.y = moveEvent.clientY;
+        if (!drag.ghost && Math.abs(drag.y - drag.startY) >= 5) {
+          drag.ghost = card.cloneNode(true);
+          drag.ghost.className = "plan-card section-drag-ghost";
+          drag.ghost.removeAttribute("data-session-id");
+          drag.ghost.setAttribute("aria-hidden", "true");
+          drag.ghost.inert = true;
+          Object.assign(drag.ghost.style, { width: `${bounds.width}px`, left: `${bounds.left}px` });
+          document.body.appendChild(drag.ghost);
+          card.classList.add("section-drop-placeholder");
+          document.body.classList.add("dragging-practice-section");
+        }
+        place();
+      };
+      const end = (endEvent) => {
+        if (endEvent.pointerId !== undefined && endEvent.pointerId !== drag.pointerID) return;
+        const cancelled = endEvent.type === "pointercancel" || endEvent.type === "keydown" || endEvent.type === "lostpointercapture";
+        const index = [...$("#session-list").children].indexOf(card);
+        if (drag.ghost && !cancelled) practiceLayoutDraft = globalThis.JazzPracticeLayout.move(practiceLayoutDraft, session.id, index);
+        cancelAnimationFrame(drag.frame);
+        drag.ghost?.remove();
+        document.body.classList.remove("dragging-practice-section");
+        captureTarget.removeEventListener("pointermove", move);
+        captureTarget.removeEventListener("pointerup", end);
+        captureTarget.removeEventListener("pointercancel", end);
+        captureTarget.removeEventListener("lostpointercapture", end);
+        document.removeEventListener("keydown", escape);
+        practiceDrag = null;
+        if (captureTarget.hasPointerCapture(drag.pointerID)) captureTarget.releasePointerCapture(drag.pointerID);
+        renderSessions({ planOnly: true });
+        $(`[data-session-id="${session.id}"] [data-section-drag]`, $("#session-list"))?.focus();
+        if (drag.ghost && !cancelled) showToast(`${session.title} moved to position ${index + 1}`);
+      };
+      drag.cancel = () => end({ type: "pointercancel" });
+      const escape = (keyEvent) => { if (keyEvent.key === "Escape") { keyEvent.preventDefault(); end(keyEvent); } };
+      captureTarget.addEventListener("pointermove", move);
+      captureTarget.addEventListener("pointerup", end);
+      captureTarget.addEventListener("pointercancel", end);
+      captureTarget.addEventListener("lostpointercapture", end);
+      document.addEventListener("keydown", escape);
+      drag.frame = requestAnimationFrame(autoScroll);
+    });
+  }
+
+  function setupPracticeSectionEditor() {
+    $("#finish-detached-recording")?.addEventListener("click", () => globalThis.JazzRecording?.stop());
+    $("#edit-practice-sections")?.addEventListener("change", (event) => {
+      if (event.target.checked) {
+        const block = guidedBlockFor(practiceSections[0]);
+        practiceLayoutScope = block ? `${block.practiceSessionId}/${block.practiceDate}` : "";
+        practiceLayoutDraft = globalThis.JazzPracticeLayout.create(practiceSections.map((session) => session.id));
+        renderSessions({ planOnly: true });
+      } else finishSectionEdits();
+    });
+    $("#cancel-section-edits")?.addEventListener("click", () => {
+      practiceLayoutDraft = null;
+      renderSessions({ planOnly: true });
+      $("#edit-practice-sections")?.focus();
+    });
+    addEventListener("beforeunload", (event) => {
+      if (practiceLayoutDraft && globalThis.JazzPracticeLayout.dirty(practiceLayoutDraft)) { event.preventDefault(); event.returnValue = ""; }
+    });
+  }
+
+
+  function renderSessions({ planOnly = false } = {}) {
+    if (practiceDrag) return;
     const list = $("#session-list");
     const activePanel = $("#active-section-panel");
     if (!list || !activePanel) return;
@@ -898,7 +1236,11 @@
     setText("today-total-takes", totalTakes);
     setText("today-stage-takes", totalTakes);
 
-    practiceSections.forEach((session, index) => {
+    const planSections = practiceLayoutDraft ? practiceLayoutDraft.order.map((id) => practiceSections.find((session) => session.id === id)).filter(Boolean) : practiceSections;
+    planSections.forEach((session, index) => {
+      const removed = practiceLayoutDraft?.removed.includes(session.id);
+      const displayTitle = practiceLayoutDraft?.renames?.[session.id]?.to || session.title;
+      const deleteReason = sectionDeleteReason(session);
       const timer = timerFor(session);
       const complete = timer.completed;
       const block = guidedBlockFor(session);
@@ -907,20 +1249,55 @@
       const selected = session.id === selectedPracticeSectionID;
       const recordingHere = activeSectionRecordingID === block?.id;
       const recordingStatus = recordingHere
-        ? (activeSectionRecordingPhase === "processing" ? "Processing" : "Recording")
+        ? (activeSectionRecordingPhase === "processing" ? "Processing" : (activeSectionRecordingPaused ? "Paused" : "Recording"))
         : (uploadJobs.some((job) => job.phase === "failed") ? "Upload failed" : (uploadJobs.length ? "Uploading" : ""));
       const targetMs = session.minutes * 60 * 1000;
       const elapsedMs = elapsedFor(timer);
       const card = document.createElement("article");
       card.dataset.sessionId = session.id;
-      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${recordingHere ? " recording-owner" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}`;
+      card.className = `plan-card${complete ? " complete" : ""}${timer.running ? " running" : ""}${recordingHere ? " recording-owner" : ""}${index === firstIncomplete ? " current" : ""}${selected ? " selected" : ""}${removed ? " section-pending-delete" : ""}`;
       card.innerHTML = `
-        <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(session.title)}">
+        ${practiceLayoutDraft ? `<button class="section-drag-handle" data-section-drag type="button" aria-label="Reorder ${escapeHTML(displayTitle)}" aria-describedby="practice-edit-help" ${removed || practiceLayoutSaving ? "disabled" : ""}><span aria-hidden="true">⠿</span></button>` : ""}
+        <button class="practice-plan-select" type="button" aria-pressed="${selected}" aria-label="Open ${escapeHTML(displayTitle)}">
           <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
-          <span class="plan-copy"><strong>${escapeHTML(session.title)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
+          <span class="plan-copy"><strong>${escapeHTML(displayTitle)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
           <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
-          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
-        </button>`;
+          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(displayTitle)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
+        </button>
+        ${practiceLayoutDraft ? `<div class="practice-plan-actions"><button type="button" data-section-rename aria-label="Rename ${escapeHTML(displayTitle)}" ${removed || practiceLayoutSaving ? "disabled" : ""}>Rename</button><button type="button" data-section-delete aria-label="${removed ? "Undo deletion of" : "Delete"} ${escapeHTML(displayTitle)}" ${practiceLayoutSaving || (!removed && deleteReason) ? "disabled" : ""}>${removed ? "Undo" : "Delete"}</button></div>
+          ${removed ? '<p class="section-edit-note">Will be removed when you save. Notes and takes stay in Previous work.</p>' : deleteReason ? `<p class="section-edit-note">${escapeHTML(deleteReason)}</p>` : ""}` : ""}`;
+      $("[data-section-delete]", card)?.addEventListener("click", () => stageSectionDeletion(session));
+      if (practiceLayoutDraft && !removed) {
+        const nameField = document.createElement("label");
+        nameField.className = "section-rename-field";
+        nameField.hidden = true;
+        const label = document.createElement("span");
+        label.textContent = "Section name";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 160;
+        input.value = displayTitle;
+        input.disabled = practiceLayoutSaving;
+        input.setAttribute("aria-label", `Section name for ${session.title}`);
+        input.addEventListener("input", () => {
+          practiceLayoutDraft = globalThis.JazzPracticeLayout.rename(practiceLayoutDraft, session.id, session.title, input.value);
+          renderSectionEditor();
+        });
+        nameField.append(label, input);
+        card.appendChild(nameField);
+        $("[data-section-rename]", card)?.addEventListener("click", () => { nameField.hidden = false; input.focus(); input.select(); });
+      }
+      if (session.tuneId && !practiceLayoutDraft) {
+        const tune = globalThis.JazzRepertoire?.byId(session.tuneId);
+        const pill = document.createElement("a");
+        pill.className = "plan-tune-pill";
+        pill.href = `#repertoire/${encodeURIComponent(session.tuneId)}`;
+        pill.textContent = `♪ ${tune?.title || session.tuneId}${tune?.archivedAt ? " (archived)" : ""}`;
+        pill.setAttribute("aria-label", `Open tune ${pill.textContent.slice(2)}`);
+        card.appendChild(pill);
+      }
+      const dragHandle = $("[data-section-drag]", card);
+      if (dragHandle) wireSectionDrag(dragHandle, session);
       $(".practice-plan-select", card).addEventListener("click", () => {
         selectedPracticeSectionID = session.id;
         renderSessions();
@@ -929,17 +1306,23 @@
     });
 
     const selectedSession = practiceSections.find((session) => session.id === selectedPracticeSectionID) || practiceSections[0];
-    renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
+    if (!planOnly) renderActiveSection(selectedSession, guidedBlockFor(selectedSession));
+    renderSectionEditor();
     const addButton = $("#add-practice-section");
     if (addButton) {
-      addButton.disabled = !guidedBlocksReady || practiceSections.length >= 20;
+      addButton.disabled = practiceLayoutSaving || !guidedBlocksReady || practiceSections.length >= 20;
       addButton.title = practiceSections.length >= 20 ? "Today’s plan already has 20 sections" : "Add a cloud-synced section";
     }
   }
 
   function renderActiveSection(session, block) {
     const panel = $("#active-section-panel");
-    if (!panel || !session) return;
+    if (!panel) return;
+    if (!session) {
+      panel.innerHTML = '<p class="section-empty">No sections in today’s plan. Use Add section to build your practice.</p>';
+      setText("current-section-state", "No sections");
+      return;
+    }
     const timer = timerFor(session);
     const complete = timer.completed;
     const takeCount = activeBlockTakeCount(block);
@@ -953,7 +1336,7 @@
     const targetMs = session.minutes * 60 * 1000;
     const elapsedMs = elapsedFor(timer);
     const stateLabel = recordingHere
-      ? (activeSectionRecordingPhase === "recording" ? "Recording now" : "Processing take")
+      ? (activeSectionRecordingPhase === "recording" ? (activeSectionRecordingPaused ? "Paused — not recording" : "Recording now") : "Processing take")
       : (failedHere ? "Upload needs attention" : (uploadJobs.length ? "Uploading in background" : (complete ? "Goal met" : (elapsedMs > 0 ? "In progress" : "Ready"))));
     setText("current-section-state", stateLabel);
 
@@ -962,7 +1345,7 @@
       const banner = document.createElement("aside");
       banner.className = "background-recording-banner";
       banner.innerHTML = `
-        <span><em>${activeSectionRecordingPhase === "processing" ? "Processing" : "Recording continues"}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
+        <span><em>${activeSectionRecordingPhase === "processing" ? "Processing" : (activeSectionRecordingPaused ? "Paused — not recording" : "Recording continues")}</em><strong>${escapeHTML(recordingOwner.title)}</strong><small>${escapeHTML(activeSectionRecordingMessage || "You can browse the plan without interrupting this take.")}</small></span>
         <div><button type="button" data-return-to-recording>Return to recorder</button>${activeSectionRecordingPhase === "recording" ? '<button type="button" class="cancel-background-recording" data-cancel-background-recording>Cancel take</button><button type="button" class="stop-background-recording" data-stop-background-recording>Stop take</button>' : ""}</div>`;
       $("[data-return-to-recording]", banner).addEventListener("click", () => {
         selectedPracticeSectionID = recordingOwner.id;
@@ -986,6 +1369,7 @@
           <h3>${escapeHTML(session.title)}</h3>
           <p>${escapeHTML(session.detail)}</p>
           ${session.win ? `<div class="selected-section-win"><span>Today’s win</span><strong>${escapeHTML(session.win)}</strong></div>` : ""}
+          ${session.id === "blue-bossa-guide-tones" ? '<a class="section-tool-link" href="#guide-tones"><span>Practice tool</span><strong>Open the Blue Bossa guide-tone trainer</strong></a>' : ""}
         </div>
         <span class="selected-section-target">${session.minutes}<small>min goal</small></span>
       </header>
@@ -996,7 +1380,7 @@
       <div class="section-recording-panel">
         <div class="section-recording-head">
           <span><strong>Section takes</strong><em>${takeCount} / ${MAX_TAKES_PER_SECTION}</em></span>
-          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? '<button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>' : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= MAX_TAKES_PER_SECTION && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Stop recording") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
+          <div class="section-recording-actions"><button class="audio-options-button" data-audio-options type="button" aria-label="Recording options" title="Recording options">⚙</button>${recordingHere && activeSectionRecordingPhase === "recording" ? `<button class="section-cancel-button" data-section-pause type="button">${activeSectionRecordingPaused ? 'Resume' : 'Pause'}</button><button class="section-cancel-button" data-section-cancel type="button">Cancel take</button>` : ""}<button class="section-record-button${recordingHere && activeSectionRecordingPhase === "recording" && !activeSectionRecordingPaused ? " recording" : ""}" data-section-record type="button" ${!block || processingHere || recordingActionLocked || (takeCount >= MAX_TAKES_PER_SECTION && !recordingHere) ? "disabled" : ""}>${recordingHere ? (processingHere ? "Processing…" : "Finish take") : (recordingActionLocked ? "Recorder busy" : "+ Record take")}</button></div>
         </div>
         ${recordingHere && activeSectionRecordingMessage ? `<p class="section-recording-state">${escapeHTML(activeSectionRecordingMessage)}</p>` : ""}
         ${sectionUploadMarkup(block)}
@@ -1006,8 +1390,60 @@
         <span><strong>Section notes</strong><em data-section-sync data-tone="saved">${block ? "Cloud synced" : "Waiting for cloud"}</em></span>
         <textarea data-section-notes maxlength="4000" rows="5" ${block ? "" : "disabled"} placeholder="What did you work on during ${session.title.toLowerCase()}?">${escapeHTML(block?.notes || "")}</textarea>
       </label>`;
+    if (session.sourceURL && /^https:\/\//.test(session.sourceURL)) {
+      const reference = document.createElement("a");
+      reference.className = "section-tool-link";
+      reference.href = session.sourceURL;
+      reference.target = "_blank";
+      reference.rel = "noopener noreferrer";
+      reference.textContent = session.sourceLabel || "Open practice reference";
+      $(".selected-section-head > div", card).appendChild(reference);
+    }
+    if (block && (session.tuneId || session.category === "repertoire") && globalThis.JazzRepertoire) {
+      const tuneSlot = document.createElement("div");
+      tuneSlot.className = "section-tune-slot";
+      $(".selected-progress", card).before(tuneSlot);
+      const link = async (tuneId) => {
+        try {
+          const updated = await globalThis.JazzPracticeSession.updateGuidedBlock(block.id, { tuneId });
+          guidedBlocks.set(session.id, { ...guidedBlockFor(session), ...updated });
+          session.tuneId = updated.tuneId || "";
+          showToast(tuneId ? `Linked to ${globalThis.JazzRepertoire.title(tuneId)}` : "Unlinked from the tune");
+          globalThis.JazzRepertoire.invalidate();
+        } catch (error) {
+          showToast(`Could not change the tune link: ${error.message}`);
+        }
+        renderSessions();
+      };
+      if (session.tuneId) globalThis.JazzRepertoire.renderTuneCard(tuneSlot, session.tuneId, block.id, { onUnlink: () => link("") });
+      else globalThis.JazzRepertoire.renderLinkPicker(tuneSlot, link);
+    }
     panel.appendChild(card);
     wireSectionTools(card, session, block);
+  }
+
+  // Practice now from the Repertoire view: focus today's existing section for the
+  // tune, or add one. Never steals the selection from a take in progress.
+  async function addTuneBlock(definition, tune) {
+    if (!guidedBlocksReady) throw new Error("Today’s plan is still syncing");
+    const existing = practiceSections.find((session) => session.tuneId === definition.tuneId);
+    const recording = Boolean(activeSectionRecordingID);
+    if (existing) {
+      if (!recording) selectedPracticeSectionID = existing.id;
+      location.hash = "#today";
+      renderSessions();
+      showToast(recording ? `${tune.title} is already in today’s plan; finish the current take to switch.` : `${tune.title} is already in today’s plan`);
+      return existing;
+    }
+    if (practiceSections.length >= 20) throw new Error("Today’s plan already has 20 sections.");
+    const position = Math.min(99, Math.max(-1, ...practiceSections.map((section) => Number(section.position ?? -1))) + 1);
+    const result = await globalThis.JazzPracticeSession.ensureGuidedBlocks(localDateKey(), [{ ...definition, position }], "add");
+    applyPracticeBlocks(result.blocks || []);
+    if (!recording) selectedPracticeSectionID = definition.blockKey;
+    location.hash = "#today";
+    renderSessions();
+    showToast(recording ? "Added; finish the current take to switch." : `${tune.title} added to today’s plan`);
+    return practiceSections.find((session) => session.id === definition.blockKey);
   }
 
   function renderWeek() {
@@ -1173,33 +1609,6 @@
     $("#level-up").textContent = level >= MAX_SKILL_LEVEL ? "Skill mastered" : "Complete next level";
   }
 
-  function renderRepertoire() {
-    const grid = $("#repertoire-grid");
-    grid.replaceChildren();
-    DATA.repertoire.forEach((tune, index) => {
-      const stage = Math.max(0, Math.min(6, Number(state.repertoire[tune.id] || 0)));
-      const card = document.createElement("article");
-      card.className = `tune-card${tune.current ? " current" : ""}`;
-      card.innerHTML = `
-        <span class="tune-index">${String(index + 1).padStart(2, "0")}${tune.current ? " · CURRENT" : ""}</span>
-        <h3>${tune.title}</h3>
-        <p class="tune-lesson">${tune.lesson}</p>
-        <div class="stars" aria-label="${stage} of 6 stages">${[1,2,3,4,5,6].map((n) => `<span class="${n <= stage ? "on" : ""}">★</span>`).join("")}</div>
-        <div class="tune-stage">${DATA.repertoireStages[stage]}</div>
-        <div class="tune-actions">
-          <button type="button" data-direction="down" aria-label="Move ${tune.title} back one stage" ${stage === 0 ? "disabled" : ""}>−</button>
-          <button type="button" data-direction="up" aria-label="Advance ${tune.title} one stage" ${stage === 6 ? "disabled" : ""}>${stage === 6 ? "Gig ready" : "+ Advance"}</button>
-        </div>`;
-      $$("button", card).forEach((button) => button.addEventListener("click", () => {
-        const direction = button.dataset.direction === "up" ? 1 : -1;
-        state.repertoire[tune.id] = Math.max(0, Math.min(6, stage + direction));
-        saveState("repertoire.stage_changed");
-        renderAll();
-      }));
-      grid.appendChild(card);
-    });
-  }
-
   function renderRoadmap() {
     const grid = $("#roadmap-grid");
     grid.replaceChildren();
@@ -1262,7 +1671,6 @@
     renderMission();
     renderTrackTabs();
     renderSkillTree();
-    renderRepertoire();
     renderScene();
     renderBosses();
     if ($("#skill-dialog").open) renderSkillDialog();
@@ -1271,6 +1679,9 @@
   function setupDialogs() {
     $$('[data-close-dialog]').forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
     $$('dialog').forEach((dialog) => dialog.addEventListener("click", (event) => {
+      // Backdrop clicks target the dialog itself. Pressing Enter in a form
+      // synthesizes a click at (0, 0) on its submit button, which is not one.
+      if (event.target !== dialog) return;
       const rect = dialog.getBoundingClientRect();
       const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
       if (outside) dialog.close();
@@ -1290,11 +1701,36 @@
       status.textContent = "";
       dialog.close();
     };
+    const tuneField = $("#new-section-tune-field");
+    const tuneSelect = $("#new-section-tune");
+    const refreshTuneSelect = (selected = tuneSelect?.value || "") => {
+      if (!tuneSelect || !globalThis.JazzRepertoire) return;
+      tuneSelect.innerHTML = globalThis.JazzRepertoire.tuneOptionsMarkup(selected, { includeNew: true, placeholder: "No specific tune" });
+    };
+    const syncTuneField = () => {
+      if (!tuneField) return;
+      tuneField.hidden = $("#new-section-type").value !== "tune";
+      if (!tuneField.hidden) {
+        refreshTuneSelect();
+        globalThis.JazzRepertoire?.load().then(() => refreshTuneSelect());
+      }
+    };
+    $("#new-section-type")?.addEventListener("change", syncTuneField);
+    tuneSelect?.addEventListener("change", () => {
+      if (tuneSelect.value === "__new") {
+        tuneSelect.value = "";
+        globalThis.JazzRepertoire?.openCreate({ onCreated: (tune) => refreshTuneSelect(tune.tuneId) });
+        return;
+      }
+      const title = $("#new-section-title");
+      if (tuneSelect.value && !title.value.trim()) title.value = globalThis.JazzRepertoire?.title(tuneSelect.value) || "";
+    });
     openButton.addEventListener("click", () => {
       if (!guidedBlocksReady) {
         showToast("The practice plan is still syncing");
         return;
       }
+      syncTuneField();
       dialog.showModal();
       $("#new-section-title")?.focus();
     });
@@ -1307,6 +1743,7 @@
       const title = $("#new-section-title").value.trim();
       const instructions = $("#new-section-instructions").value.trim();
       const type = $("#new-section-type").value;
+      const tuneId = type === "tune" ? ($("#new-section-tune")?.value || "") : "";
       const minutes = Number($("#new-section-minutes").value);
       const presets = {
         fundamentals: { category: "fundamentals", track: "trumpet" },
@@ -1339,10 +1776,12 @@
           category: preset.category,
           track: preset.track,
           targetMinutes: minutes,
-        }]);
+          ...(tuneId && tuneId !== "__new" ? { tuneId } : {}),
+        }], "add");
         applyPracticeBlocks(result.blocks || []);
         selectedPracticeSectionID = blockKey;
         form.reset();
+        syncTuneField();
         closeDialog();
         renderSessions();
         showToast(`${title} added to today’s plan`);
@@ -1416,8 +1855,20 @@
   }
 
   renderRoadmap();
+  globalThis.JazzTodayPlan = { addTuneBlock };
+  addEventListener("jazz:repertoire-changed", () => {
+    renderStats();
+    renderSessions({ planOnly: true });
+  });
+  globalThis.JazzPracticeTimer = {
+    context: toolPracticeContext,
+    begin: beginToolPractice,
+    checkpoint: checkpointToolPractice,
+    end: endToolPractice,
+  };
   setupDialogs();
   setupPracticeSectionCreator();
+  setupPracticeSectionEditor();
   setupDataActions();
   addEventListener("jazz:activity-logged", (event) => {
     const activity = event.detail;
@@ -1437,9 +1888,15 @@
   });
   addEventListener("jazz:recording-state", (event) => {
     const detail = event.detail || {};
-    if (detail.phase === "recording" && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
+    const wasPaused = activeSectionRecordingPaused;
+    activeSectionRecordingPaused = detail.phase === "recording" && Boolean(detail.paused);
+    if (wasPaused && detail.phase !== "recording") {
+      const held = sessionForRecording(activeSectionRecordingID);
+      if (held) saveTimerBlock(held, timerFor(held));
+    }
+    if (detail.phase === "recording" && !detail.paused && recordingTimerSessionID !== sessionForRecording(detail.blockId)?.id) {
       beginRecordingPractice(detail.blockId);
-    } else if (detail.phase !== "recording" && recordingTimerSessionID) {
+    } else if ((detail.phase !== "recording" || detail.paused) && recordingTimerSessionID) {
       endRecordingPractice(detail.blockId);
     }
     if (!detail.blockId) return;
@@ -1452,6 +1909,7 @@
     const detail = event.detail || {};
     if (!detail.id || !detail.blockId) return;
     sectionUploadJobs.set(detail.id, detail);
+    if (detail.phase === "complete" && ![...guidedBlocks.values()].some((block) => block.id === detail.blockId)) showToast(`Take ${detail.takeNumber || 1} saved in Previous work`);
     const existing = document.querySelector(`[data-upload-job="${detail.id}"]`);
     if (existing && detail.phase === "uploading") {
       const message = $("span", existing);

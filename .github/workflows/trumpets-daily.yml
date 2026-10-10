@@ -1,0 +1,27 @@
+name: Daily trumpet research
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: trumpets-daily
+  cancel-in-progress: false
+jobs:
+  search-and-recheck:
+    if: vars.TRUMPETS_DAILY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Search broadly and revalidate tracked offers
+        env:
+          TRUMPETS_API_URL: ${{ secrets.TRUMPETS_API_URL }}
+          TRUMPETS_MACHINE_TOKEN: ${{ secrets.TRUMPETS_MACHINE_TOKEN }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python tools/trumpets/runner.py

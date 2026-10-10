@@ -18,7 +18,11 @@
       },
     });
     const body = response.status === 204 ? null : await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body?.error || `Request failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(body?.error || `Request failed (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
     return body;
   }
 
@@ -213,13 +217,13 @@
     return activity;
   }
 
-  async function ensureGuidedBlocks(practiceDate, definitions) {
+  async function ensureGuidedBlocks(practiceDate, definitions, mode = "initialize") {
     if (initialSessionLoad) await initialSessionLoad;
     await rollSessionForward(practiceDate);
     const session = await ensureActive();
     const result = await api(`/practice-sessions/${session.id}/blocks`, {
       method: "POST",
-      body: JSON.stringify({ practiceDate, blocks: definitions }),
+      body: JSON.stringify({ practiceDate, blocks: definitions, mode }),
     });
     return { session, blocks: result.blocks || [] };
   }
@@ -228,6 +232,13 @@
     return api(`/practice-blocks/${blockID}`, {
       method: "PATCH",
       body: JSON.stringify(changes),
+    });
+  }
+
+  async function updateGuidedLayout(sessionID, practiceDate, blockIDs, removeIDs = [], renames = []) {
+    return api(`/practice-sessions/${sessionID}/blocks/layout`, {
+      method: "PUT",
+      body: JSON.stringify({ practiceDate, blockIds: blockIDs, removeIds: removeIDs, renames }),
     });
   }
 
@@ -242,6 +253,7 @@
     logGuidedActivity,
     ensureGuidedBlocks,
     updateGuidedBlock,
+    updateGuidedLayout,
     currentID: () => activeSession?.id || "",
     refresh: loadSessions,
   };

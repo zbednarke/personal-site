@@ -42,6 +42,9 @@
       if (this.context.state === "suspended") await this.context.resume();
     }
 
+    pause() { this.node?.port.postMessage({ type: "pause" }); }
+    resume() { this.node?.port.postMessage({ type: "resume" }); }
+
     async stop() {
       if (!this.node || !this.context) throw new Error("No lossless recording is active");
       await new Promise((resolve) => {
