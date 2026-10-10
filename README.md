@@ -28,8 +28,9 @@ storage. Practice sessions group session-wide notes, structured off-mic
 activities, and their associated recordings. New browser takes are captured as
 48 kHz / 24-bit mono lossless WAV files. An optional live effects chain
 (reverb, delay, drive, auto-wah, harmonizer, autotune, auto-chord pad) runs in
-Web Audio during a take; when enabled, the take stores a second processed
-"FX mix" WAV alongside the untouched dry master.
+Web Audio during a take; when enabled, the take also stores a processed
+"FX mix" WAV (first hour of the take) alongside the untouched dry master. The
+FX capture is best-effort: if it fails at any stage the dry take still saves.
 
 The recordings bucket remains private. Explicit per-asset share actions create
 permanent opaque bearer links on `zachbednarke.com`; each visit resolves through
