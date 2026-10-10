@@ -4,8 +4,13 @@
   const FX_ENABLED_STORAGE_KEY = "zach-jazz-fx-enabled-v1";
   const FX_PRESET_STORAGE_KEY = "zach-jazz-fx-preset-v1";
   const FX_KEY_STORAGE_KEY = "zach-jazz-fx-key-v1";
-  const FX_MONITOR_STORAGE_KEY = "zach-jazz-fx-monitor-v1";
-  const $ = (selector, root = document) => root.querySelector(selector);
+  // v2: wet monitoring now defaults off; v1 stored an implicit "on".
+  const FX_MONITOR_STORAGE_KEY = "zach-jazz-fx-monitor-v2";
+  const DEFAULT_PRESET = "big-hall";
+  const hasDocument = typeof document !== "undefined";
+  // Resolve the worklet next to this script so the chain works from any page.
+  const SCRIPT_URL = (hasDocument && document.currentScript?.src) || globalThis.location?.href || "";
+  const $ = (selector, root = globalThis.document) => root?.querySelector(selector) || null;
 
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const SCALES = {
@@ -18,6 +23,7 @@
 
   // Each preset is a full snapshot of the chain: which stages run, their
   // parameters, the pitch-engine mode, and whether the auto-chord pad plays.
+  // Preset ids are stored on the recording, so keep them stable.
   const PRESETS = {
     "big-hall": {
       label: "Big Hall",
@@ -70,6 +76,10 @@
     },
   };
 
+  function presetLabel(id) {
+    return PRESETS[id]?.label || String(id || "");
+  }
+
   function makeImpulse(context, seconds) {
     const rate = context.sampleRate;
     const length = Math.max(1, Math.floor(rate * seconds));
@@ -101,28 +111,39 @@
       this.stream = null;
       this.preset = null;
       this.keyRoot = 0;
-      this.monitor = false;
-      this.followerFrame = null;
+      this.followerTimer = null;
       this.padState = { lastMidi: 0, stable: 0, silent: 0 };
     }
 
+    // Builds the graph in its own 48 kHz context and returns the processed
+    // stream. Any failure tears down whatever was built before rethrowing.
     async start(inputStream, presetName, keyRoot, monitor) {
       const preset = PRESETS[presetName];
       if (!preset) throw new Error("Unknown FX preset");
+      const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+      if (!AudioContext || !globalThis.AudioWorkletNode) throw new Error("Live effects are not supported in this browser");
       this.preset = preset;
       this.keyRoot = keyRoot;
-      this.monitor = monitor;
-      const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+      try {
+        await this.build(AudioContext, inputStream, monitor);
+      } catch (error) {
+        await this.stop();
+        throw error;
+      }
+      return this.stream;
+    }
+
+    async build(AudioContext, inputStream, monitor) {
       const context = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
       this.context = context;
-      const workletURL = new URL("../assets/jazz/pitch-worklet.js", location.href);
-      await context.audioWorklet.addModule(workletURL.href);
-
+      await context.audioWorklet.addModule(new URL("pitch-worklet.js", SCRIPT_URL).href);
+      if (this.context !== context) throw new Error("Live effects were stopped while starting");
+      const preset = this.preset;
       const n = this.nodes;
       n.source = context.createMediaStreamSource(inputStream);
       n.input = context.createGain();
 
-      n.pitch = new AudioWorkletNode(context, "pitch-engine", {
+      n.pitch = new globalThis.AudioWorkletNode(context, "pitch-engine", {
         numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
       });
       n.pitch.port.onmessage = (event) => this.handlePitch(event.data);
@@ -155,28 +176,22 @@
       n.reverbDry = context.createGain();
       n.reverbOut = context.createGain();
 
-      n.padGain = context.createGain();
-      n.padEnv = context.createGain();
-      n.padEnv.gain.value = 0;
-      n.padFilter = context.createBiquadFilter();
-      n.padFilter.type = "lowpass";
-      n.padFilter.frequency.value = 900;
-      n.padOscillators = [0, 1, 2].map(() => {
-        const oscillator = context.createOscillator();
-        oscillator.type = "sawtooth";
-        const gain = context.createGain();
-        gain.gain.value = 0.25;
-        oscillator.connect(gain);
-        gain.connect(n.padFilter);
-        oscillator.start();
-        return oscillator;
-      });
-      n.padFilter.connect(n.padEnv);
-      n.padEnv.connect(n.padGain);
-
       n.master = context.createGain();
+      // Reverb tails, harmony voices, and the pad stack on top of the dry
+      // signal; a fast limiter keeps the 24-bit FX mix from hard clipping.
+      n.limiter = context.createDynamicsCompressor();
+      n.limiter.threshold.value = -3;
+      n.limiter.knee.value = 0;
+      n.limiter.ratio.value = 20;
+      n.limiter.attack.value = 0.003;
+      n.limiter.release.value = 0.25;
       n.monitorGain = context.createGain();
+      // The lossless recorder keeps only the first channel, so fold the stereo
+      // reverb down to a true mono mix here instead of capturing just the left.
       n.capture = context.createMediaStreamDestination();
+      n.capture.channelCount = 1;
+      n.capture.channelCountMode = "explicit";
+      n.capture.channelInterpretation = "speakers";
 
       n.source.connect(n.input);
       n.input.connect(n.follower);
@@ -207,19 +222,45 @@
       n.reverbWet.connect(n.reverbOut);
       n.delayOut.connect(n.reverbDry);
       n.reverbDry.connect(n.reverbOut);
-
       n.reverbOut.connect(n.master);
-      n.padGain.connect(n.master);
-      n.master.connect(n.capture);
+
+      // The pad's oscillators only exist for presets that use them.
+      if (preset.pad) {
+        n.padGain = context.createGain();
+        n.padEnv = context.createGain();
+        n.padEnv.gain.value = 0;
+        n.padFilter = context.createBiquadFilter();
+        n.padFilter.type = "lowpass";
+        n.padFilter.frequency.value = 900;
+        n.padVoices = [0, 1, 2].map(() => {
+          const oscillator = context.createOscillator();
+          oscillator.type = "sawtooth";
+          const gain = context.createGain();
+          gain.gain.value = 0.25;
+          oscillator.connect(gain);
+          gain.connect(n.padFilter);
+          oscillator.start();
+          return { oscillator, gain };
+        });
+        n.padFilter.connect(n.padEnv);
+        n.padEnv.connect(n.padGain);
+        n.padGain.connect(n.master);
+      }
+
+      n.master.connect(n.limiter);
+      n.limiter.connect(n.capture);
+      // Wet monitoring is opt-in: through speakers the delay and reverb feed
+      // the microphone and can run away. Headphones only.
       n.monitorGain.gain.value = monitor ? 1 : 0;
-      n.master.connect(n.monitorGain);
+      n.limiter.connect(n.monitorGain);
       n.monitorGain.connect(context.destination);
 
       this.applyPreset();
       if (context.state === "suspended") await context.resume();
-      this.runFollower();
+      this.envelope = 0;
+      this.followerSamples = new Float32Array(n.follower.fftSize);
+      if (preset.wah) this.followerTimer = setInterval(() => this.followEnvelope(), 25);
       this.stream = n.capture.stream;
-      return this.stream;
     }
 
     applyPreset() {
@@ -250,7 +291,7 @@
       n.reverbWet.gain.value = reverb ? reverb.mix * 1.6 : 0;
       n.reverbDry.gain.value = 1;
 
-      n.padGain.gain.value = preset.pad ? preset.pad.volume : 0;
+      if (n.padGain) n.padGain.gain.value = preset.pad.volume;
 
       const pitch = preset.pitch || { mode: "off" };
       n.pitch.port.postMessage({
@@ -264,35 +305,30 @@
       });
     }
 
-    // Envelope follower drives the auto-wah center frequency from input level.
-    runFollower() {
+    // Envelope follower drives the auto-wah center frequency from input
+    // level. A timer (not requestAnimationFrame) keeps it moving while the
+    // tab is in the background during a take.
+    followEnvelope() {
       const n = this.nodes;
-      const samples = new Float32Array(n.follower.fftSize);
-      let envelope = 0;
-      const tick = () => {
-        if (!this.context) return;
-        if (this.preset.wah) {
-          n.follower.getFloatTimeDomainData(samples);
-          let peak = 0;
-          for (let index = 0; index < samples.length; index += 1) {
-            const magnitude = Math.abs(samples[index]);
-            if (magnitude > peak) peak = magnitude;
-          }
-          envelope = Math.max(peak, envelope * 0.94);
-          const sensitivity = this.preset.wah.sensitivity;
-          const frequency = 350 + Math.min(1, envelope * (1 + sensitivity * 6)) * 1800;
-          n.wahFilter.frequency.setTargetAtTime(frequency, this.context.currentTime, 0.03);
-        }
-        this.followerFrame = requestAnimationFrame(tick);
-      };
-      tick();
+      if (!this.context || !n.follower || !this.preset?.wah) return;
+      const samples = this.followerSamples;
+      n.follower.getFloatTimeDomainData(samples);
+      let peak = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const magnitude = Math.abs(samples[index]);
+        if (magnitude > peak) peak = magnitude;
+      }
+      this.envelope = Math.max(peak, this.envelope * 0.94);
+      const sensitivity = this.preset.wah.sensitivity;
+      const frequency = 350 + Math.min(1, this.envelope * (1 + sensitivity * 6)) * 1800;
+      n.wahFilter.frequency.setTargetAtTime(frequency, this.context.currentTime, 0.03);
     }
 
     handlePitch(data) {
-      if (!this.context || !this.preset.pad) return;
+      if (!this.context || !this.nodes.padEnv) return;
       const now = this.context.currentTime;
       const pad = this.padState;
-      if (data.f0 && data.rms > 0.01) {
+      if (data?.f0 && data.rms > 0.01) {
         const rounded = Math.round(data.midi);
         if (rounded === pad.lastMidi) pad.stable += 1;
         else {
@@ -329,25 +365,38 @@
       const base = rootMidi - 12;
       [0, stepsUp(2), stepsUp(4)].forEach((semitones, index) => {
         const frequency = 440 * Math.pow(2, (base + semitones - 69) / 12);
-        this.nodes.padOscillators[index].frequency.setTargetAtTime(frequency, when, 0.03);
+        this.nodes.padVoices[index].oscillator.frequency.setTargetAtTime(frequency, when, 0.03);
       });
     }
 
     setMonitor(enabled) {
-      this.monitor = enabled;
       if (this.nodes.monitorGain && this.context) {
         this.nodes.monitorGain.gain.setTargetAtTime(enabled ? 1 : 0, this.context.currentTime, 0.05);
       }
     }
 
+    // Idempotent teardown: stop timers and sources, disconnect every node so
+    // nothing keeps the input stream alive, then close the context.
     async stop() {
-      if (this.followerFrame) cancelAnimationFrame(this.followerFrame);
-      this.followerFrame = null;
-      if (this.nodes.pitch?.port) this.nodes.pitch.port.onmessage = null;
-      await this.context?.close().catch(() => {});
+      clearInterval(this.followerTimer);
+      this.followerTimer = null;
+      const context = this.context;
+      const nodes = this.nodes;
       this.context = null;
       this.nodes = {};
       this.stream = null;
+      if (nodes.pitch?.port) nodes.pitch.port.onmessage = null;
+      (nodes.padVoices || []).forEach(({ oscillator, gain }) => {
+        try { oscillator.stop(); } catch {}
+        try { oscillator.disconnect(); } catch {}
+        try { gain.disconnect(); } catch {}
+      });
+      Object.entries(nodes).forEach(([name, node]) => {
+        if (name === "padVoices") return;
+        try { node.disconnect(); } catch {}
+      });
+      nodes.capture?.stream?.getTracks?.().forEach((track) => track.stop());
+      await context?.close().catch(() => {});
     }
   }
 
@@ -355,16 +404,26 @@
 
   let activeChain = null;
 
+  function readStorage(key) {
+    try { return globalThis.localStorage?.getItem(key) ?? null; } catch { return null; }
+  }
+
+  function writeStorage(key, value) {
+    try { globalThis.localStorage?.setItem(key, value); } catch {}
+  }
+
   function enabled() {
     return Boolean($("#fx-enabled")?.checked);
   }
 
   function presetName() {
-    return $("#fx-preset")?.value || "big-hall";
+    const value = $("#fx-preset")?.value || "";
+    return PRESETS[value] ? value : DEFAULT_PRESET;
   }
 
   function keyRoot() {
-    return Number($("#fx-key")?.value || 0);
+    const value = Number($("#fx-key")?.value || 0);
+    return Number.isInteger(value) && value >= 0 && value < 12 ? value : 0;
   }
 
   function monitorRequested() {
@@ -372,10 +431,19 @@
   }
 
   async function start(inputStream) {
-    if (activeChain) await activeChain.stop();
-    activeChain = new FXChain();
-    const stream = await activeChain.start(inputStream, presetName(), keyRoot(), monitorRequested());
-    return { stream, preset: presetName() };
+    await stop();
+    const chain = new FXChain();
+    activeChain = chain;
+    const preset = presetName();
+    try {
+      const stream = await chain.start(inputStream, preset, keyRoot(), monitorRequested());
+      if (activeChain !== chain) throw new Error("Live effects were stopped while starting");
+      return { stream, preset };
+    } catch (error) {
+      if (activeChain === chain) activeChain = null;
+      await chain.stop();
+      throw error;
+    }
   }
 
   async function stop() {
@@ -391,45 +459,45 @@
 
   function syncControls() {
     const on = enabled();
-    document.querySelectorAll("[data-fx-option]").forEach((field) => { field.hidden = !on; });
+    globalThis.document?.querySelectorAll("[data-fx-option]").forEach((field) => { field.hidden = !on; });
     setStatus(on
-      ? `Takes will save a second “FX mix” WAV (${PRESETS[presetName()].label}) alongside the dry master.`
+      ? `Takes save a second “FX mix” WAV (${presetLabel(presetName())}, first hour) alongside the untouched dry master.`
       : "Off — takes record the dry lossless master only.");
   }
 
   function populateControls() {
     const presetSelect = $("#fx-preset");
     const keySelect = $("#fx-key");
-    if (!presetSelect || !keySelect) return;
-    Object.entries(PRESETS).forEach(([value, preset]) => presetSelect.add(new Option(preset.label, value)));
-    NOTE_NAMES.forEach((name, index) => keySelect.add(new Option(`Key of ${name}`, String(index))));
     const enabledBox = $("#fx-enabled");
     const monitorBox = $("#fx-monitor");
-    enabledBox.checked = localStorage.getItem(FX_ENABLED_STORAGE_KEY) === "1";
-    monitorBox.checked = localStorage.getItem(FX_MONITOR_STORAGE_KEY) !== "0";
-    const storedPreset = localStorage.getItem(FX_PRESET_STORAGE_KEY);
-    if (storedPreset && PRESETS[storedPreset]) presetSelect.value = storedPreset;
-    const storedKey = localStorage.getItem(FX_KEY_STORAGE_KEY);
-    if (storedKey !== null && keySelect.querySelector(`option[value="${storedKey}"]`)) keySelect.value = storedKey;
+    if (!presetSelect || !keySelect || !enabledBox || !monitorBox) return;
+    Object.entries(PRESETS).forEach(([value, preset]) => presetSelect.add(new Option(preset.label, value)));
+    NOTE_NAMES.forEach((name, index) => keySelect.add(new Option(`Key of ${name}`, String(index))));
+    enabledBox.checked = readStorage(FX_ENABLED_STORAGE_KEY) === "1";
+    monitorBox.checked = readStorage(FX_MONITOR_STORAGE_KEY) === "1";
+    const storedPreset = readStorage(FX_PRESET_STORAGE_KEY);
+    presetSelect.value = storedPreset && PRESETS[storedPreset] ? storedPreset : DEFAULT_PRESET;
+    const storedKey = Number(readStorage(FX_KEY_STORAGE_KEY));
+    if (Number.isInteger(storedKey) && storedKey >= 0 && storedKey < 12) keySelect.value = String(storedKey);
 
     enabledBox.addEventListener("change", () => {
-      localStorage.setItem(FX_ENABLED_STORAGE_KEY, enabledBox.checked ? "1" : "0");
+      writeStorage(FX_ENABLED_STORAGE_KEY, enabledBox.checked ? "1" : "0");
       syncControls();
     });
     presetSelect.addEventListener("change", () => {
-      localStorage.setItem(FX_PRESET_STORAGE_KEY, presetSelect.value);
+      writeStorage(FX_PRESET_STORAGE_KEY, presetSelect.value);
       syncControls();
     });
     keySelect.addEventListener("change", () => {
-      localStorage.setItem(FX_KEY_STORAGE_KEY, keySelect.value);
+      writeStorage(FX_KEY_STORAGE_KEY, keySelect.value);
     });
     monitorBox.addEventListener("change", () => {
-      localStorage.setItem(FX_MONITOR_STORAGE_KEY, monitorBox.checked ? "1" : "0");
+      writeStorage(FX_MONITOR_STORAGE_KEY, monitorBox.checked ? "1" : "0");
       activeChain?.setMonitor(monitorBox.checked);
     });
     syncControls();
   }
 
-  globalThis.JazzFX = { enabled, presetName, start, stop, presets: PRESETS };
-  populateControls();
+  globalThis.JazzFX = { enabled, presetName, presetLabel, start, stop, presets: PRESETS, FXChain };
+  if (hasDocument) populateControls();
 })();

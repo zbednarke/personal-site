@@ -8,7 +8,7 @@
   const RECORDING_MODE_STORAGE_KEY = "zach-jazz-recording-mode-v1";
   const VIDEO_RESOLUTION_STORAGE_KEY = "zach-jazz-video-resolution-v1";
   const UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
-  const { MAX_TAKE_DURATION_MS, VIDEO_DATA_FLUSH_MS, preferredVideoType, shouldAutoFinish, supportsChunkFlush } = globalThis.JazzRecordingPolicy;
+  const { MAX_TAKE_DURATION_MS, VIDEO_DATA_FLUSH_MS, preferredVideoType, shouldAutoFinish, shouldFinishFx, supportsChunkFlush } = globalThis.JazzRecordingPolicy;
   const $ = (selector, root = document) => root.querySelector(selector);
 
   let stream = null;
@@ -21,8 +21,9 @@
   let videoChunks = [];
   let videoContentType = "";
   let losslessRecorder = null;
-  let fxRecorder = null;
-  let activeFxPreset = "";
+  // Optional wet capture through JazzFX: { recorder, preset, finished }.
+  // It never gates the dry master; every failure path degrades to dry-only.
+  let fxCapture = null;
   let startedAt = 0;
   let pausedAt = null;
   let pausedDuration = 0;
@@ -82,6 +83,10 @@
     const timer = $("#recording-timer");
     if (timer) timer.textContent = formatTimer(elapsed);
     if (shouldAutoFinish(elapsed) && losslessRecorder && !captureFinalizing) stopRecording({ automatic: true });
+    else if (fxCapture && !fxCapture.finished && shouldFinishFx(elapsed)) {
+      finishFxCapture();
+      setServiceStatus("FX mix reached its one-hour limit; the dry master keeps recording", "online");
+    }
   }
 
   async function updateMicrophones() {
@@ -474,13 +479,7 @@
       }
       losslessRecorder = new globalThis.JazzLosslessRecorder();
       await losslessRecorder.start(stream);
-      activeFxPreset = "";
-      if (globalThis.JazzFX?.enabled()) {
-        const fxCapture = await globalThis.JazzFX.start(stream);
-        fxRecorder = new globalThis.JazzLosslessRecorder();
-        await fxRecorder.start(fxCapture.stream);
-        activeFxPreset = fxCapture.preset;
-      }
+      fxCapture = await startFxCapture(stream);
       if (recordingCameraStream) startVideoRecording(stream, recordingCameraStream);
       recordedAt = new Date().toISOString();
       pausedAt = null;
@@ -497,19 +496,16 @@
       const stopButton = $("#stop-recording");
       if (startButton) startButton.disabled = true;
       if (stopButton) stopButton.disabled = false;
-      const fxSuffix = activeFxPreset ? " + live FX mix" : "";
+      const fxSuffix = fxCapture ? " + live FX mix" : "";
       setRecorderState(recordingCameraStream
         ? `Recording video + lossless 24-bit audio${fxSuffix} - play the take`
         : `Recording lossless 24-bit audio${fxSuffix} - play the take`, "recording");
     } catch (error) {
       const recorder = losslessRecorder;
       losslessRecorder = null;
-      const failedFxRecorder = fxRecorder;
-      fxRecorder = null;
       await Promise.all([
         recorder?.cancel?.().catch(() => {}),
-        failedFxRecorder?.cancel?.().catch(() => {}),
-        globalThis.JazzFX?.stop().catch(() => {}),
+        discardFxCapture(),
         discardVideoRecording().catch(() => {}),
       ]);
       stopCapture();
@@ -528,14 +524,18 @@
         if (resume) videoRecorder.resume();
         else videoRecorder.pause();
       }
+      // A finished (time-capped) FX capture has nothing left to pause.
+      const fxRecorder = fxCapture && !fxCapture.finished ? fxCapture.recorder : null;
       if (resume) {
         losslessRecorder.resume();
+        fxRecorder?.resume();
         pausedDuration += performance.now() - pausedAt;
         pausedAt = null;
         const remaining = MAX_TAKE_DURATION_MS - (performance.now() - startedAt - pausedDuration);
         autoStopID = setTimeout(() => stopRecording({ automatic: true }), Math.max(0, remaining));
       } else {
         losslessRecorder.pause();
+        fxRecorder?.pause();
         pausedAt = performance.now();
         clearTimeout(autoStopID);
         autoStopID = null;
@@ -570,20 +570,18 @@
   async function finishRecording(automatic = false) {
     let result;
     let videoResult;
-    let fxResult = null;
+    // Never rejects: a failed FX capture yields null and the dry take proceeds.
+    const fxFinished = finishFxCapture();
     try {
-      [result, videoResult, fxResult] = await Promise.all([
+      [result, videoResult] = await Promise.all([
         losslessRecorder.stop(),
         finishVideoRecording(),
-        fxRecorder ? fxRecorder.stop() : Promise.resolve(null),
       ]);
     } catch (error) {
       await Promise.all([
         discardVideoRecording().catch(() => {}),
-        fxRecorder?.cancel?.().catch(() => {}),
+        discardFxCapture(),
       ]);
-      fxRecorder = null;
-      await globalThis.JazzFX?.stop().catch(() => {});
       stopCapture();
       losslessRecorder = null;
       captureFinalizing = false;
@@ -592,8 +590,8 @@
       return;
     }
     losslessRecorder = null;
-    fxRecorder = null;
-    await globalThis.JazzFX?.stop().catch(() => {});
+    const fxResult = await fxFinished;
+    fxCapture = null;
     recordedSampleRate = result.sampleRate;
     const { blob, durationMS, waveformPeaks } = result;
     const contentType = "audio/wav";
@@ -619,14 +617,11 @@
     captureFinalizing = true;
     const recorder = losslessRecorder;
     losslessRecorder = null;
-    const cancelledFxRecorder = fxRecorder;
-    fxRecorder = null;
     setRecorderState("Cancelling and discarding the take...", "cancelling");
     try {
       await Promise.allSettled([
         recorder.cancel(),
-        cancelledFxRecorder ? cancelledFxRecorder.cancel() : Promise.resolve(),
-        globalThis.JazzFX?.stop() || Promise.resolve(),
+        discardFxCapture(),
         discardVideoRecording(),
       ]);
     } finally {
@@ -636,6 +631,50 @@
     setRecorderState("Take cancelled - no media was uploaded; practice time was kept", "cancelled");
     activeBlockContext = null;
     return true;
+  }
+
+  // Starts the optional wet capture. Returns null (dry-only) when effects are
+  // off or anything in the chain fails, so the dry take is never blocked.
+  async function startFxCapture(audioStream) {
+    if (!globalThis.JazzFX?.enabled()) return null;
+    let recorder = null;
+    try {
+      const chain = await globalThis.JazzFX.start(audioStream);
+      recorder = new globalThis.JazzLosslessRecorder();
+      await recorder.start(chain.stream);
+      return { recorder, preset: chain.preset, finished: null };
+    } catch (error) {
+      await recorder?.cancel().catch(() => {});
+      await globalThis.JazzFX.stop().catch(() => {});
+      setServiceStatus(`Live effects unavailable (${error.message}) - recording the dry master only`, "offline");
+      return null;
+    }
+  }
+
+  // Stops the wet capture once (at the FX time cap or the end of the take)
+  // and resolves to { blob, preset, ... } or null; it never rejects.
+  function finishFxCapture() {
+    if (!fxCapture) return Promise.resolve(null);
+    if (!fxCapture.finished) {
+      const { recorder, preset } = fxCapture;
+      fxCapture.finished = recorder.stop()
+        .then((result) => ({ ...result, preset }))
+        .catch(async () => {
+          await recorder.cancel().catch(() => {});
+          setServiceStatus("The FX mix could not be finished - the dry master is unaffected", "offline");
+          return null;
+        })
+        .finally(() => globalThis.JazzFX?.stop().catch(() => {}));
+    }
+    return fxCapture.finished;
+  }
+
+  async function discardFxCapture() {
+    const capture = fxCapture;
+    fxCapture = null;
+    if (!capture) return;
+    if (!capture.finished) await capture.recorder.cancel().catch(() => {});
+    await globalThis.JazzFX?.stop().catch(() => {});
   }
 
   function captureUpload(blob, durationMS, contentType, videoResult = null, waveformPeaks = [], fxResult = null) {
@@ -649,7 +688,8 @@
       mediaKind: videoResult ? "video" : "audio",
       fxBlob: fxResult?.blob || null,
       fxContentType: fxResult ? "audio/wav" : "",
-      fxPreset: fxResult ? activeFxPreset : "",
+      fxPreset: fxResult?.preset || "",
+      fxError: "",
       videoBlob: videoResult?.blob || null,
       videoContentType: videoResult?.contentType || "",
       videoCodec: videoResult?.codec || "",
@@ -702,12 +742,13 @@
       }),
     });
     capture.sectionRemoved = Boolean(initialized.sectionRemoved);
+    capture.fxError = "";
+    const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0) + (capture.fxBlob?.size || 0);
+    const progressFor = (offset, assetBytes) => (percent) => {
+      const uploaded = offset + ((percent / 100) * assetBytes);
+      onProgress(totalBytes ? (uploaded / totalBytes) * 100 : 100);
+    };
     try {
-      const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0) + (capture.fxBlob?.size || 0);
-      const progressFor = (offset, assetBytes) => (percent) => {
-        const uploaded = offset + ((percent / 100) * assetBytes);
-        onProgress(totalBytes ? (uploaded / totalBytes) * 100 : 100);
-      };
       await putBlob(initialized.uploadUrl, capture.blob, baseType, progressFor(0, capture.blob.size));
       await completeAsset(initialized.id, "audio");
       if (capture.videoBlob) {
@@ -719,7 +760,16 @@
         );
         await completeAsset(initialized.id, "video");
       }
-      if (capture.fxBlob) {
+    } catch (error) {
+      await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
+      throw error;
+    }
+    // The take is already ready from its dry (and video) assets. The FX mix
+    // uploads last and on its own: if it fails, drop just that asset.
+    if (capture.fxBlob && !initialized.fxUploadUrl) {
+      capture.fxError = "storage did not open an FX upload";
+    } else if (capture.fxBlob) {
+      try {
         await putBlob(
           initialized.fxUploadUrl,
           capture.fxBlob,
@@ -727,17 +777,20 @@
           progressFor(capture.blob.size + (capture.videoBlob?.size || 0), capture.fxBlob.size),
         );
         await completeAsset(initialized.id, "fx");
+      } catch (error) {
+        capture.fxError = error.message;
+        await api(`/recordings/${initialized.id}/fx`, { method: "DELETE" }).catch(() => {});
       }
-    } catch (error) {
-      await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
-      throw error;
     }
   }
 
   function uploadMessage(job) {
     if (job.status === "queued") return "Take queued for private upload";
     if (job.status === "uploading") return `Uploading privately - ${job.progress}%`;
-    if (job.status === "complete") return job.payload.sectionRemoved ? "Saved in Previous work; its section was removed" : "Uploaded privately";
+    if (job.status === "complete") {
+      const saved = job.payload.sectionRemoved ? "Saved in Previous work; its section was removed" : "Uploaded privately";
+      return job.payload.fxError ? `${saved} - FX mix upload failed (${job.payload.fxError}); the dry master is saved` : saved;
+    }
     return `Take is safe in this tab. Upload failed: ${job.error}`;
   }
 
@@ -867,6 +920,7 @@
           : [sessionTitle, skill].filter(Boolean).join(" · ");
         const isVideo = recording.mediaKind === "video";
         const hasFx = Boolean(recording.fxContentType);
+        const fxLabel = hasFx ? fxMixLabel(recording) : "";
         const baseFormat = isVideo
           ? `${recording.videoWidth || ""}${recording.videoHeight ? `×${recording.videoHeight}` : ""} video + lossless WAV`
           : (recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType.replace("audio/", "").toUpperCase());
@@ -884,7 +938,7 @@
           <div class="recording-item-actions">
             <button type="button" class="play-recording" data-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${ready ? (isVideo ? "Play video" : "Play") : "Uploading…"}</button>
             ${isVideo ? `<button type="button" class="play-audio-master" data-asset="audio" ${ready ? "" : "disabled"}>Lossless audio</button>` : ""}
-            ${hasFx ? `<button type="button" class="play-fx-mix" data-asset="fx" ${ready ? "" : "disabled"}>FX mix${recording.fxPreset ? ` · ${escapeHTML(recording.fxPreset)}` : ""}</button>` : ""}
+            ${hasFx ? `<button type="button" class="play-fx-mix" data-asset="fx" ${ready ? "" : "disabled"}>${escapeHTML(fxLabel)}</button>` : ""}
             <button type="button" class="download-recording" data-download-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
             ${isVideo ? `<button type="button" class="download-recording" data-download-asset="audio" ${ready ? "" : "disabled"}>Download WAV</button>` : ""}
             ${hasFx ? `<button type="button" class="download-recording" data-download-asset="fx" ${ready ? "" : "disabled"}>Download FX mix</button>` : ""}
@@ -914,6 +968,12 @@
     } catch {
       setServiceStatus("Private storage offline", "offline");
     }
+  }
+
+  // "FX mix · Big Hall" for a recording whose FX asset has verified.
+  function fxMixLabel(recording) {
+    const preset = globalThis.JazzFX?.presetLabel(recording.fxPreset) || recording.fxPreset || "";
+    return preset ? `FX mix · ${preset}` : "FX mix";
   }
 
   function formatPracticeDate(value) {
@@ -1145,6 +1205,7 @@
     share: shareRecording,
     delete: deleteRecording,
     updateNote: updateRecordingNote,
+    fxMixLabel,
   };
 
   populateMetadata();

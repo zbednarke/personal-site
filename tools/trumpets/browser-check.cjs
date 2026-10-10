@@ -507,8 +507,51 @@ function syntheticPng(width, height) {
     await page.getByRole("button", { name: "Close inspiration" }).click();
     assert.deepEqual(thirdParty.filter((u) => !u.startsWith("https://www.youtube-nocookie.com/") && !u.startsWith("https://fixtures.invalid/")), []);
     assert.deepEqual(errors, []);
+    // Jazz live effects: a synthetic tone runs through every FX preset in real
+    // Web Audio while the dry and wet lossless recorders capture side by side.
+    const fxPage = await browser.newPage();
+    const fxErrors = [];
+    fxPage.on("pageerror", (e) => fxErrors.push(e.message));
+    // Any page one directory deep resolves the recorders' worklet paths.
+    await fxPage.goto(base + "/jazz/fx-check");
+    await fxPage.addScriptTag({ url: "/assets/jazz/lossless-recorder.js" });
+    await fxPage.addScriptTag({ url: "/assets/jazz/fx-chain.js" });
+    const fx = await fxPage.evaluate(async () => {
+      const source = new AudioContext({ sampleRate: 48000 });
+      const tone = source.createOscillator();
+      const level = source.createGain();
+      level.gain.value = 0.4;
+      const input = source.createMediaStreamDestination();
+      tone.connect(level).connect(input);
+      tone.start();
+      const results = {};
+      for (const preset of Object.keys(JazzFX.presets)) {
+        const chain = new JazzFX.FXChain();
+        const wet = await chain.start(input.stream, preset, 0, false);
+        const dryRecorder = new JazzLosslessRecorder();
+        const wetRecorder = new JazzLosslessRecorder();
+        await dryRecorder.start(input.stream);
+        await wetRecorder.start(wet);
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        const [dry, mix] = await Promise.all([dryRecorder.stop(), wetRecorder.stop()]);
+        const monitor = chain.nodes.monitorGain.gain.value;
+        await chain.stop();
+        results[preset] = { dryPeak: Math.max(...dry.waveformPeaks), wetPeak: Math.max(...mix.waveformPeaks), wetRate: mix.sampleRate, monitor, closed: chain.context === null };
+      }
+      await source.close();
+      return results;
+    });
+    Object.entries(fx).forEach(([preset, result]) => {
+      assert.ok(result.dryPeak > 0.3 && result.dryPeak < 0.5, `${preset} dry master changed: ${result.dryPeak}`);
+      assert.ok(result.wetPeak > 0.05 && result.wetPeak <= 1, `${preset} FX mix is silent or clipped: ${result.wetPeak}`);
+      assert.equal(result.wetRate, 48000);
+      assert.equal(result.monitor, 0, `${preset} monitored the wet mix without being asked`);
+      assert.equal(result.closed, true);
+    });
+    assert.deepEqual(fxErrors, []);
+    await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

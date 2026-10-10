@@ -401,7 +401,7 @@
 
   function sectionMarkup(block, recordings, open) {
     const takes = recordings.map((recording) => {
-      const status = recording.status === "ready" ? `${recording.mediaKind === "video" ? "Video" : "Audio"} · ${U.formatPlaybackTime(U.durationSeconds(recording.durationMs))}` : recording.status;
+      const status = recording.status === "ready" ? `${recording.mediaKind === "video" ? "Video" : "Audio"}${recording.fxContentType ? " + FX" : ""} · ${U.formatPlaybackTime(U.durationSeconds(recording.durationMs))}` : recording.status;
       return `<button class="archive-take" type="button" data-archive-recording="${escapeHTML(recording.id)}" ${recording.status === "ready" ? "" : "aria-disabled=\"true\""}><strong>${escapeHTML(U.takeLabel(recording))}</strong><span>${escapeHTML(shortRecordedAt(recording.recordedAt))}</span><small>${escapeHTML(status)}${recording.notes ? ` · ${escapeHTML(recording.notes)}` : ""}</small></button>`;
     }).join("");
     return `<details class="archive-section" ${open ? "open" : ""}><summary><span class="archive-section-title"><strong>${escapeHTML(block.title)}</strong><small>${escapeHTML(block.category || "practice")}</small></span><span class="archive-section-total"><b>${U.formatPracticeDuration(block.elapsedMs || 0, true)}</b>${recordings.length} take${recordings.length === 1 ? "" : "s"}</span></summary><div class="archive-section-body">${block.notes ? `<p class="archive-section-note">${escapeHTML(block.notes)}</p>` : ""}${takes ? `<div class="archive-take-list">${takes}</div>` : '<p class="archive-section-note">No saved takes in this section.</p>'}</div></details>`;
@@ -425,9 +425,16 @@
     setNoteStatus("Cloud synced");
     renderPlayerMetadata(recording);
     drawPlayerWaveform(0);
+    const isVideo = recording.mediaKind === "video";
+    const hasFx = Boolean(recording.fxContentType);
     const assetSwitch = $("#archive-player-asset-switch");
-    assetSwitch.hidden = recording.mediaKind !== "video";
-    assetSwitch.querySelectorAll("button").forEach((button) => button.classList.toggle("active", button.dataset.archiveAsset === state.currentAsset));
+    assetSwitch.hidden = !isVideo && !hasFx;
+    assetSwitch.querySelectorAll("button").forEach((button) => {
+      const asset = button.dataset.archiveAsset;
+      button.hidden = (asset === "video" && !isVideo) || (asset === "fx" && !hasFx);
+      if (asset === "fx") button.textContent = globalThis.JazzRecording?.fxMixLabel(recording) || "FX mix";
+      button.classList.toggle("active", asset === state.currentAsset);
+    });
     markActiveTake();
     await loadPlayerAsset(state.currentAsset, true);
   }
@@ -437,13 +444,15 @@
     const format = recording.mediaKind === "video"
       ? `${recording.videoWidth || "?"}×${recording.videoHeight || "?"} video + WAV master`
       : (recording.contentType === "audio/wav" ? "Lossless WAV" : recording.contentType || "Audio");
+    const fxLabel = recording.fxContentType ? (globalThis.JazzRecording?.fxMixLabel(recording) || "FX mix") : "";
+    const sizes = { video: recording.videoSizeBytes, fx: recording.fxSizeBytes };
     const rows = [
       ["Section", recording.practiceBlockTitle || "Uncategorized practice"],
       ...(tune ? [["Tune", tune]] : []),
       ["Track", recording.practiceBlockTrack || recording.practiceBlockCategory || "—"],
-      ["Format", format],
+      ["Format", fxLabel ? `${format} + ${fxLabel}` : format],
       ...(recording.sampleRate ? [["Sample rate", `${Math.round(recording.sampleRate / 1000)} kHz · ${recording.channels || 1} channel${recording.channels === 1 ? "" : "s"}`]] : []),
-      ["File size", formatBytes(state.currentAsset === "video" ? recording.videoSizeBytes : recording.sizeBytes)],
+      ["File size", formatBytes(sizes[state.currentAsset] ?? recording.sizeBytes)],
     ];
     $("#archive-player-metadata").innerHTML = rows.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("");
     updateDownloadButton();
@@ -452,7 +461,7 @@
   function updateDownloadButton() {
     const button = $("#archive-download-take");
     if (!button) return;
-    button.textContent = state.currentAsset === "video" ? "Download video" : "Download lossless audio";
+    button.textContent = { video: "Download video", fx: "Download FX mix" }[state.currentAsset] || "Download lossless audio";
     button.disabled = !state.currentRecording;
   }
 
