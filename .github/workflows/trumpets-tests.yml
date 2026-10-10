@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
+          go-version: "1.24.x"
           cache-dependency-path: jazz-api/go.sum
       - uses: actions/setup-node@v4
         with:
@@ -37,12 +37,14 @@ jobs:
       - name: All Go and database tests
         working-directory: jazz-api
         run: go test ./...
-      - name: Jazz, trumpet and Commonplace JavaScript tests
-        run: node --test assets/jazz/*.test.js assets/trumpets/*.test.js assets/commonplace/*.test.js
+      - name: Jazz, trumpet, Commonplace and Workbench JavaScript tests
+        run: node --test assets/jazz/*.test.js assets/trumpets/*.test.js assets/commonplace/*.test.js assets/workbench/*.test.js
       - name: Search/recheck adapters
         run: python -m unittest discover -s tools/trumpets -p 'test_*.py'
       - name: Commonplace route installer
         run: python -m unittest discover -s tools/commonplace -p 'test_*.py'
+      - name: Workbench route installer
+        run: python -m unittest discover -s tools/workbench -p 'test_*.py'
       - name: Install browser test dependency
         run: npm install --no-save --package-lock=false playwright@1.58.2
       - name: Install Chromium
@@ -51,6 +53,8 @@ jobs:
         run: node tools/trumpets/browser-check.cjs
       - name: Commonplace browser check (fictional data, 390 and 1440 px)
         run: node tools/commonplace/browser-check.cjs
+      - name: Workbench browser check (fake model, 390/768/1440 px, two devices on one thread)
+        run: node tools/workbench/browser-check.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -61,3 +65,8 @@ jobs:
         with:
           name: commonplace-visual-verification
           path: docs/commonplace/screenshots/*.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workbench-visual-verification
+          path: docs/workbench/screenshots/*.png

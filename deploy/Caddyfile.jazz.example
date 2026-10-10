@@ -1,24 +1,28 @@
 # Add these directives inside the existing zachbednarke.com site block. The
 # whole fragment is one `route`, so Caddy runs it in the order written; it must
 # wrap the site's file_server. Do not commit secrets: the sign-in service reads
-# /etc/jazz-auth.json, and JAZZ_API_URL / JAZZ_GATEWAY_KEY live in the Caddy
-# service environment. See deploy/jazz-auth.md.
+# /etc/jazz-auth.json, and JAZZ_API_URL / JAZZ_GATEWAY_KEY / WORKBENCH_API_URL
+# live in the Caddy service environment. See deploy/jazz-auth.md.
 
 # If the parent site has a site-wide Permissions-Policy that disables the
 # microphone, scope that policy away from Jazz. Two header directives that set
 # the same field can leave the restrictive value on the Jazz response.
 # The live-effects tool is embedded from this same origin, so a site-wide
 # X-Frame-Options policy must be SAMEORIGIN rather than DENY.
+# Hold-to-talk (Workbench) also runs on /trumpets and /commonplace.
 @not_jazz {
-    not path /jazz /jazz/* /assets/jazz/*
+    not path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /commonplace /commonplace/*
 }
 
 header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 
 # Private paths. To protect another app, add its page and asset paths here;
-# nothing else needs to change. /commonplace (the private archive) is here too.
+# nothing else needs to change. /commonplace (the private archive) and
+# /workbench (the owner-only agent's API) are here too. /assets/workbench/*
+# (the sheet's code, also in the public repository) stays public so service
+# workers can import it.
 @jazz_private {
-    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/* /commonplace /commonplace/* /assets/commonplace/*
+    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/* /commonplace /commonplace/* /assets/commonplace/* /workbench /workbench/*
     not path /jazz/share/*
 }
 
@@ -90,6 +94,18 @@ route {
             header_up Host {upstream_hostport}
             header_up X-Jazz-User {http.request.header.X-Jazz-User}
             header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+        }
+    }
+
+    # Workbench (the owner-only agent sheet) is a separate Cloud Run service
+    # from the same image. Same private gateway; streams are flushed immediately.
+    # deploy/install-workbench-route.py adds this block to a live Caddyfile.
+    handle_path /workbench/api/* {
+        reverse_proxy {$WORKBENCH_API_URL} {
+            header_up Host {upstream_hostport}
+            header_up X-Jazz-User {http.request.header.X-Jazz-User}
+            header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+            flush_interval -1
         }
     }
 

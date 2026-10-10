@@ -60,6 +60,21 @@ jobs:
         run: |
           url=$(gcloud run services describe jazz-api --project "$RUN_PROJECT" --region "$RUN_REGION" --format 'value(status.url)')
           curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/health"
+      - name: Deploy Workbench (the API's image, its own service)
+        # Created once by hand with its environment and secrets
+        # (docs/workbench/README.md#deploy); this keeps them and ships the
+        # new image. Concurrency and always-on CPU are why it is separate:
+        # event streams stay open and the agent loop outlives its request.
+        if: vars.WORKBENCH_ENABLED == 'true'
+        run: |
+          flags=(--project "$RUN_PROJECT" --region "$RUN_REGION")
+          revision=$(gcloud run services describe jazz-api "${flags[@]}" --format 'value(status.latestReadyRevisionName)')
+          image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
+          gcloud run deploy workbench --image "$image" --quiet "${flags[@]}" \
+            --timeout 3600 --concurrency 40 --cpu 1 --memory 512Mi --no-cpu-throttling --min-instances 0 --max-instances 2
+          gcloud run services update-traffic workbench --to-latest --quiet "${flags[@]}"
+          url=$(gcloud run services describe workbench "${flags[@]}" --format 'value(status.url)')
+          curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/health"
       - name: Package the static site
         run: tar -czf "site-${{ steps.commit.outputs.sha }}.tar.gz" index.html .nojekyll assets jazz trumpets commonplace privacy
       - name: Publish the static release

@@ -1,0 +1,155 @@
+/* Workbench: a liquid-glass sheet on every private page. Bottom sheet on
+ * phones, split view on tablets, side panel on desktops. Every selector is
+ * scoped under .wb so the host page's styles are untouched. */
+.wb {
+  --wb-ink: #16171B; --wb-ink-2: #4C505A; --wb-ink-3: #6E737D;
+  --wb-hair: rgba(22, 26, 40, .11);
+  --wb-glass: rgba(255, 255, 255, .78); --wb-glass-hi: rgba(255, 255, 255, .95); --wb-glass-lo: rgba(20, 24, 40, .08);
+  --wb-shadow: rgba(22, 26, 46, .18);
+  --wb-lamp: #9C5A17; --wb-lamp-ink: #FFFFFF; --wb-mark: rgba(156, 90, 23, .14);
+  --wb-me: #2D6BE0; --wb-me-ink: #FFFFFF;
+  --wb-green: #1F8A4C; --wb-red: #C23B32; --wb-amber: #B7791F;
+  --wb-focus: #2D6BE0;
+  --wb-sans: "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --wb-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --wb-spring: cubic-bezier(.2, .9, .25, 1.08);
+  --wb-ease: cubic-bezier(.2, .7, .2, 1);
+  --wb-width: 420px;
+  font-family: var(--wb-sans); color: var(--wb-ink); font-size: 15px; line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+/* Dark when the OS is dark, or when the host page is (Jazz and Trumpets are). */
+@media all {
+  .wb.wb-dark {
+    --wb-ink: #ECEAE5; --wb-ink-2: #B4B5BB; --wb-ink-3: #8A8D96;
+    --wb-hair: rgba(255, 255, 255, .1);
+    --wb-glass: rgba(28, 30, 38, .78); --wb-glass-hi: rgba(255, 255, 255, .16); --wb-glass-lo: rgba(0, 0, 0, .35);
+    --wb-shadow: rgba(0, 0, 0, .55);
+    --wb-lamp: #E2A55C; --wb-lamp-ink: #1A1206; --wb-mark: rgba(226, 165, 92, .16);
+    --wb-me: #4C86F0; --wb-green: #3FB871; --wb-red: #F06A5F; --wb-amber: #E2A55C; --wb-focus: #7FA8FF;
+  }
+}
+.wb *, .wb *::before, .wb *::after { box-sizing: border-box; }
+.wb button { font: inherit; color: inherit; margin: 0; }
+.wb-sheet, .wb-head, .wb-foot, .wb-log, .wb-compose { margin: 0; min-width: 0; }
+.wb :focus-visible { outline: 2px solid var(--wb-focus); outline-offset: 2px; }
+
+.wb-glass {
+  background: linear-gradient(180deg, var(--wb-glass-hi) -140%, var(--wb-glass) 38%, var(--wb-glass) 100%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%); backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: inset 0 1px 0 0 var(--wb-glass-hi), inset 0 -1px 0 0 var(--wb-glass-lo), inset 0 0 0 .5px var(--wb-glass-lo), 0 18px 40px -18px var(--wb-shadow), 0 2px 6px -2px var(--wb-shadow);
+}
+
+/* ---------- The pill ---------- */
+.wb-pill {
+  position: fixed; z-index: 2147483000; right: max(16px, env(safe-area-inset-right)); bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--wb-lift, 0px));
+  display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 16px 0 12px; border: 0; border-radius: 999px; cursor: pointer;
+  transition: transform .35s var(--wb-spring), opacity .2s var(--wb-ease), bottom .25s var(--wb-ease);
+}
+.wb-pill:hover { transform: translateY(-1px); }
+.wb-pill:active { transform: scale(.97); }
+.wb-pill .wb-glyph { width: 20px; height: 20px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff 0 12%, var(--wb-lamp) 13% 60%, transparent 62%); box-shadow: 0 0 0 1.5px var(--wb-lamp) inset; }
+.wb-pill .wb-pill-label { font-weight: 560; letter-spacing: .01em; }
+.wb-pill .wb-dot { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--wb-lamp); color: var(--wb-lamp-ink); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.wb-pill .wb-dot[hidden] { display: none; }
+/* Phones: an icon-only pill that keeps clear of the page's own docks. */
+.wb-mode-sheet .wb-pill { width: 48px; height: 48px; padding: 0; justify-content: center; }
+.wb-mode-sheet .wb-pill .wb-pill-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.wb-mode-sheet .wb-pill .wb-dot { position: absolute; top: -2px; right: -2px; }
+.wb-open .wb-pill { opacity: 0; pointer-events: none; transform: translateY(8px); }
+
+/* ---------- The sheet ---------- */
+.wb-sheet {
+  position: fixed; z-index: 2147483001; display: flex; flex-direction: column; overflow: hidden;
+  transition: transform .45s var(--wb-spring), opacity .25s var(--wb-ease);
+}
+.wb-sheet[hidden] { display: none; }
+/* Phone: a bottom sheet with a thumb-reachable composer, above the keyboard. */
+.wb-mode-sheet .wb-sheet { left: 0; right: 0; bottom: var(--wb-kb, 0px); height: min(88dvh, calc(100dvh - 24px - var(--wb-kb, 0px))); border-radius: 22px 22px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+.wb-mode-sheet .wb-grab { display: block; }
+/* Tablet: split view; the page moves over and stays usable. */
+.wb-mode-split .wb-sheet { top: 0; right: 0; bottom: 0; width: min(46vw, 460px); border-radius: 0; border-left: .5px solid var(--wb-hair); }
+html.wb-split-open body { margin-right: min(46vw, 460px) !important; transition: margin-right .35s var(--wb-ease); }
+/* Desktop: a floating side panel. */
+.wb-mode-panel .wb-sheet { top: 16px; right: 16px; bottom: 16px; width: var(--wb-width); border-radius: 22px; }
+
+.wb-grab { display: none; width: 44px; height: 5px; margin: 8px auto 0; border-radius: 3px; background: var(--wb-hair); border: 0; padding: 0; touch-action: none; cursor: grab; }
+.wb-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px 16px; border-bottom: .5px solid var(--wb-hair); }
+.wb-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wb-title small { display: block; font-weight: 400; color: var(--wb-ink-3); font-size: 12px; }
+.wb-icon { flex: none; width: 36px; height: 36px; border-radius: 12px; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; color: var(--wb-ink-2); }
+.wb-icon:hover { background: var(--wb-glass-lo); color: var(--wb-ink); }
+.wb-icon svg { width: 18px; height: 18px; }
+.wb-threads { max-width: 140px; height: 32px; border-radius: 10px; border: .5px solid var(--wb-hair); background: transparent; color: inherit; font: inherit; font-size: 13px; padding: 0 6px; }
+
+.wb-menu { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: .5px solid var(--wb-hair); font-size: 13px; }
+.wb-menu[hidden] { display: none; }
+.wb-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border-radius: 999px; border: .5px solid var(--wb-hair); background: transparent; cursor: pointer; font-size: 13px; }
+.wb-chip[aria-pressed="true"] { background: var(--wb-mark); border-color: var(--wb-lamp); color: var(--wb-ink); }
+.wb-chip input { margin: 0; }
+
+.wb-log { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px 4px; display: flex; flex-direction: column; gap: 10px; -webkit-overflow-scrolling: touch; }
+.wb-empty { margin: auto; text-align: center; color: var(--wb-ink-3); max-width: 280px; font-size: 14px; }
+.wb-empty strong { display: block; color: var(--wb-ink); font-size: 16px; margin-bottom: 4px; }
+
+.wb-msg { max-width: 88%; padding: 9px 13px; border-radius: 18px; word-wrap: break-word; overflow-wrap: anywhere; }
+.wb-msg p { margin: 0 0 6px; } .wb-msg p:last-child { margin-bottom: 0; }
+.wb-msg ul, .wb-msg ol { margin: 4px 0 6px; padding-left: 20px; }
+.wb-msg code { font-family: var(--wb-mono); font-size: .88em; background: var(--wb-glass-lo); padding: 1px 4px; border-radius: 5px; }
+.wb-msg pre { margin: 6px 0; padding: 8px 10px; background: var(--wb-glass-lo); border-radius: 10px; overflow-x: auto; }
+.wb-msg pre code { background: none; padding: 0; }
+.wb-msg a { color: inherit; }
+.wb-msg-user { align-self: flex-end; background: var(--wb-me); color: var(--wb-me-ink); border-bottom-right-radius: 6px; }
+.wb-msg-assistant { align-self: flex-start; background: var(--wb-glass-hi); border: .5px solid var(--wb-hair); border-bottom-left-radius: 6px; }
+.wb-msg.wb-pending { opacity: .62; }
+.wb-msg .wb-meta { display: block; margin-top: 4px; font-size: 11px; opacity: .75; }
+.wb-msg.wb-streaming::after { content: ""; display: inline-block; width: 7px; height: 14px; margin-left: 2px; vertical-align: -2px; background: currentColor; opacity: .5; animation: wb-blink 1s steps(2) infinite; }
+@keyframes wb-blink { 50% { opacity: 0; } }
+.wb-att { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; opacity: .9; }
+.wb-att audio { height: 32px; max-width: 220px; }
+
+.wb-card { align-self: stretch; padding: 12px 14px; border-radius: 16px; border: .5px solid var(--wb-hair); background: var(--wb-glass-hi); font-size: 14px; }
+.wb-card h4 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.wb-card p { margin: 4px 0; color: var(--wb-ink-2); }
+.wb-card .wb-tag { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 999px; background: var(--wb-mark); color: var(--wb-lamp); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.wb-card .wb-warn { color: var(--wb-amber); font-size: 12px; font-weight: 560; }
+.wb-card .wb-preview { max-height: 18em; overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; color: var(--wb-ink-2); border-left: 2px solid var(--wb-hair); padding-left: 8px; margin: 6px 0; }
+.wb-card .wb-actions { display: flex; gap: 8px; margin-top: 10px; }
+.wb-btn { min-height: 40px; padding: 0 16px; border-radius: 12px; border: .5px solid var(--wb-hair); background: transparent; cursor: pointer; font-weight: 560; }
+.wb-btn-primary { background: var(--wb-lamp); color: var(--wb-lamp-ink); border-color: transparent; }
+.wb-btn:disabled { opacity: .5; cursor: default; }
+.wb-state { font-size: 12px; color: var(--wb-ink-3); margin-top: 8px; }
+.wb-state-approved { color: var(--wb-green); } .wb-state-failed, .wb-state-rejected { color: var(--wb-red); }
+.wb-lights { display: grid; gap: 6px; margin-top: 6px; }
+.wb-light { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.wb-light i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--wb-ink-3); }
+.wb-light i[data-light="green"] { background: var(--wb-green); } .wb-light i[data-light="red"] { background: var(--wb-red); }
+.wb-light i[data-light="running"] { background: var(--wb-amber); animation: wb-pulse 1.4s ease-in-out infinite; }
+@keyframes wb-pulse { 50% { opacity: .35; } }
+.wb-light a { color: inherit; }
+
+.wb-steps { align-self: flex-start; display: grid; gap: 2px; font-size: 12px; color: var(--wb-ink-3); padding: 0 4px; }
+.wb-notice { align-self: center; font-size: 12px; color: var(--wb-ink-3); text-align: center; padding: 2px 8px; }
+.wb-notice.wb-bad { color: var(--wb-red); }
+
+.wb-foot { padding: 6px 12px 10px; border-top: .5px solid var(--wb-hair); display: grid; gap: 6px; }
+.wb-status { min-height: 16px; font-size: 12px; color: var(--wb-ink-3); display: flex; flex-wrap: wrap; gap: 2px 10px; justify-content: space-between; }
+.wb-status .wb-outbox { color: var(--wb-amber); }
+.wb-compose { display: flex; align-items: flex-end; gap: 6px; }
+.wb-input { flex: 1 1 0; width: 0; min-width: 0; margin: 0; box-shadow: none; min-height: 44px; max-height: 40vh; resize: none; padding: 11px 14px; border-radius: 22px; border: .5px solid var(--wb-hair); background: var(--wb-glass-hi); color: var(--wb-ink); font: inherit; line-height: 1.35; }
+.wb-input:focus { outline: none; border-color: var(--wb-focus); }
+.wb-send, .wb-mic, .wb-attach { flex: none; width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center; cursor: pointer; }
+.wb-send { background: var(--wb-lamp); color: var(--wb-lamp-ink); }
+.wb-send:disabled { opacity: .45; cursor: default; }
+.wb-mic, .wb-attach { background: var(--wb-glass-lo); color: var(--wb-ink); touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.wb-mic[aria-pressed="true"] { background: var(--wb-red); color: #fff; transform: scale(1.12); transition: transform .2s var(--wb-spring); }
+.wb-send svg, .wb-mic svg, .wb-attach svg { width: 20px; height: 20px; }
+.wb-hint { font-size: 12px; color: var(--wb-ink-3); }
+.wb-rec { color: var(--wb-red); font-variant-numeric: tabular-nums; }
+
+.wb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wb *, .wb-pill, .wb-sheet { transition: none !important; animation: none !important; }
+}
+@media print { .wb { display: none !important; } }

@@ -62,6 +62,19 @@ PRIVATE = ['/jazz/', '/assets/jazz/clip-studio.js', '/jazz/films/index.json', '/
            '/trumpets/', '/assets/trumpets/app.js', '/trumpets/api/v1/trumpets/listings', '/trumpets/api/v1/trumpets/profile',
            '/commonplace/', '/assets/commonplace/app.js', '/commonplace/api/v1/commonplace/moments', '/commonplace/api/v1/commonplace/space']
 
+
+def workbench_installed():
+    """Workbench checks run once install-workbench-route.py has added its route."""
+    try:
+        return '/workbench/api/' in Path(os.environ.get('JAZZ_CADDYFILE', '/etc/caddy/Caddyfile')).read_text()
+    except OSError:
+        return False
+
+
+WORKBENCH = workbench_installed()
+if WORKBENCH:
+    PRIVATE += ['/workbench/api/v1/workbench/threads', '/workbench/api/v1/workbench/spend']
+
 for path in PAGES:
     status, headers, _ = request(path, headers=NAVIGATE)
     location = headers.get('Location', '')
@@ -108,6 +121,8 @@ assert request('/jazz/api/v1/sync', valid, 'POST', 'https://attacker.example')[0
 assert request('/trumpets/api/v1/trumpets/seed', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/commonplace/api/v1/commonplace/moments', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/commonplace/api/v1/commonplace/import/bundle', valid, 'POST', 'https://attacker.example')[0] == 403
+if WORKBENCH:
+    assert request('/workbench/api/v1/workbench/threads', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/auth/logout', valid, 'POST', 'https://attacker.example')[0] == 403
 print('PASS: tampered, expired and method-swapped cookies and cross-site writes denied')
 
