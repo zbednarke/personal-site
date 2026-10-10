@@ -155,6 +155,7 @@
     current = r;
     closeSheet();
     $("#space-root").hidden = r.name !== "space";
+    startWisps(); // the ambient wisps pause behind the Idea space
     for (const el of [$("#sky"), $("#page"), capsule]) el.hidden = r.name === "space";
     dock.hidden = r.name !== "moment";
     if (r.name === "space") {
@@ -354,26 +355,38 @@
     form.addEventListener("submit", (e) => { e.preventDefault(); capture(); });
     text.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") capture(); });
     let saving = false;
+    // One pending capture keeps one id across retries: a retry after a failed
+    // upload continues the same Moment instead of making a second one.
+    let pending = null;
+    text.addEventListener("input", () => { if (pending && !pending.momentId) pending = null; });
     async function capture(extra = {}) {
       if (saving) return;
       const parsed = M.parseCapture(text.value);
-      if (!parsed.url && !parsed.text && !files.length) { status.textContent = "Paste or drop something first."; return; }
+      if (!parsed.url && !parsed.text && !files.length && !(pending && pending.momentId)) { status.textContent = "Paste or drop something first."; return; }
       saving = true;
       $("#capSave").disabled = true;
       status.className = "status";
       status.textContent = "Keeping it…";
+      if (!pending || (extra.captureId && pending.id !== extra.captureId)) pending = { id: extra.captureId || M.newId(), momentId: "" };
       try {
-        const body = { clientCaptureId: extra.captureId || M.newId(), text: parsed.text, url: parsed.url, timezone: BROWSER_TZ, ...extra.fields };
-        if (!parsed.url && !parsed.text && files.some((f) => f.type.startsWith("audio/"))) body.source = "voice";
-        const created = await api("/moments", body);
-        const id = created.moment.id;
-        for (let i = 0; i < files.length; i++) {
-          status.textContent = `Keeping file ${i + 1} of ${files.length}…`;
-          await uploadFile(id, files[i]);
+        if (!pending.momentId) {
+          const body = { clientCaptureId: pending.id, text: parsed.text, url: parsed.url, timezone: BROWSER_TZ, ...extra.fields };
+          if (!parsed.url && !parsed.text && files.some((f) => f.type.startsWith("audio/"))) body.source = "voice";
+          pending.momentId = (await api("/moments", body)).moment.id;
         }
-        files = [];
+        const id = pending.momentId;
+        const total = files.length;
+        while (files.length) {
+          status.textContent = `Keeping file ${total - files.length + 1} of ${total}…`;
+          await uploadFile(id, files[0]);
+          files.shift(); // uploaded: a retry will not send it again
+        }
+        pending = null;
         text.value = "";
-        location.hash = `#m/${id}?details=1`;
+        const target = `#m/${id}?details=1`;
+        // A shared link must not be captured again by Back or a reload.
+        if (extra.replace) location.replace(target);
+        else location.hash = target;
       } catch (err) {
         status.className = "status err";
         status.textContent = err.message;
@@ -385,7 +398,9 @@
     }
     if (share && (share.url || share.text)) {
       text.value = [share.text, share.url].filter(Boolean).join(" ");
-      capture({ fields: share.title ? { linkTitle: share.title } : {} });
+      // The same share link always names the same capture, so a reload returns
+      // the Moment it already made instead of making another.
+      capture({ captureId: M.captureIdFor("share:" + location.hash), replace: true, fields: share.title ? { linkTitle: share.title } : {} });
     } else if (!narrow.matches) text.focus({ preventScroll: true });
   }
 
@@ -898,8 +913,13 @@
       </form>`, "Write in the margin");
     $("#cTitle", el).focus();
     $("#cCancel", el).addEventListener("click", closeSheet);
+    let composing = false;
     $("#composeForm", el).addEventListener("submit", async (e) => {
       e.preventDefault();
+      if (composing) return;
+      composing = true;
+      const submit = $('#composeForm button[type="submit"]', el);
+      submit.disabled = true;
       const body = { title: $("#cTitle", el).value.trim(), body: $("#cBody", el).value.trim(), type: $("#cType", el).value, ...anchor };
       const link = $("#cLink", el).value.trim();
       if (link) body.linkUrl = link;
@@ -914,6 +934,8 @@
       } catch (err) {
         $("#cStatus", el).className = "status err";
         $("#cStatus", el).textContent = err.message;
+        composing = false;
+        submit.disabled = false;
       }
     });
   }
@@ -1351,14 +1373,21 @@
     }
   }
   function loop(t) { if (t - lastFrame > 33) { draw(t); lastFrame = t; } wraf = requestAnimationFrame(loop); }
-  function startWisps() { cancelAnimationFrame(wraf); size(); if (reduce.matches || current.name === "space") draw(0); else wraf = requestAnimationFrame(loop); }
+  function startWisps() {
+    cancelAnimationFrame(wraf);
+    wraf = 0;
+    if (current.name === "space") return;
+    size();
+    if (reduce.matches) draw(0);
+    else wraf = requestAnimationFrame(loop);
+  }
   reduce.addEventListener?.("change", startWisps);
-  document.addEventListener("visibilitychange", () => { if (document.hidden) cancelAnimationFrame(wraf); else startWisps(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { cancelAnimationFrame(wraf); wraf = 0; } else startWisps(); });
   addEventListener("resize", () => { size(); draw(performance.now()); layoutNotes(); });
   narrow.addEventListener?.("change", () => { if (current.name === "moment" && S.full) renderView(); });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(layoutNotes);
 
   startWisps();
   router();
-  globalThis.__commonplace = { S, reveal, setView, setMargin, api };
+  globalThis.__commonplace = { S, reveal, setView, setMargin, api, wispsRunning: () => wraf !== 0 };
 })();

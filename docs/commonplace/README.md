@@ -137,11 +137,18 @@ Moment in place and never duplicates it.
 - A changed file (different SHA-256) replaces the stored one; the old object is
   deleted after the import commits.
 - Annotations are imported in `pencil` (or `ink` when marked). Once the owner
-  keeps, erases or edits a note, re-imports never change it.
+  keeps, erases or edits a note, re-imports never change it. Likewise a line
+  the owner edited keeps the owner's words (only its position follows the
+  manifest), and people the owner attached to the Moment in the app stay.
 - Threads are matched by `key` across bundles. Each bundle owns the knots it
   imported, so two bundles can add knots to one thread.
 - **People keys are global**: use the same `key` for the same person in every
   bundle. A new key is matched to an existing person by name or alias first.
+  A re-import renames a person only while they still carry the name an import
+  of that key gave them: never after the owner renamed them, and never a person
+  matched by name or alias.
+- Files are matched by form field name, then exact file name, then base name;
+  two files matching at the same step are refused rather than guessed.
 
 The response reports `momentId`, `created`, `counts`, `filesStored`,
 `filesKept`, `missingFiles`, `unusedFiles`, `removed` and `warnings`. A
@@ -267,8 +274,10 @@ browser holds but did not send, so a preview can count matches).
 - **People** come from authors (`discord:<id>`), with their name and nickname
   as aliases; an author already known by name or alias is reused.
 - **Idempotent on message ids**: a message is never imported twice, even with a
-  different gap. A re-import refreshes reactions and edits, and fills in media
-  that was missing. Media can arrive in later batches.
+  different gap. A re-import refreshes reactions and fills in media that was
+  missing (media can arrive in later batches). A message's words change only
+  when Discord's edit time is newer than the one stored, and never on a line
+  the owner edited. A zip may expand to at most 512 MB.
 - The response is a preview: `groups` (start, starter, excerpt, counts,
   whether it already exists), `authors`, and `totals`. With `dryRun=1` nothing
   is written.

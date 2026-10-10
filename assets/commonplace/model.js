@@ -382,6 +382,22 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
+  /** A UUID derived from a string, so the same share link always names the same capture. */
+  function captureIdFor(seed) {
+    const words = [0, 1, 2, 3].map((salt) => {
+      let h = 2166136261 ^ salt;
+      const text = `${salt}|${seed}`;
+      for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0;
+      h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d) >>> 0; h ^= h >>> 12;
+      return (h >>> 0).toString(16).padStart(8, "0");
+    });
+    const hex = words.join("").split("");
+    hex[12] = "4";
+    hex[16] = "89ab"[parseInt(hex[16], 16) & 3];
+    const h = hex.join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+
   function excerpt(s, n = 160) {
     s = String(s || "").replace(/\s+/g, " ").trim();
     if (s.length <= n) return s;
@@ -393,6 +409,6 @@
     KINDS, KIND_LABEL, SOURCES, SOURCE_LABEL, MONTHS, WEEKDAYS, ALWAYS_DARK, PHASE_NOTE,
     localParts, zonedToISO, isoToLocalInput, formatHour, hourText, formatDate, duration, relative, lightFor, dialSVG, wallLabel, momentInstant,
     initials, hue, withLabel, isSpecial, parseCapture, parseShareHash, route, layoutNotes, visibleNotes, pencilCount,
-    threadGeometry, waveY, splitSnippet, metaBits, batchFiles, pickExportFile, suggestKind, newId, excerpt,
+    threadGeometry, waveY, splitSnippet, metaBits, batchFiles, pickExportFile, suggestKind, newId, captureIdFor, excerpt,
   };
 });

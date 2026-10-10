@@ -291,12 +291,21 @@ func cpOneLine(s string, limit int, field string) (string, error) {
 	return cpText(strings.Join(strings.Fields(s), " "), limit, field)
 }
 
+var cpZoneName = regexp.MustCompile(`^(UTC|[A-Za-z][A-Za-z_-]*(/[A-Za-z0-9][A-Za-z0-9_+-]*){1,2})$`)
+
+// cpTimezone defaults an omitted zone to UTC (see cpRequiredTimezone).
 func cpTimezone(tz string) (string, error) {
-	tz = strings.TrimSpace(tz)
-	if tz == "" {
+	if strings.TrimSpace(tz) == "" {
 		return "UTC", nil
 	}
-	if len(tz) > 64 || strings.Contains(tz, "..") {
+	return cpRequiredTimezone(tz)
+}
+
+// cpRequiredTimezone accepts only real IANA names ("Area/City" or UTC); Go's
+// special "Local" and other names Postgres would not know are refused.
+func cpRequiredTimezone(tz string) (string, error) {
+	tz = strings.TrimSpace(tz)
+	if len(tz) > 64 || strings.Contains(tz, "..") || !cpZoneName.MatchString(tz) {
 		return "", errors.New("timezone must be an IANA zone such as America/Los_Angeles")
 	}
 	if _, err := time.LoadLocation(tz); err != nil {
@@ -1092,7 +1101,7 @@ func (app *application) cpPatchMoment(w http.ResponseWriter, r *http.Request) {
 		next.Source = p.Source.Value
 	}
 	if p.Timezone.Set {
-		next.Timezone, err = cpTimezone(p.Timezone.Value)
+		next.Timezone, err = cpRequiredTimezone(p.Timezone.Value)
 		errs = append(errs, err)
 	}
 	if p.OccurredAt.Set {
@@ -1363,7 +1372,7 @@ func (app *application) cpPatchLine(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, err.Error())
 		return
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE cp_lines SET speaker_is_me=$2,speaker_person_id=$3,speaker_label=$4,body=$5,said_at=$6,time_label=$7,day_label=$8,meta=$9,artifact_id=$10,rect=$11,revision=revision+1,updated_at=now() WHERE id=$1`,
+	_, err = tx.Exec(r.Context(), `UPDATE cp_lines SET speaker_is_me=$2,speaker_person_id=$3,speaker_label=$4,body=$5,said_at=$6,time_label=$7,day_label=$8,meta=$9,artifact_id=$10,rect=$11,owner_touched_at=now(),revision=revision+1,updated_at=now() WHERE id=$1`,
 		id, row.me, row.person, row.label, row.body, row.at, row.timeLabel, row.dayLabel, row.meta, row.artifact, cpRectJSON(row.rect))
 	if err != nil {
 		app.serverError(w, err)
@@ -1975,8 +1984,8 @@ func cpTSQuery(q string) string {
 	tokens := cpSearchToken.FindAllString(strings.ToLower(q), 12)
 	parts := make([]string, 0, len(tokens))
 	for _, t := range tokens {
-		if len(t) > 64 {
-			t = t[:64]
+		if r := []rune(t); len(r) > 64 {
+			t = string(r[:64])
 		}
 		parts = append(parts, "'"+t+"':*")
 	}

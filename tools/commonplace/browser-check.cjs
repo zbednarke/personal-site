@@ -124,7 +124,7 @@ function discordFixtureDir() {
     glBrowser = await chromium.launch({ ...exe, headless: true, args: ["--no-sandbox", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
     const errors = [];
     const newPage = async (width, height, opts = {}) => {
-      const ctx = await (opts.gl ? glBrowser : browser).newContext({ viewport: { width, height }, deviceScaleFactor: 1, colorScheme: opts.colorScheme || "light", hasTouch: !!opts.touch, isMobile: !!opts.touch, reducedMotion: "reduce" });
+      const ctx = await (opts.gl ? glBrowser : browser).newContext({ viewport: { width, height }, deviceScaleFactor: 1, colorScheme: opts.colorScheme || "light", hasTouch: !!opts.touch, isMobile: !!opts.touch, reducedMotion: opts.motion ? "no-preference" : "reduce" });
       const page = await ctx.newPage();
       page.on("pageerror", (e) => errors.push(`${width}px: ${e.message}`));
       page.on("console", (m) => { if (m.type() === "error" && !/fonts\.g|Failed to load resource/.test(m.text())) errors.push(`${width}px console: ${m.text()}`); });
@@ -152,6 +152,47 @@ function discordFixtureDir() {
     await page.click('#detForm button[type="submit"]');
     await page.waitForSelector(".sheet", { state: "detached" });
     await page.waitForFunction(() => document.querySelector(".prov")?.textContent.includes("Example Cousin"));
+    const count = async () => (await call("GET", "/moments?limit=200")).moments.length;
+
+    // The share-sheet route keeps once: Back and a reload never capture again.
+    const before = await count();
+    await page.goto(base + "/commonplace/#");
+    await page.waitForSelector(".card");
+    const shareURL = base + "/commonplace/#add?text=Shared%20fixture%20note&url=https%3A%2F%2Fexample.com%2Fshared";
+    await page.goto(shareURL);
+    await page.waitForSelector(".sheet h2");
+    const sharedHash = await page.evaluate(() => location.hash.replace(/\?.*$/, ""));
+    assert.match(sharedHash, /^#m\//);
+    assert.equal(await count(), before + 1);
+    await page.goBack();
+    await page.waitForFunction(() => !location.hash.startsWith("#add"));
+    await page.waitForTimeout(300);
+    assert.equal(await count(), before + 1, "Back must not re-run the share capture");
+    await page.goto(base + "/commonplace/");
+    await page.goto(shareURL); // as if the share link were opened or reloaded again
+    await page.waitForFunction((h) => location.hash.startsWith(h), sharedHash);
+    assert.equal(await count(), before + 1, "the same share link returns the same Moment");
+
+    // A failed upload can be retried without making a second Moment.
+    await page.goto(base + "/commonplace/");
+    await page.waitForSelector("#capText");
+    let failOnce = true;
+    await page.route("**/commonplace/api/v1/commonplace/moments/*/artifacts", (r) => {
+      if (failOnce) { failOnce = false; return r.fulfill({ status: 500, contentType: "application/json", body: '{"error":"simulated storage outage"}' }); }
+      return r.continue();
+    });
+    const beforeRetry = await count();
+    await page.fill("#capText", "Fixture with a picture");
+    await page.setInputFiles("#capFiles", { name: "fixture.png", mimeType: "image/png", buffer: syntheticShot(40, 80, 3) });
+    await page.click("#capSave");
+    await page.waitForFunction(() => /simulated storage outage/.test(document.querySelector("#capStatus").textContent));
+    await page.click("#capSave");
+    await page.waitForSelector(".sheet h2");
+    assert.equal(await count(), beforeRetry + 1, "a retry continues the same Moment");
+    const retried = await call("GET", `/moments/${(await page.evaluate(() => location.hash)).slice(3).replace(/\?.*$/, "")}`);
+    assert.equal(retried.artifacts.filter((a) => a.kind === "image").length, 1);
+    await page.unroute("**/commonplace/api/v1/commonplace/moments/*/artifacts");
+    await page.keyboard.press("Escape");
 
     // The bundle Moment: the hour lights the page, the label, the screenshots.
     await page.goto(`${base}/commonplace/#m/${bundleId}`);
@@ -191,8 +232,11 @@ function discordFixtureDir() {
     await page.locator(".tx-line").nth(1).hover();
     await page.locator("[data-addline]").nth(1).click();
     await page.fill("#cTitle", "My own fixture note, in ink");
-    await page.click('#composeForm button[type="submit"]');
+    // A double submit writes the note once.
+    await page.evaluate(() => { const f = document.querySelector("#composeForm"); f.requestSubmit(); f.requestSubmit(); });
     await page.waitForFunction(() => [...document.querySelectorAll(".note.ink .note-t")].some((e) => e.textContent.includes("My own fixture note")));
+    const owned = (await call("GET", `/moments/${bundleId}`)).annotations.filter((n) => n.title === "My own fixture note, in ink");
+    assert.equal(owned.length, 1, "the compose form submits once");
     await page.click('[data-view="link"]');
     await page.waitForSelector(".lk-page");
     await page.click('[data-view="shots"]');
@@ -227,7 +271,7 @@ function discordFixtureDir() {
     assert.ok(discord.every((m) => m.kind === "dream"));
 
     // Idea space: real data, regions unnamed until named, dive hands off to the Moment view.
-    const spacePage = await newPage(1440, 900, { gl: true, colorScheme: "dark" });
+    const spacePage = await newPage(1440, 900, { gl: true, colorScheme: "dark", motion: true });
     await spacePage.goto(base + "/commonplace/#space");
     await spacePage.waitForFunction(() => globalThis.CommonplaceSpace && globalThis.CommonplaceSpace.state.items.length >= 7);
     const st = await spacePage.evaluate(() => ({ n: CommonplaceSpace.state.items.length, regions: CommonplaceSpace.state.regions.map((r) => r.name), gl: CommonplaceSpace.state.gl, depth: CommonplaceSpace.state.S.depthOnT }));
@@ -246,9 +290,11 @@ function discordFixtureDir() {
     const space = await call("GET", "/space");
     assert.equal(space.regions.length, 1);
     assert.equal(space.regions[0].name, "Fixture region");
+    assert.equal(await spacePage.evaluate(() => __commonplace.wispsRunning()), false, "the ambient wisps pause behind the Idea space");
     await spacePage.evaluate((id) => CommonplaceSpace.startDive(id), bundleId);
     await spacePage.waitForFunction((id) => location.hash.startsWith(`#m/${id}`), bundleId);
     await spacePage.waitForSelector(".moment");
+    assert.equal(await spacePage.evaluate(() => __commonplace.wispsRunning()), true, "and resume in the Moment view");
 
     // ---------------- Phone 390 ----------------
     const phone = await newPage(390, 844, { touch: true, colorScheme: "dark" });
@@ -286,7 +332,7 @@ function discordFixtureDir() {
     errors.splice(0, errors.length, ...errors.filter((e) => !/401/.test(e)));
 
     assert.deepEqual(errors, []);
-    console.log("Commonplace browser checks passed: capture, Moment view (light, label, views), margin keep/erase/undo, owner note, thread and doorways, search, Discord import preview and confirm, Idea space (level, naming, dive, phone opens on newest), 390/1440 px, signed-out banner, no runtime errors.");
+    console.log("Commonplace browser checks passed: capture (share route once, retry after a failed upload), Moment view (light, label, views), margin keep/erase/undo, owner note, thread and doorways, search, Discord import preview and confirm, Idea space (level, naming, dive, phone opens on newest), 390/1440 px, signed-out banner, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     if (glBrowser) await glBrowser.close();

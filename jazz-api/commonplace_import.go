@@ -342,10 +342,13 @@ func cpValidateBundle(b *cpBundle) error {
 		if l.Rect != nil && l.Artifact == "" {
 			bad("%s.rect needs an artifact", at)
 		}
-		for field, v := range map[string]string{"timeLabel": l.TimeLabel, "dayLabel": l.DayLabel, "speakerLabel": l.SpeakerLabel} {
+		for field, v := range map[string]string{"dayLabel": l.DayLabel, "speakerLabel": l.SpeakerLabel} {
 			if _, err := cpOneLine(v, 120, at+"."+field); err != nil {
 				errs = append(errs, err)
 			}
+		}
+		if _, err := cpOneLine(l.TimeLabel, 80, at+".timeLabel"); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	notes := map[string]bool{}
@@ -432,21 +435,31 @@ func cpValidateBundle(b *cpBundle) error {
 
 // cpFindUpload matches a manifest file reference to an uploaded part: by form
 // field name first, then by file name (with or without folders).
-func cpFindUpload(files []*cpUpload, ref string) *cpUpload {
+// Two candidates at the same step are an error, never a guess.
+func cpFindUpload(files []*cpUpload, ref string) (*cpUpload, error) {
 	if ref == "" {
-		return nil
+		return nil, nil
 	}
-	for _, f := range files {
-		if f.Field == ref {
-			return f
+	steps := []func(f *cpUpload) bool{
+		func(f *cpUpload) bool { return f.Field == ref },
+		func(f *cpUpload) bool { return f.FileName == ref },
+		func(f *cpUpload) bool { return path.Base(strings.ReplaceAll(f.FileName, `\`, "/")) == path.Base(ref) },
+	}
+	for _, match := range steps {
+		var found []*cpUpload
+		for _, f := range files {
+			if match(f) {
+				found = append(found, f)
+			}
+		}
+		if len(found) > 1 {
+			return nil, fmt.Errorf("%d uploaded files match %q; give each file its own form field name", len(found), ref)
+		}
+		if len(found) == 1 {
+			return found[0], nil
 		}
 	}
-	for _, f := range files {
-		if f.FileName == ref || path.Base(strings.ReplaceAll(f.FileName, `\`, "/")) == path.Base(ref) {
-			return f
-		}
-	}
-	return nil
+	return nil, nil
 }
 
 func (app *application) cpImportBundle(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +500,11 @@ func (app *application) cpImportBundle(w http.ResponseWriter, r *http.Request) {
 		if a.Kind != "image" && a.Kind != "audio" {
 			continue
 		}
-		up := cpFindUpload(form.Files, firstNonEmpty(a.File, a.Key))
+		up, err := cpFindUpload(form.Files, firstNonEmpty(a.File, a.Key))
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("artifacts[%d] (%s): %v", i, a.Key, err))
+			continue
+		}
 		if up == nil {
 			continue
 		}
@@ -588,7 +605,9 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
 
 	// People: keys are global, so the same friend keeps one identity across bundles.
 	personIDs := map[string]uuid.UUID{}
-	if _, err := tx.Exec(ctx, `DELETE FROM cp_moment_people WHERE moment_id=$1`, moment); err != nil {
+	// Only people a previous import attached are replaced; people the owner
+	// added in the app stay.
+	if _, err := tx.Exec(ctx, `DELETE FROM cp_moment_people WHERE moment_id=$1 AND imported`, moment); err != nil {
 		return nil, err
 	}
 	for i, p := range b.People {
@@ -605,7 +624,7 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
 			}
 			if errors.Is(err, pgx.ErrNoRows) {
 				id = uuid.New()
-				_, err = tx.Exec(ctx, `INSERT INTO cp_people(id,user_id,person_key,display_name,aliases,special) VALUES($1,$2,$3,$4,$5,$6)`, id, user, key, name, aliases, p.Special != nil && *p.Special)
+				_, err = tx.Exec(ctx, `INSERT INTO cp_people(id,user_id,person_key,display_name,imported_name,aliases,special) VALUES($1,$2,$3,$4,$4,$5,$6)`, id, user, key, name, aliases, p.Special != nil && *p.Special)
 				rep.Counts["peopleCreated"]++
 			} else if err == nil {
 				_, err = tx.Exec(ctx, `UPDATE cp_people SET person_key=coalesce(person_key,$2) WHERE id=$1`, id, key)
@@ -614,8 +633,13 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
 		if err != nil {
 			return nil, err
 		}
-		// Merge aliases; the owner's own edits to the name are kept unless the bundle changes it.
-		if _, err := tx.Exec(ctx, `UPDATE cp_people SET display_name=$2,aliases=ARRAY(SELECT DISTINCT x FROM unnest(aliases||$3::text[]) x ORDER BY x),special=coalesce($4,special),updated_at=now() WHERE id=$1`, id, name, aliases, p.Special); err != nil {
+		// Merge aliases. The name follows the bundle only while it is still the
+		// name an import of this key gave it: a person the owner renamed, or one
+		// matched by name or alias, is never renamed.
+		if _, err := tx.Exec(ctx, `UPDATE cp_people SET
+ display_name=CASE WHEN person_key=$5 AND imported_name IS NOT NULL AND display_name=imported_name THEN $2 ELSE display_name END,
+ imported_name=CASE WHEN person_key=$5 AND imported_name IS NOT NULL AND display_name=imported_name THEN $2 ELSE imported_name END,
+ aliases=ARRAY(SELECT DISTINCT x FROM unnest(aliases||$3::text[]) x ORDER BY x),special=coalesce($4,special),updated_at=now() WHERE id=$1`, id, name, aliases, p.Special, key); err != nil {
 			return nil, err
 		}
 		personIDs[p.Key] = id
@@ -624,7 +648,7 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
 			roles = append([]string{firstNonEmpty(p.Role, "sender")}, roles...)
 		}
 		for _, role := range roles {
-			if _, err := tx.Exec(ctx, `INSERT INTO cp_moment_people(moment_id,person_id,user_id,role,position) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, moment, id, user, role, i); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO cp_moment_people(moment_id,person_id,user_id,role,position,imported) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT DO NOTHING`, moment, id, user, role, i); err != nil {
 				return nil, err
 			}
 		}
@@ -709,6 +733,10 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
  original_name=CASE WHEN $11='' THEN original_name ELSE $11 END,caption=$12,alt=$13,text_content=$14,url=$15,link_title=$16,site_name=$17,captured_text=$18,captured_at=$19,updated_at=now() WHERE id=$1`,
 				id, pos, a.Kind, object, contentType, size, sha, wd, ht, dur, cpCleanFileName(a.OriginalName), caption, a.Alt, a.Text, urlValue, linkTitle, site, a.CapturedText, capturedAt)
 		} else {
+			if found && e.object != nil && a.Kind != "image" && a.Kind != "audio" {
+				// Turned into text or a link: its stored file is no longer used.
+				oldObjects = append(oldObjects, *e.object)
+			}
 			_, err = tx.Exec(ctx, `UPDATE cp_artifacts SET position=$2,kind=$3,duration_ms=coalesce($4,duration_ms),caption=$5,alt=$6,text_content=$7,url=$8,link_title=$9,site_name=$10,captured_text=$11,captured_at=$12,
  object_name=CASE WHEN $3 IN ('image','audio') THEN object_name ELSE NULL END,updated_at=now() WHERE id=$1`,
 				id, pos, a.Kind, dur, caption, a.Alt, a.Text, urlValue, linkTitle, site, a.CapturedText, capturedAt)
@@ -766,8 +794,12 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
 		timeLabel, _ := cpOneLine(l.TimeLabel, 80, "")
 		dayLabel, _ := cpOneLine(l.DayLabel, 120, "")
 		if id, ok := lineIDs[l.Key]; ok {
+			// A line the owner edited keeps the owner's version; only its place moves.
+			if _, err = tx.Exec(ctx, `UPDATE cp_lines SET position=$2 WHERE id=$1 AND owner_touched_at IS NOT NULL AND position<>$2`, id, pos); err != nil {
+				return nil, err
+			}
 			_, err = tx.Exec(ctx, `UPDATE cp_lines SET position=$2,speaker_is_me=$3,speaker_person_id=$4,speaker_label=$5,body=$6,said_at=$7,time_label=$8,day_label=$9,meta=$10,artifact_id=$11,rect=$12,
- revision=revision+1,updated_at=now() WHERE id=$1 AND (position,speaker_is_me,speaker_person_id,speaker_label,body,said_at,time_label,day_label,meta,artifact_id,rect)
+ revision=revision+1,updated_at=now() WHERE id=$1 AND owner_touched_at IS NULL AND (position,speaker_is_me,speaker_person_id,speaker_label,body,said_at,time_label,day_label,meta,artifact_id,rect)
  IS DISTINCT FROM ($2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb)`, id, pos, me, person, label, l.Text, at, timeLabel, dayLabel, meta, artifact, cpRectJSON(rect))
 		} else {
 			id := uuid.New()

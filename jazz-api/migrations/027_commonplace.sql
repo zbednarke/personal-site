@@ -202,3 +202,12 @@ CREATE TABLE IF NOT EXISTS cp_regions (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, region_key)
 );
+
+-- Owner edits survive re-imports: a line the owner edited is never changed by
+-- an import; Discord bodies change only when Discord's own edit is newer.
+ALTER TABLE cp_lines ADD COLUMN IF NOT EXISTS owner_touched_at timestamptz;
+ALTER TABLE cp_lines ADD COLUMN IF NOT EXISTS source_edited_at timestamptz;
+-- The name an import gave a person: imports rename only while the owner has not.
+ALTER TABLE cp_people ADD COLUMN IF NOT EXISTS imported_name text;
+-- People an import attached to a Moment (re-imports replace only these).
+ALTER TABLE cp_moment_people ADD COLUMN IF NOT EXISTS imported boolean NOT NULL DEFAULT false;

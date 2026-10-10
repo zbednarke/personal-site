@@ -208,43 +208,16 @@ func (app *application) cpImportDiscord(w http.ResponseWriter, r *http.Request) 
 		case f.Field == "export":
 			exportBody = f.Body
 		case f.Field == "archive" || strings.HasSuffix(strings.ToLower(f.FileName), ".zip"):
-			zr, err := zip.NewReader(bytes.NewReader(f.Body), int64(len(f.Body)))
+			body, files, err := cpUnzipExport(f.Body, cpZipTotalLimit)
 			if err != nil {
-				writeError(w, 400, "the zip archive is unreadable")
+				writeError(w, 400, err.Error())
 				return
 			}
-			var jsonFiles []*zip.File
-			for _, zf := range zr.File {
-				if zf.FileInfo().IsDir() || strings.HasPrefix(path.Base(zf.Name), ".") || strings.Contains(zf.Name, "__MACOSX") {
-					continue
-				}
-				if zf.UncompressedSize64 > cpAudioLimit {
-					continue
-				}
-				if strings.HasSuffix(strings.ToLower(zf.Name), ".json") {
-					jsonFiles = append(jsonFiles, zf)
-					continue
-				}
-				rc, err := zf.Open()
-				if err != nil {
-					continue
-				}
-				body, err := cpReadAll(rc, cpAudioLimit)
-				rc.Close()
-				if err == nil {
-					media[cpNormPath(zf.Name)] = &cpUpload{Field: "media", FileName: zf.Name, Body: body}
-				}
+			if exportBody == nil {
+				exportBody = body
 			}
-			// The channel export is the shallowest JSON file in the archive.
-			sort.Slice(jsonFiles, func(i, j int) bool {
-				return strings.Count(jsonFiles[i].Name, "/") < strings.Count(jsonFiles[j].Name, "/") || (strings.Count(jsonFiles[i].Name, "/") == strings.Count(jsonFiles[j].Name, "/") && jsonFiles[i].Name < jsonFiles[j].Name)
-			})
-			if len(jsonFiles) > 0 && exportBody == nil {
-				rc, err := jsonFiles[0].Open()
-				if err == nil {
-					exportBody, _ = cpReadAll(rc, cpImportLimit)
-					rc.Close()
-				}
+			for k, v := range files {
+				media[k] = v
 			}
 		default:
 			media[cpNormPath(firstNonEmpty(f.FileName, f.Field))] = f
@@ -301,6 +274,69 @@ func (app *application) cpImportDiscord(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, 200, rep)
+}
+
+// cpZipTotalLimit caps what one zip may expand to (a zip bomb guard); each
+// entry is also capped (media at 30 MB, the export JSON at 32 MB).
+var cpZipTotalLimit int64 = 512 << 20
+
+// cpUnzipExport returns the channel export (the shallowest .json) and the
+// media files of a zipped DiscordChatExporter folder.
+func cpUnzipExport(data []byte, totalLimit int64) ([]byte, map[string]*cpUpload, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, nil, errors.New("the zip archive is unreadable")
+	}
+	media := map[string]*cpUpload{}
+	var total int64
+	read := func(zf *zip.File, limit int64) ([]byte, error) {
+		if int64(zf.UncompressedSize64) > limit {
+			return nil, nil // skipped: larger than any file we keep
+		}
+		rc, err := zf.Open()
+		if err != nil {
+			return nil, nil
+		}
+		defer rc.Close()
+		body, err := cpReadAll(rc, limit)
+		if err != nil {
+			return nil, nil // it lied about its size; skip it
+		}
+		total += int64(len(body))
+		if total > totalLimit {
+			return nil, fmt.Errorf("the zip expands to more than %d MB; export a smaller range or use the folder picker", totalLimit>>20)
+		}
+		return body, nil
+	}
+	var jsonFiles []*zip.File
+	for _, zf := range zr.File {
+		if zf.FileInfo().IsDir() || strings.HasPrefix(path.Base(zf.Name), ".") || strings.Contains(zf.Name, "__MACOSX") {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(zf.Name), ".json") {
+			jsonFiles = append(jsonFiles, zf)
+			continue
+		}
+		body, err := read(zf, cpAudioLimit)
+		if err != nil {
+			return nil, nil, err
+		}
+		if body != nil {
+			media[cpNormPath(zf.Name)] = &cpUpload{Field: "media", FileName: zf.Name, Body: body}
+		}
+	}
+	// The channel export is the shallowest JSON file in the archive.
+	sort.Slice(jsonFiles, func(i, j int) bool {
+		di, dj := strings.Count(jsonFiles[i].Name, "/"), strings.Count(jsonFiles[j].Name, "/")
+		return di < dj || (di == dj && jsonFiles[i].Name < jsonFiles[j].Name)
+	})
+	var export []byte
+	if len(jsonFiles) > 0 {
+		if export, err = read(jsonFiles[0], cpImportLimit); err != nil {
+			return nil, nil, err
+		}
+	}
+	return export, media, nil
 }
 
 type cpDiscordOptions struct {
@@ -401,7 +437,7 @@ func (app *application) cpApplyDiscord(ctx context.Context, user uuid.UUID, expo
 				return uuid.Nil, err
 			}
 			id = uuid.New()
-			_, err = tx.Exec(ctx, `INSERT INTO cp_people(id,user_id,person_key,display_name,aliases) VALUES($1,$2,$3,$4,$5)`, id, user, key, name, aliases)
+			_, err = tx.Exec(ctx, `INSERT INTO cp_people(id,user_id,person_key,display_name,imported_name,aliases) VALUES($1,$2,$3,$4,$4,$5)`, id, user, key, name, aliases)
 			rep.Totals["peopleCreated"]++
 		} else if err == nil {
 			_, err = tx.Exec(ctx, `UPDATE cp_people SET aliases=ARRAY(SELECT DISTINCT x FROM unnest(aliases||$2::text[]) x ORDER BY x) WHERE id=$1`, id, aliases)
@@ -601,9 +637,17 @@ func (app *application) cpApplyDiscord(ctx context.Context, user uuid.UUID, expo
 				rep.Totals["mediaStored"]++
 			}
 			if exists {
-				// Re-import: refresh reactions/edits; the words stay as first imported unless edited on Discord.
-				if _, err := tx.Exec(ctx, `UPDATE cp_lines SET body=$3,meta=$4,artifact_id=coalesce(artifact_id,$5),updated_at=now() WHERE user_id=$1 AND external_id=$2 AND (body,meta) IS DISTINCT FROM ($3,$4::jsonb)`,
-					user, ext, m.Content, string(metaJSON), lineArtifact); err != nil {
+				// Re-import. A line the owner edited is left alone. Otherwise the
+				// words change only when Discord's own edit is newer than the one
+				// stored; reactions and pins refresh. Any change bumps the revision.
+				if _, err := tx.Exec(ctx, `UPDATE cp_lines SET
+ body=CASE WHEN $6::timestamptz IS NOT NULL AND (source_edited_at IS NULL OR $6::timestamptz>source_edited_at) THEN $3 ELSE body END,
+ source_edited_at=CASE WHEN $6::timestamptz IS NOT NULL AND (source_edited_at IS NULL OR $6::timestamptz>source_edited_at) THEN $6::timestamptz ELSE source_edited_at END,
+ meta=$4,artifact_id=coalesce(artifact_id,$5),revision=revision+1,updated_at=now()
+ WHERE user_id=$1 AND external_id=$2 AND owner_touched_at IS NULL AND (
+  meta IS DISTINCT FROM $4::jsonb OR (artifact_id IS NULL AND $5::uuid IS NOT NULL) OR
+  ($6::timestamptz IS NOT NULL AND (source_edited_at IS NULL OR $6::timestamptz>source_edited_at) AND body IS DISTINCT FROM $3))`,
+					user, ext, m.Content, string(metaJSON), lineArtifact, m.TimestampEdited); err != nil {
 					return nil, err
 				}
 				rep.Totals["messagesKept"]++
@@ -617,15 +661,15 @@ func (app *application) cpApplyDiscord(ctx context.Context, user uuid.UUID, expo
 			if utf8.RuneCountInString(body) > 40000 {
 				body = string([]rune(body)[:40000])
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO cp_lines(id,moment_id,user_id,line_key,external_id,position,speaker_is_me,speaker_person_id,speaker_label,body,said_at,meta,artifact_id)
- VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,$9,$10,$11,$12)`, uuid.New(), moment, user, m.ID, ext, me, speaker, label, body, m.Timestamp, string(metaJSON), lineArtifact); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO cp_lines(id,moment_id,user_id,line_key,external_id,position,speaker_is_me,speaker_person_id,speaker_label,body,said_at,meta,artifact_id,source_edited_at)
+ VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,$9,$10,$11,$12,$13)`, uuid.New(), moment, user, m.ID, ext, me, speaker, label, body, m.Timestamp, string(metaJSON), lineArtifact, m.TimestampEdited); err != nil {
 				return nil, err
 			}
 			info.NewMessages++
 			rep.Totals["messagesNew"]++
 		}
 		for k, pid := range roleOrder {
-			if _, err := tx.Exec(ctx, `INSERT INTO cp_moment_people(moment_id,person_id,user_id,role,position) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, moment, pid, user, roles[pid], k); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO cp_moment_people(moment_id,person_id,user_id,role,position,imported) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT DO NOTHING`, moment, pid, user, roles[pid], k); err != nil {
 				return nil, err
 			}
 		}

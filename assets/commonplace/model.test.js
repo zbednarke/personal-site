@@ -72,6 +72,13 @@ test("capture parsing and the share-sheet route", () => {
   assert.equal(M.route("").name, "index");
 });
 
+test("a share link always maps to the same capture id", () => {
+  const a = M.captureIdFor("share:#add?text=Sample%20note");
+  assert.equal(a, M.captureIdFor("share:#add?text=Sample%20note"));
+  assert.notEqual(a, M.captureIdFor("share:#add?text=Other%20note"));
+  assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
 test("margin notes are pushed down to avoid collisions, in anchor order", () => {
   const tops = M.layoutNotes([{ anchorTop: 100, height: 50 }, { anchorTop: 20, height: 40 }, { anchorTop: 110, height: 30 }], 10);
   assert.deepEqual(tops, [100, 20, 160]);
