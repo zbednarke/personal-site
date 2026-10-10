@@ -31,7 +31,7 @@ tar -xzf "$archive" -C "$next" --no-same-owner
 chmod -R a+rX "$next"
 echo "$sha" > "$next/.release-commit"
 
-for required in index.html jazz/index.html assets/jazz/app.js trumpets/index.html; do
+for required in index.html jazz/index.html assets/jazz/app.js trumpets/index.html commonplace/index.html assets/commonplace/app.js; do
   if [[ ! -s $next/$required ]]; then
     echo "Release is missing $required; leaving $previous live." >&2
     rm -rf "$next"

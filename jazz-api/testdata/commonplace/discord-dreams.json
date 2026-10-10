@@ -1,0 +1,63 @@
+{
+  "guild": { "id": "900000000000000001", "name": "Sample Guild", "iconUrl": "" },
+  "channel": { "id": "900000000000000010", "type": "GuildTextChat", "categoryId": "", "category": "Fixtures", "name": "dreams", "topic": "TEST FIXTURE: invented dreams for automated tests" },
+  "dateRange": { "after": null, "before": null },
+  "exportedAt": "2026-01-20T12:00:00+00:00",
+  "messages": [
+    {
+      "id": "910000000000000001", "type": "Default", "timestamp": "2026-01-05T10:12:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": true,
+      "content": "Sample dream: I was walking through a library where every book was a window onto the sea.",
+      "author": { "id": "1001", "name": "sample_friend", "discriminator": "0000", "nickname": "Sample Friend", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [ { "id": "920000000000000001", "url": "dreams.json_Files/sample-window-1A2B3.png", "fileName": "sample-window.png", "fileSizeBytes": 1234 } ],
+      "embeds": [], "stickers": [],
+      "reactions": [ { "emoji": { "id": null, "name": "🌊", "code": "ocean", "isAnimated": false, "imageUrl": "" }, "count": 2, "users": [] } ],
+      "mentions": [], "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000002", "type": "Reply", "timestamp": "2026-01-05T10:40:00.000+00:00", "timestampEdited": "2026-01-05T10:41:00.000+00:00", "callEndedTimestamp": null, "isPinned": false,
+      "content": "That sounds peaceful. Did the windows open?",
+      "author": { "id": "1000", "name": "example_owner", "discriminator": "0000", "nickname": "Example Owner", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [], "embeds": [], "stickers": [], "reactions": [], "mentions": [ { "id": "1001", "name": "sample_friend", "nickname": "Sample Friend" } ],
+      "reference": { "messageId": "910000000000000001", "channelId": "900000000000000010", "guildId": "900000000000000001" }, "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000003", "type": "Default", "timestamp": "2026-01-05T11:05:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": false,
+      "content": "They opened onto lanterns, which is the part I keep thinking about.",
+      "author": { "id": "1001", "name": "sample_friend", "discriminator": "0000", "nickname": "Sample Friend", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [], "embeds": [], "stickers": [], "reactions": [], "mentions": [], "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000004", "type": "ChannelPinnedMessage", "timestamp": "2026-01-05T11:06:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": false,
+      "content": "Pinned a message.",
+      "author": { "id": "1001", "name": "sample_friend", "discriminator": "0000", "nickname": "Sample Friend", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [], "embeds": [], "stickers": [], "reactions": [], "mentions": [], "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000005", "type": "Default", "timestamp": "2026-01-05T11:30:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": false,
+      "content": "Another sample dream, written out at length so it reads as its own post rather than a follow-up: there was a staircase made of paper that folded itself flat whenever someone tried to climb it, and a quiet voice explained that it only unfolded for people carrying a question they had not yet asked out loud.",
+      "author": { "id": "1002", "name": "another_sample", "discriminator": "0000", "nickname": null, "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [], "embeds": [], "stickers": [], "reactions": [], "mentions": [], "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000006", "type": "Default", "timestamp": "2026-01-05T11:45:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": false,
+      "content": "Paper stairs! Same as the folding map from last week.",
+      "author": { "id": "1001", "name": "sample_friend", "discriminator": "0000", "nickname": "Sample Friend", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [], "embeds": [], "stickers": [], "reactions": [], "mentions": [], "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000007", "type": "Default", "timestamp": "2026-01-07T03:12:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": false,
+      "content": "Sample dream at 3 am: a clock that ran on rain.",
+      "author": { "id": "1000", "name": "example_owner", "discriminator": "0000", "nickname": "Example Owner", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [ { "id": "920000000000000002", "url": "dreams.json_Files/notes-9Z.pdf", "fileName": "notes.pdf", "fileSizeBytes": 10 } ],
+      "embeds": [], "stickers": [], "reactions": [], "mentions": [], "inlineEmojis": []
+    },
+    {
+      "id": "910000000000000008", "type": "Reply", "timestamp": "2026-01-07T09:00:00.000+00:00", "timestampEdited": null, "callEndedTimestamp": null, "isPinned": false,
+      "content": "Rain clocks would never be late.",
+      "author": { "id": "1001", "name": "sample_friend", "discriminator": "0000", "nickname": "Sample Friend", "color": null, "isBot": false, "roles": [], "avatarUrl": "" },
+      "attachments": [], "embeds": [], "stickers": [], "reactions": [], "mentions": [],
+      "reference": { "messageId": "910000000000000007", "channelId": "900000000000000010", "guildId": "900000000000000001" }, "inlineEmojis": []
+    }
+  ],
+  "messageCount": 8
+}

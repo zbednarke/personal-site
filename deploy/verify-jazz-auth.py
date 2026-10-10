@@ -57,11 +57,12 @@ NAVIGATE = {'Accept': 'text/html,application/xhtml+xml', 'Sec-Fetch-Mode': 'navi
 API = {'Accept': 'application/json', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty'}
 valid = token(int(time.time()) + days * 86400 - 10)
 
-PAGES = ['/jazz/', '/trumpets/']
+PAGES = ['/jazz/', '/trumpets/', '/commonplace/']
 PRIVATE = ['/jazz/', '/assets/jazz/clip-studio.js', '/jazz/films/index.json', '/jazz/api/v1/state',
-           '/trumpets/', '/assets/trumpets/app.js', '/trumpets/api/v1/trumpets/listings', '/trumpets/api/v1/trumpets/profile']
+           '/trumpets/', '/assets/trumpets/app.js', '/trumpets/api/v1/trumpets/listings', '/trumpets/api/v1/trumpets/profile',
+           '/commonplace/', '/assets/commonplace/app.js', '/commonplace/api/v1/commonplace/moments', '/commonplace/api/v1/commonplace/space']
 
-for path in PAGES + ['/commonplace/']:
+for path in PAGES:
     status, headers, _ = request(path, headers=NAVIGATE)
     location = headers.get('Location', '')
     assert status == 302 and location == '/auth/login?next=' + urllib.parse.quote(path, safe=''), (path, status, location)
@@ -105,6 +106,8 @@ assert request('/jazz/api/v1/state', token(int(time.time()) - 1))[0] == 401
 assert request('/jazz/api/v1/state', valid.replace('.g.', '.p.', 1) if google else valid.replace('.p.', '.g.', 1))[0] == 401
 assert request('/jazz/api/v1/sync', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/trumpets/api/v1/trumpets/seed', valid, 'POST', 'https://attacker.example')[0] == 403
+assert request('/commonplace/api/v1/commonplace/moments', valid, 'POST', 'https://attacker.example')[0] == 403
+assert request('/commonplace/api/v1/commonplace/import/bundle', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/auth/logout', valid, 'POST', 'https://attacker.example')[0] == 403
 print('PASS: tampered, expired and method-swapped cookies and cross-site writes denied')
 

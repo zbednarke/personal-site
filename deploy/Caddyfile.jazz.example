@@ -16,8 +16,7 @@
 header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 
 # Private paths. To protect another app, add its page and asset paths here;
-# nothing else needs to change. /commonplace is reserved now so its pages are
-# private from the first release.
+# nothing else needs to change. /commonplace (the private archive) is here too.
 @jazz_private {
     path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/* /commonplace /commonplace/* /assets/commonplace/*
     not path /jazz/share/*
@@ -81,6 +80,17 @@ route {
     handle_path /jazz/films/* {
         root * /srv/zachbednarke.com/films
         file_server
+    }
+
+    # Commonplace inherits the same private gateway: Caddy strips the prefix,
+    # forwards the verified user and adds the gateway secret.
+    # deploy/install-commonplace-route.py adds this block to a live Caddyfile.
+    handle_path /commonplace/api/* {
+        reverse_proxy {$JAZZ_API_URL} {
+            header_up Host {upstream_hostport}
+            header_up X-Jazz-User {http.request.header.X-Jazz-User}
+            header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+        }
     }
 
     # Trumpet notes and feedback inherit the same private gateway. Machine

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Commonplace · Private</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@200..700&amp;family=Geist+Mono:wght@400;500&amp;family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..600&amp;display=swap" />
+    <link rel="stylesheet" href="/assets/commonplace/commonplace.css" />
+    <link rel="stylesheet" href="/assets/commonplace/space.css" />
+    <script defer src="/assets/jazz/signin-guard.js"></script>
+    <script defer src="/assets/commonplace/model.js"></script>
+    <script defer src="/assets/commonplace/space-model.js"></script>
+    <script defer src="/assets/commonplace/space.js"></script>
+    <script defer src="/assets/commonplace/app.js"></script>
+  </head>
+  <body data-light="day">
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false">
+      <defs>
+        <!-- Graphite: grain that eats into pencil strokes, like soft lead on laid paper. -->
+        <filter id="graphite" x="-2%" y="-10%" width="104%" height="120%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="1.35" numOctaves="2" seed="7" result="n" />
+          <feColorMatrix in="n" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -2.2 1.95" result="a" />
+          <feComposite in="SourceGraphic" in2="a" operator="in" />
+        </filter>
+      </defs>
+    </svg>
+    <div id="sky" aria-hidden="true"><canvas id="wisps"></canvas><div id="grain"></div></div>
+    <nav class="capsule glass" id="capsule" aria-label="Commonplace"></nav>
+    <main class="page" id="page" tabindex="-1"><div id="stage" aria-live="polite" aria-busy="true"></div></main>
+    <nav class="dock glass" id="dock" aria-label="This Moment" hidden></nav>
+    <div class="peek glass" id="peek" role="tooltip"></div>
+    <div class="toast glass" id="toast" role="status" aria-live="polite"><span id="toastMsg"></span><button id="toastUndo" type="button" hidden>Undo</button></div>
+    <div id="space-root" hidden></div>
+  </body>
+</html>

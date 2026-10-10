@@ -61,7 +61,7 @@ jobs:
           url=$(gcloud run services describe jazz-api --project "$RUN_PROJECT" --region "$RUN_REGION" --format 'value(status.url)')
           curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/health"
       - name: Package the static site
-        run: tar -czf "site-${{ steps.commit.outputs.sha }}.tar.gz" index.html .nojekyll assets jazz trumpets privacy
+        run: tar -czf "site-${{ steps.commit.outputs.sha }}.tar.gz" index.html .nojekyll assets jazz trumpets commonplace privacy
       - name: Publish the static release
         run: |
           sha=${{ steps.commit.outputs.sha }}

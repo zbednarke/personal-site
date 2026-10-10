@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "externalKey": "sample:2026-03-14-lighthouse",
+  "moment": {
+    "kind": "conversation",
+    "title": "The lighthouse keeper idea",
+    "why": "TEST FIXTURE. Kept because it is the first time the lighthouse idea came up.",
+    "occurredAt": "2026-03-14T23:41:00-07:00",
+    "endedAt": "2026-03-15T00:20:00-07:00",
+    "timezone": "America/Los_Angeles",
+    "source": "imessage",
+    "sourceDetail": "iMessage · 2 screenshots"
+  },
+  "people": [
+    { "key": "sample-friend", "name": "Sample Friend", "aliases": ["SF", "Sample F."], "role": "sender" },
+    { "key": "example-cousin", "name": "Example Cousin", "role": "mentioned" }
+  ],
+  "artifacts": [
+    { "key": "shot-1", "kind": "image", "file": "shot1", "caption": "Screen 1 · 11:41 pm", "alt": "A fictional message thread about a lighthouse." },
+    { "key": "shot-2", "kind": "image", "file": "shot2", "caption": "Screen 2 · 12:20 am" },
+    { "key": "page", "kind": "link", "url": "https://example.com/lighthouses", "title": "A short history of lighthouses (example page)", "siteName": "example.com", "capturedText": "Example captured text. Lighthouse keepers kept logs of every passing ship.", "capturedAt": "2026-03-15T00:05:00-07:00" }
+  ],
+  "lines": [
+    { "key": "l1", "speaker": "sample-friend", "text": "what if a lighthouse kept a diary of every ship it saw", "dayLabel": "Saturday", "timeLabel": "11:41 PM", "at": "2026-03-14T23:41:00-07:00", "artifact": "shot-1", "rect": [4.8, 21.0, 65.0, 9.5] },
+    { "key": "l2", "speaker": "me", "text": "and nobody ever read it", "at": "2026-03-14T23:43:00-07:00", "meta": { "edited": true, "reactions": [{ "emoji": "❤️", "count": 1, "by": "sample-friend" }] }, "artifact": "shot-1", "rect": [30.0, 34.0, 65.0, 6.0] },
+    { "key": "l3", "speaker": "sample-friend", "text": "Example Cousin would read it. twice.", "at": "2026-03-14T23:45:00-07:00", "meta": { "replyTo": "l2", "replies": 1 }, "artifact": "shot-2", "rect": [4.8, 10.0, 60.0, 7.0] },
+    { "key": "l4", "speaker": "me", "text": "ok this is a story now", "dayLabel": "Sunday", "timeLabel": "12:20 AM", "at": "2026-03-15T00:20:00-07:00", "artifact": "shot-2", "rect": [30.0, 60.0, 65.0, 6.0] }
+  ],
+  "annotations": [
+    { "key": "n1", "state": "pencil", "type": "idea", "title": "A diary kept by a building", "body": "TEST FIXTURE. The lighthouse as a witness that writes.", "anchor": { "line": "l1" } },
+    { "key": "n2", "state": "pencil", "type": "person", "title": "Example Cousin, as the one reader", "anchor": { "artifact": "shot-2", "rect": [4.8, 10.0, 60.0, 7.0] } },
+    { "key": "n3", "state": "ink", "type": "link", "title": "The example history page", "anchor": { "line": "l3" }, "link": { "url": "https://example.com/lighthouses", "label": "example.com" } }
+  ],
+  "threads": [
+    { "key": "sample-lighthouse", "title": "Lighthouses", "knots": [
+      { "moment": "self", "line": "l1", "label": "the diary", "style": "fire" },
+      { "line": "l4", "label": "a story now", "style": "plain" }
+    ] }
+  ]
+}

@@ -59,8 +59,8 @@ and current pop, with goal progress, pace toward the spring target and a
 notes and takes on a linked section become the tune's history without manual
 entry, and Practice now adds a linked section to today's plan.
 
-The private paths (`/jazz/`, `/trumpets/`, their assets and APIs, and the
-reserved `/commonplace/`) use Sign in with Google. Caddy asks the loopback
+The private paths (`/jazz/`, `/trumpets/`, `/commonplace/`, their assets and
+APIs) use Sign in with Google. Caddy asks the loopback
 `jazz-auth` service (`jazz-api/cmd/jazz-auth`) to check each request: a signed
 session cookie (30 days by default) passes, a signed-out page load goes to
 `/auth/login`, and a signed-out API call gets a 401 JSON response that the pages
@@ -98,17 +98,30 @@ See [Trumpets setup, API, privacy, tests and screenshots](docs/trumpets/README.m
 production proxy. Deployment must protect the Trumpets page/assets/API in Caddy;
 the daily workflow needs server-side machine auth and runner secrets before enabling.
 
+## Commonplace
+
+`/commonplace/` is a private archive of Moments: conversations with friends,
+the ideas in them, and dreams. Originals (screenshots, verbatim text, voice
+memos, Discord messages, links) are kept exactly as received; the margin
+(pencil suggestions you keep, edit or erase, and notes in your own ink) stays
+separate; provenance (who, where, when, the hour and its time zone) is always
+shown, and the hour lights the page. It has capture, search, threads, an Idea
+space and imports (a one-time Discord import and Moment bundles). See
+[docs/commonplace/README.md](docs/commonplace/README.md). It reuses the Jazz
+Go/Postgres/GCS service, privacy headers and sign-in.
+
 ## Tests
 
 The browser code uses Node's built-in test runner, so there is no
 `package.json` or install step (Node 22+):
 
 ```sh
-node --test assets/jazz/*.test.js assets/trumpets/*.test.js
+node --test assets/jazz/*.test.js assets/trumpets/*.test.js assets/commonplace/*.test.js
 cd jazz-api && go test ./...
 ```
 
 Database-backed Go tests run when `TRUMPETS_TEST_DATABASE_URL` /
 `JAZZ_LAYOUT_TEST_DATABASE_URL` point at a disposable Postgres. CI
 (`.github/workflows/trumpets-tests.yml`) runs all of the above on every pull
-request and push to `main`, plus the trumpet adapter and browser checks.
+request and push to `main`, plus the trumpet adapter and browser checks and the
+Commonplace browser check (`tools/commonplace/browser-check.cjs`, fictional data).
