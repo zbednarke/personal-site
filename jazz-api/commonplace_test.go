@@ -69,7 +69,7 @@ func mustJSON(v any) string {
 }
 
 func TestCommonplaceHelpers(t *testing.T) {
-	if q := cpTSQuery(`fire's "pit" & | ! :*`); q != "'fire':* & 's':* & 'pit':*" {
+	if q := cpTSQuery(`lantern's "tide" & | ! :*`); q != "'lantern':* & 's':* & 'tide':*" {
 		t.Fatalf("tsquery %q", q)
 	}
 	if cpTSQuery("  !!  ") != "" {

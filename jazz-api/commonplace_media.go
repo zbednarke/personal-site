@@ -158,6 +158,7 @@ func (app *application) cpUploadArtifact(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	cpLongUpload(w)
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cpAudioLimit))
 	if err != nil {
 		writeError(w, 413, "files must be 30 MB or smaller")

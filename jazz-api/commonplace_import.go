@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -38,12 +39,19 @@ type cpMultipart struct {
 	Files  []*cpUpload
 }
 
+// cpLongUpload lets a large upload from a slow phone outlast the server-wide
+// 30-second read timeout (the body is still capped by MaxBytesReader).
+func cpLongUpload(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(10 * time.Minute))
+}
+
 // cpReadMultipart reads the whole request (bounded) into memory.
 func cpReadMultipart(w http.ResponseWriter, r *http.Request) (*cpMultipart, error) {
 	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
 		return nil, errors.New("send multipart/form-data")
 	}
+	cpLongUpload(w)
 	r.Body = http.MaxBytesReader(w, r.Body, cpImportLimit)
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -590,14 +598,17 @@ func (app *application) cpApplyBundle(ctx context.Context, user uuid.UUID, b *cp
 		var id uuid.UUID
 		err := tx.QueryRow(ctx, `SELECT id FROM cp_people WHERE user_id=$1 AND person_key=$2`, user, key).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Claim an existing unkeyed person with the same name or alias.
-			err = tx.QueryRow(ctx, `SELECT id FROM cp_people WHERE user_id=$1 AND person_key IS NULL AND (lower(display_name)=lower($2) OR lower($2)=ANY(SELECT lower(x) FROM unnest(aliases) x)) ORDER BY created_at LIMIT 1`, user, name).Scan(&id)
+			// The same person may already be here (added in the app or from Discord).
+			id, err = cpPersonByName(ctx, tx, user, append([]string{name}, aliases...)...)
+			if err == nil && id == uuid.Nil {
+				err = pgx.ErrNoRows
+			}
 			if errors.Is(err, pgx.ErrNoRows) {
 				id = uuid.New()
 				_, err = tx.Exec(ctx, `INSERT INTO cp_people(id,user_id,person_key,display_name,aliases,special) VALUES($1,$2,$3,$4,$5,$6)`, id, user, key, name, aliases, p.Special != nil && *p.Special)
 				rep.Counts["peopleCreated"]++
 			} else if err == nil {
-				_, err = tx.Exec(ctx, `UPDATE cp_people SET person_key=$2 WHERE id=$1`, id, key)
+				_, err = tx.Exec(ctx, `UPDATE cp_people SET person_key=coalesce(person_key,$2) WHERE id=$1`, id, key)
 			}
 		}
 		if err != nil {

@@ -390,6 +390,16 @@ func (app *application) cpApplyDiscord(ctx context.Context, user uuid.UUID, expo
 		var id uuid.UUID
 		err := tx.QueryRow(ctx, `SELECT id FROM cp_people WHERE user_id=$1 AND person_key=$2`, user, key).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// The same friend may already be here from another source.
+			id, err = cpPersonByName(ctx, tx, user, name, a.Name)
+			if err == nil && id != uuid.Nil {
+				_, err = tx.Exec(ctx, `UPDATE cp_people SET person_key=coalesce(person_key,$2),aliases=ARRAY(SELECT DISTINCT x FROM unnest(aliases||$3::text[]) x ORDER BY x) WHERE id=$1`, id, key, aliases)
+				people[a.ID] = id
+				return id, err
+			}
+			if err != nil {
+				return uuid.Nil, err
+			}
 			id = uuid.New()
 			_, err = tx.Exec(ctx, `INSERT INTO cp_people(id,user_id,person_key,display_name,aliases) VALUES($1,$2,$3,$4,$5)`, id, user, key, name, aliases)
 			rep.Totals["peopleCreated"]++
@@ -639,4 +649,27 @@ func (app *application) cpApplyDiscord(ctx context.Context, user uuid.UUID, expo
 	}
 	committed = true
 	return rep, nil
+}
+
+// cpPersonByName finds the one person whose name or alias matches any of the
+// given names (case-insensitive). Ambiguous or no matches return uuid.Nil.
+func cpPersonByName(ctx context.Context, q cpDB, user uuid.UUID, names ...string) (uuid.UUID, error) {
+	var clean []string
+	for _, n := range names {
+		if n = strings.ToLower(strings.TrimSpace(n)); n != "" {
+			clean = append(clean, n)
+		}
+	}
+	if len(clean) == 0 {
+		return uuid.Nil, nil
+	}
+	rows, err := q.Query(ctx, `SELECT id FROM cp_people WHERE user_id=$1 AND (lower(display_name)=ANY($2) OR EXISTS(SELECT 1 FROM unnest(aliases) x WHERE lower(x)=ANY($2))) LIMIT 2`, user, clean)
+	ids, err := cpCollect(rows, err, func(row pgx.Row) (uuid.UUID, error) {
+		var id uuid.UUID
+		return id, row.Scan(&id)
+	})
+	if err != nil || len(ids) != 1 {
+		return uuid.Nil, err
+	}
+	return ids[0], nil
 }
