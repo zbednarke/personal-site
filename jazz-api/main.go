@@ -310,6 +310,7 @@ func (app *application) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", app.health)
 	app.trumpetRoutes(mux)
 	app.repertoireRoutes(mux)
+	app.commonplaceRoutes(mux)
 	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))
