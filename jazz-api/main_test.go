@@ -122,6 +122,7 @@ func TestRecordingDownloadFilename(t *testing.T) {
 		{name: "lossless section take", title: "Warm up", take: 2, asset: "audio", contentType: "audio/wav", want: "2026-08-12-warm-up-take-2-audio.wav"},
 		{name: "video section take", title: "Articulation & Flexibility!", take: 3, asset: "video", contentType: "video/webm", want: "2026-08-12-articulation-flexibility-take-3-video.webm"},
 		{name: "uncategorized fallback", title: "", asset: "audio", contentType: "audio/webm", want: "2026-08-12-practice-audio.webm"},
+		{name: "fx mix take", title: "Warm up", take: 2, asset: "fx", contentType: "audio/wav", want: "2026-08-12-warm-up-take-2-fx-mix.wav"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -132,26 +133,79 @@ func TestRecordingDownloadFilename(t *testing.T) {
 	}
 }
 
-func TestNormalizeShareAsset(t *testing.T) {
+func TestRecordingAssetsResolve(t *testing.T) {
+	audioTake := recordingAssets{MediaKind: "audio", Audio: recordingAsset{"a.wav", "audio/wav"}}
+	videoTake := recordingAssets{MediaKind: "video", Audio: recordingAsset{"a.wav", "audio/wav"}, Video: recordingAsset{"v.mp4", "video/mp4"}}
+	fxTake := recordingAssets{MediaKind: "audio", Audio: recordingAsset{"a.wav", "audio/wav"}, Fx: recordingAsset{"fx.wav", "audio/wav"}, FxVerified: true}
+	pendingFx := fxTake
+	pendingFx.FxVerified = false
+	videoFxTake := videoTake
+	videoFxTake.Fx, videoFxTake.FxVerified = recordingAsset{"fx.wav", "audio/wav"}, true
 	tests := []struct {
-		requested, mediaKind, want string
-		wantError                  bool
+		name       string
+		assets     recordingAssets
+		requested  string
+		want       string
+		wantObject string
+		wantError  bool
 	}{
-		{requested: "", mediaKind: "audio", want: "audio"},
-		{requested: "", mediaKind: "video", want: "video"},
-		{requested: "audio", mediaKind: "video", want: "audio"},
-		{requested: "video", mediaKind: "video", want: "video"},
-		{requested: "video", mediaKind: "audio", wantError: true},
-		{requested: "other", mediaKind: "video", wantError: true},
+		{name: "audio default", assets: audioTake, want: "audio", wantObject: "a.wav"},
+		{name: "video default", assets: videoTake, want: "video", wantObject: "v.mp4"},
+		{name: "video master audio", assets: videoTake, requested: "audio", want: "audio", wantObject: "a.wav"},
+		{name: "explicit video", assets: videoTake, requested: " VIDEO ", want: "video", wantObject: "v.mp4"},
+		{name: "video on audio take", assets: audioTake, requested: "video", wantError: true},
+		{name: "unknown asset", assets: videoTake, requested: "other", wantError: true},
+		{name: "verified fx", assets: fxTake, requested: "fx", want: "fx", wantObject: "fx.wav"},
+		{name: "verified fx on video take", assets: videoFxTake, requested: "fx", want: "fx", wantObject: "fx.wav"},
+		{name: "fx default stays primary", assets: fxTake, want: "audio", wantObject: "a.wav"},
+		{name: "unverified fx", assets: pendingFx, requested: "fx", wantError: true},
+		{name: "no fx", assets: audioTake, requested: "fx", wantError: true},
 	}
 	for _, test := range tests {
-		got, err := normalizeShareAsset(test.requested, test.mediaKind)
-		if test.wantError && err == nil {
-			t.Fatalf("normalizeShareAsset(%q, %q) accepted an invalid asset", test.requested, test.mediaKind)
-		}
-		if !test.wantError && (err != nil || got != test.want) {
-			t.Fatalf("normalizeShareAsset(%q, %q) = %q, %v; want %q", test.requested, test.mediaKind, got, err, test.want)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			got, object, err := test.assets.resolve(test.requested)
+			if test.wantError {
+				if err == nil {
+					t.Fatalf("resolve(%q) accepted an invalid asset: %q", test.requested, got)
+				}
+				return
+			}
+			if err != nil || got != test.want || object.ObjectName != test.wantObject {
+				t.Fatalf("resolve(%q) = %q, %q, %v; want %q, %q", test.requested, got, object.ObjectName, err, test.want, test.wantObject)
+			}
+		})
+	}
+}
+
+func TestValidateFxAsset(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     recordingInitRequest
+		want      string
+		wantError bool
+	}{
+		{name: "absent", input: recordingInitRequest{}, want: ""},
+		{name: "valid wav", input: recordingInitRequest{FxContentType: "audio/wav", FxSizeBytes: 1024, FxPreset: "big-hall"}, want: "audio/wav"},
+		{name: "wav parameters", input: recordingInitRequest{FxContentType: "Audio/WAV; rate=48000", FxSizeBytes: 1024, FxPreset: "miles-73"}, want: "audio/wav"},
+		{name: "size without type", input: recordingInitRequest{FxSizeBytes: 1024}, wantError: true},
+		{name: "preset without asset", input: recordingInitRequest{FxPreset: "big-hall"}, wantError: true},
+		{name: "missing preset", input: recordingInitRequest{FxContentType: "audio/wav", FxSizeBytes: 1024}, wantError: true},
+		{name: "unsafe preset", input: recordingInitRequest{FxContentType: "audio/wav", FxSizeBytes: 1024, FxPreset: "<b>hall</b>"}, wantError: true},
+		{name: "long preset", input: recordingInitRequest{FxContentType: "audio/wav", FxSizeBytes: 1024, FxPreset: strings.Repeat("a", 41)}, wantError: true},
+		{name: "lossy fx", input: recordingInitRequest{FxContentType: "audio/webm", FxSizeBytes: 1024, FxPreset: "big-hall"}, wantError: true},
+		{name: "disallowed type", input: recordingInitRequest{FxContentType: "text/plain", FxSizeBytes: 1024, FxPreset: "big-hall"}, wantError: true},
+		{name: "oversized", input: recordingInitRequest{FxContentType: "audio/wav", FxSizeBytes: maxAudioBytes + 1, FxPreset: "big-hall"}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := validateFxAsset(test.input)
+			if test.wantError && err == nil {
+				t.Fatalf("validateFxAsset accepted an invalid fx asset")
+			}
+			if !test.wantError && (err != nil || got != test.want) {
+				t.Fatalf("validateFxAsset = %q, %v; want %q", got, err, test.want)
+			}
+		})
 	}
 }
 

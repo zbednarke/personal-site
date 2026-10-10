@@ -4,7 +4,7 @@ Prerequisite: install-jazz-auth.py has already put jazz-auth in front of the
 private paths. Place this script, verify-jazz-auth.py and the new Linux
 jazz-auth binary in one directory, then run, for example:
 
-  gcloud secrets versions access latest --secret=jazz-google-client-secret \
+  gcloud secrets versions access latest --secret=site-google-oauth-secret --project=parabolio-prod \
     | sudo python3 install-google-sign-in.py \
         --client-id 1234-abc.apps.googleusercontent.com \
         --allowed-email you@gmail.com

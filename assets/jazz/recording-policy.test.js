@@ -12,6 +12,14 @@ test("the automatic take ceiling is exactly four hours", () => {
   assert.equal(shouldAutoFinish(MAX_TAKE_DURATION_MS + 1), true);
 });
 
+test("the FX mix stops at one hour while the dry master continues", () => {
+  const { FX_MAX_DURATION_MS, shouldFinishFx } = globalThis.JazzRecordingPolicy;
+  assert.equal(FX_MAX_DURATION_MS, 3_600_000);
+  assert.ok(FX_MAX_DURATION_MS < MAX_TAKE_DURATION_MS);
+  assert.equal(shouldFinishFx(FX_MAX_DURATION_MS - 1), false);
+  assert.equal(shouldFinishFx(FX_MAX_DURATION_MS), true);
+});
+
 test("video recording prefers a chunk-safe MP4 when supported", () => {
   const supported = new Set(["video/mp4", "video/webm;codecs=vp9,opus"]);
   assert.equal(preferredVideoType((type) => supported.has(type)), "video/mp4");

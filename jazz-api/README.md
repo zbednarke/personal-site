@@ -7,8 +7,13 @@ bucket. Practice sessions contain session notes and structured activities;
 recordings reference their parent session and carry tune, skill focus, take,
 format, duration, and listening notes. A video take is stored as one logical
 record with two private assets: a browser-playable video and a separate
-lossless 48 kHz / 24-bit WAV master. Both assets use resumable GCS uploads and
-the take becomes playable only after both have passed server-side verification.
+lossless 48 kHz / 24-bit WAV master. A take recorded through the browser's
+live effects chain may also carry a processed "fx" WAV asset tagged with its
+preset id. All assets use resumable GCS uploads verified server-side. The take
+becomes playable once its dry master (and video, if any) verifies; the FX mix
+is optional, appears in listings, playback, downloads, and shares only after
+its own upload verifies, and `DELETE /v1/recordings/{id}/fx` drops it (and
+revokes its share link) without touching the dry master.
 
 Authenticated users can create one permanent opaque share URL per recording
 asset. The public endpoint validates that bearer token and redirects to fresh

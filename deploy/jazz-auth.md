@@ -82,10 +82,10 @@ validates a file without starting (the installer uses it with
 
 ## One-time Google setup (owner)
 
-Do this in the Google Cloud project that hosts the site VM (`actual-budget-zb`).
+Do this in the `parabolio-prod` project, which also holds the API and its other secrets.
 
 1. Open **Google Auth Platform**
-   (<https://console.cloud.google.com/auth/overview?project=actual-budget-zb>)
+   (<https://console.cloud.google.com/auth/overview?project=parabolio-prod>)
    and choose **Get started** if it has not been set up yet: app name
    (for example "Zach Bednarke"), your support email, audience **External**, and
    your contact email.
@@ -103,8 +103,8 @@ Do this in the Google Cloud project that hosts the site VM (`actual-budget-zb`).
    shell history):
 
    ```sh
-   read -rs SECRET && printf %s "$SECRET" | gcloud secrets create jazz-google-client-secret \
-     --project actual-budget-zb --replication-policy automatic --data-file=- && unset SECRET
+   read -rs SECRET && printf %s "$SECRET" | gcloud secrets create site-google-oauth-secret \
+     --project parabolio-prod --replication-policy automatic --data-file=- && unset SECRET
    ```
 
 ## Install on the site VM
@@ -117,7 +117,7 @@ cd jazz-api && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ../deploy/jazz-
 flags=(--project actual-budget-zb --zone us-west1-a --tunnel-through-iap)
 gcloud compute ssh actual-server "${flags[@]}" --command 'mkdir -p /tmp/google-sign-in'
 gcloud compute scp "${flags[@]}" deploy/jazz-auth deploy/install-google-sign-in.py deploy/verify-jazz-auth.py actual-server:/tmp/google-sign-in/
-gcloud secrets versions access latest --secret jazz-google-client-secret --project actual-budget-zb \
+gcloud secrets versions access latest --secret site-google-oauth-secret --project parabolio-prod \
   | gcloud compute ssh actual-server "${flags[@]}" --command \
     'sudo python3 /tmp/google-sign-in/install-google-sign-in.py --client-id CLIENT_ID.apps.googleusercontent.com --allowed-email you@gmail.com'
 ```

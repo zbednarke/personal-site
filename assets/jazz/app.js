@@ -546,17 +546,23 @@
     if (!recordings.length) return '<p class="section-empty">No takes yet.</p>';
     return recordings.map((recording, index) => {
       const isVideo = recording.mediaKind === "video";
+      // The API only reports an FX mix once that asset has verified.
+      const hasFx = Boolean(recording.fxContentType);
+      const fxLabel = globalThis.JazzRecording?.fxMixLabel(recording) || "FX mix";
       const note = String(recording.notes || "");
       return `
         <article class="section-take" data-section-take="${recording.id}" data-duration-ms="${Number(recording.durationMs || 0)}">
-          <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${isVideo ? " · Video" : ""}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
+          <span>Take ${recording.takeNumber || index + 1} · ${formatRecordingDuration(recording.durationMs)}${isVideo ? " · Video" : ""}${hasFx ? " · FX" : ""}${recording.status && recording.status !== "ready" ? ` (${recording.status})` : ""}</span>
           <div class="section-take-actions">
             <button type="button" data-section-play data-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Video" : "Play"}</button>
             ${isVideo ? `<button type="button" data-section-play data-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Audio</button>` : ""}
+            ${hasFx ? `<button class="take-fx-button" type="button" data-section-play data-asset="fx" ${recording.status === "ready" ? "" : "disabled"}>${escapeHTML(fxLabel)}</button>` : ""}
             <button class="take-download-button" type="button" data-section-download data-download-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Download video" : "Download"}</button>
             ${isVideo ? `<button class="take-download-button" type="button" data-section-download data-download-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Download WAV</button>` : ""}
+            ${hasFx ? `<button class="take-download-button" type="button" data-section-download data-download-asset="fx" ${recording.status === "ready" ? "" : "disabled"}>Download FX mix</button>` : ""}
             <button class="take-share-button" type="button" data-section-share data-share-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Share video" : "Copy share link"}</button>
             ${isVideo ? `<button class="take-share-button" type="button" data-section-share data-share-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Share WAV</button>` : ""}
+            ${hasFx ? `<button class="take-share-button" type="button" data-section-share data-share-asset="fx" ${recording.status === "ready" ? "" : "disabled"}>Share FX mix</button>` : ""}
             <button type="button" data-section-delete>Delete</button>
             <button class="take-note-button" type="button" data-take-note-toggle aria-expanded="false">${note ? "Edit note" : "Take note"}</button>
           </div>
