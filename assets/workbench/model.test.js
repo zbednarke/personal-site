@@ -7,6 +7,16 @@ const test = require("node:test"),
 const thread = { id: "t1", title: "Sample", lastEventId: 3, running: false, spendUsd: 0.01 };
 const ev = (id, type, payload) => ({ id, type, payload });
 
+test("a thread the API refuses for good is marked so the sheet offers a fresh one", () => {
+  const s = M.applySnapshot(M.createState(), { thread: { ...thread }, messages: [], approvals: [] });
+  M.applyEvent(s, ev(4, "thread.updated", { stuck: "HTTP 400: fake" }));
+  assert.equal(s.thread.stuck, "HTTP 400: fake");
+  const t = M.applySnapshot(M.createState(), { thread: { ...thread }, messages: [], approvals: [] });
+  M.applyEvent(t, ev(4, "run.finished", { status: "error", message: "Start a fresh thread", freshThread: true }));
+  assert.ok(t.thread.stuck);
+  assert.equal(t.noticeStatus, "error");
+});
+
 test("layout: bottom sheet on phones, split view on tablets, side panel on desktops", () => {
   assert.equal(M.layoutFor(390), "sheet");
   assert.equal(M.layoutFor(768), "split");
@@ -173,14 +183,82 @@ test("outbox: an upload that succeeded before a crash is not repeated", async ()
   assert.equal((await outbox.items()).length, 0);
 });
 
-test("markdown is escaped first and supports a small safe subset", () => {
-  const html = M.renderMarkdown("Hello <script>alert(1)</script>\n\n- **one**\n- `two`\n\n1. [docs](https://example.com)\n\n```\n<b>raw</b>\n```");
+// A minimal DOM stand-in: elements record their tag, attributes and children,
+// so the tests can prove that only safe elements and attributes are created.
+function fakeDocument() {
+  const created = [];
+  const node = (tag) => {
+    const n = { tag, attrs: {}, children: [], appendChild(c) { this.children.push(c); return c; }, setAttribute(k, v) { this.attrs[k] = String(v); } };
+    Object.defineProperty(n, "textContent", { set(v) { this.children = [{ tag: "#text", text: String(v) }]; } });
+    created.push(n);
+    return n;
+  };
+  return {
+    created,
+    createElement: (tag) => node(tag),
+    createDocumentFragment: () => node("#fragment"),
+    createTextNode: (text) => ({ tag: "#text", text: String(text) }),
+  };
+}
+
+function serialize(n) {
+  if (n.tag === "#text") return n.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inner = n.children.map(serialize).join("");
+  if (n.tag === "#fragment") return inner;
+  const attrs = Object.entries(n.attrs).map(([k, v]) => ` ${k}="${v.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`).join("");
+  return n.tag === "br" ? "<br>" : `<${n.tag}${attrs}>${inner}</${n.tag}>`;
+}
+
+function render(text) {
+  const doc = fakeDocument();
+  const frag = M.markdownToDOM(text, doc);
+  for (const el of doc.created) {
+    assert.ok(["#fragment", "p", "br", "ul", "ol", "li", "pre", "code", "strong", "em", "a", "span"].includes(el.tag), `unexpected element ${el.tag}`);
+    for (const [k, v] of Object.entries(el.attrs)) {
+      assert.ok(["href", "target", "rel"].includes(k), `unexpected attribute ${k}`);
+      if (k === "href") assert.ok(/^https?:\/\//.test(v) || (v.startsWith("/") && !v.startsWith("//")), `unsafe href ${v}`);
+    }
+  }
+  return { html: serialize(frag), doc };
+}
+
+test("markdown is built as DOM nodes and supports a small safe subset", () => {
+  const { html } = render("Hello <script>alert(1)</script>\n\n- **one**\n- `two`\n\n1. [docs](https://example.com)\n\n```\n<b>raw</b>\n```");
   assert.ok(!html.includes("<script>"));
   assert.ok(html.includes("&lt;script&gt;"));
   assert.ok(html.includes("<ul><li><strong>one</strong></li><li><code>two</code></li></ul>"));
-  assert.ok(html.includes('<ol><li><a href="https://example.com" target="_blank" rel="noopener noreferrer">docs</a></li></ol>'));
+  assert.ok(html.includes('<ol><li><a href="https://example.com/" target="_blank" rel="noopener noreferrer">docs</a></li></ol>'));
   assert.ok(html.includes("<pre><code>&lt;b&gt;raw&lt;/b&gt;</code></pre>"));
-  assert.ok(!M.renderMarkdown("[x](javascript:alert(1))").includes('href="javascript'));
+});
+
+test("markdown: hostile links never become attributes or script URLs", () => {
+  const payloads = [
+    "[a](https://x.com/(https://y/onmouseover=document.title='PWNED:'+location.protocol+)",
+    '[a](https://x.com/" onmouseover="alert(1))',
+    "[x](javascript:alert(1))",
+    "[x](JaVaScRiPt:alert(1))",
+    "[x](data:text/html,<script>alert(1)</script>)",
+    "[x](//evil.example/path)",
+    "[x](/\\evil.example)",
+    "see https://a.example/\"onmouseover=alert(1)// and https://b.example/<img src=x onerror=alert(1)>",
+    "[https://x.example/a](https://x.example/b \"title\")",
+    "**[a](https://x.example/**)** *https://y.example/*",
+    "`[a](javascript:alert(1))` [b](vbscript:msgbox)",
+  ];
+  for (const p of payloads) {
+    const { html, doc } = render(p);
+    for (const el of doc.created) for (const k of Object.keys(el.attrs)) assert.ok(!/^on/i.test(k), `${p}: event handler attribute`);
+    assert.ok(!/href="(javascript|data|vbscript):/i.test(html), `${p}: script URL`);
+    assert.ok(!/href="\/\//.test(html), `${p}: protocol-relative`);
+  }
+  // The reported payload: the URL stays one href value (quotes are percent-encoded or attribute-escaped).
+  const { doc } = render(payloads[0]);
+  const a = doc.created.find((n) => n.tag === "a");
+  assert.ok(a && a.attrs.href.startsWith("https://x.com/("));
+  assert.deepEqual(Object.keys(a.attrs).sort(), ["href", "rel", "target"]);
+  assert.equal(M.safeHref("javascript:alert(1)"), null);
+  assert.equal(M.safeHref("/jazz/#today"), "/jazz/#today");
+  assert.equal(M.safeHref("//evil.example"), null);
 });
 
 test("small helpers", () => {

@@ -43,7 +43,8 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = {}; }
-  const actions = data.kind === "approval" && data.approvalId ? [{ action: "approve", title: "Approve" }, { action: "reject", title: "Not now" }] : [];
+  // Approve / Not now only when the server allows it (never for GitHub writes).
+  const actions = data.kind === "approval" && data.approvalId && data.actions ? [{ action: "approve", title: "Approve" }, { action: "reject", title: "Not now" }] : [];
   event.waitUntil(self.registration.showNotification(data.title || "Workbench", {
     body: data.body || "Something is waiting.", tag: data.tag || "workbench", renotify: true,
     data: { url: data.url || "/jazz/", approvalId: data.approvalId || "", threadId: data.threadId || "" }, actions,

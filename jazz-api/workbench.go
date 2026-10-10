@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +82,9 @@ type workbench struct {
 	heartbeat time.Duration
 	runs      sync.WaitGroup
 	baseCtx   context.Context
+	// mu guards draining (set on SIGTERM) against new runs being added.
+	mu       sync.Mutex
+	draining bool
 }
 
 func newWorkbench(cfg wbConfig, opts ...option.RequestOption) *workbench {
@@ -139,8 +144,10 @@ type wbThread struct {
 	Running          bool      `json:"running"`
 	SpendUSD         float64   `json:"spendUsd"`
 	PendingApprovals int       `json:"pendingApprovals"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	// Stuck is set when the API refuses the thread's history for good.
+	Stuck     string    `json:"stuck,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type wbApproval struct {
@@ -302,12 +309,12 @@ func (app *application) wbThreadFor(w http.ResponseWriter, r *http.Request) (uui
 // ---- Threads ----------------------------------------------------------------------
 
 const wbThreadColumns = `t.id,t.title,t.last_event_id,t.run_state='running',t.spend_micro_usd,
-	(SELECT count(*)::int FROM wb_approvals a WHERE a.thread_id=t.id AND a.status='pending'),t.created_at,t.updated_at`
+	(SELECT count(*)::int FROM wb_approvals a WHERE a.thread_id=t.id AND a.status='pending'),t.stuck_reason,t.created_at,t.updated_at`
 
 func wbScanThread(row pgx.Row) (wbThread, error) {
 	var t wbThread
 	var micro int64
-	err := row.Scan(&t.ID, &t.Title, &t.LastEventID, &t.Running, &micro, &t.PendingApprovals, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.Title, &t.LastEventID, &t.Running, &micro, &t.PendingApprovals, &t.Stuck, &t.CreatedAt, &t.UpdatedAt)
 	t.SpendUSD = float64(micro) / 1e6
 	return t, err
 }
@@ -678,6 +685,13 @@ func (app *application) wbPutDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
+	// Lock the thread row before the draft row: wbAddUserMessage locks the
+	// thread (appending an event) and then the draft, so the same order here
+	// rules out a deadlock between a draft save and a send.
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM wb_threads WHERE id=$1 FOR UPDATE`, id); err != nil {
+		app.serverError(w, err)
+		return
+	}
 	d := wbDraft{Text: in.Text, DeviceID: device}
 	if err := tx.QueryRow(ctx, `INSERT INTO wb_drafts (thread_id,text,rev,device_id) VALUES ($1,$2,1,$3)
 		ON CONFLICT (thread_id) DO UPDATE SET text=$2,rev=wb_drafts.rev+1,device_id=$3,updated_at=now() RETURNING rev,updated_at`, id, in.Text, device).Scan(&d.Rev, &d.UpdatedAt); err != nil {
@@ -729,6 +743,17 @@ func (app *application) wbUploadAttachment(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeError(w, 422, err.Error())
 		return
+	}
+	if media.Kind == "image" {
+		// Images are replayed inline to the model: keep them within its limits.
+		scaled, ct, err := wbPrepareImage(body)
+		if err != nil {
+			writeError(w, 422, err.Error())
+			return
+		}
+		body = scaled
+		sum := sha256.Sum256(body)
+		media.Body, media.ContentType, media.SHA256 = body, ct, hex.EncodeToString(sum[:])
 	}
 	var duration *int
 	if raw := r.Header.Get("X-Workbench-Duration-Ms"); raw != "" {

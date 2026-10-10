@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -102,8 +103,15 @@ func wbCost(model string, u anthropic.BetaUsage) wbUsage {
 // ---- Run lifecycle -------------------------------------------------------------------
 
 // wbKick starts (or nudges) the thread's agent loop in the background.
+// While the service drains for a deploy it starts nothing new.
 func (app *application) wbKick(thread uuid.UUID) {
+	app.wb.mu.Lock()
+	if app.wb.draining {
+		app.wb.mu.Unlock()
+		return
+	}
 	app.wb.runs.Add(1)
+	app.wb.mu.Unlock()
 	go func() {
 		defer app.wb.runs.Done()
 		defer func() {
@@ -118,7 +126,48 @@ func (app *application) wbKick(thread uuid.UUID) {
 
 const wbLease = 90 * time.Second
 
+func (app *application) wbIsDraining() bool {
+	app.wb.mu.Lock()
+	defer app.wb.mu.Unlock()
+	return app.wb.draining
+}
+
+// wbDrain is called on SIGTERM: stop claiming, let running turns finish
+// within the grace period, then cancel what is left. Cancelled turns are
+// marked interrupted with a resume note, so another instance re-answers them.
+func (app *application) wbDrain(cancelRuns context.CancelFunc, grace time.Duration) {
+	app.wb.mu.Lock()
+	app.wb.draining = true
+	app.wb.mu.Unlock()
+	done := make(chan struct{})
+	go func() { app.wb.runs.Wait(); close(done) }()
+	select {
+	case <-done:
+		return
+	case <-time.After(grace):
+	}
+	cancelRuns()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// wbPendingSQL: what makes a thread need a turn: an unanswered owner message,
+// or a resume note left by an interrupted turn.
+const wbPendingSQL = `handled_at IS NULL AND (role='user' OR (role='note' AND context ? 'resume'))`
+
+func (app *application) wbResumeNote(ctx context.Context, thread uuid.UUID) {
+	if _, err := app.db.Exec(ctx, `INSERT INTO wb_messages (id,thread_id,role,text,context) VALUES ($1,$2,'note',$3,'{"resume":true}')`, uuid.New(), thread,
+		"The previous turn was interrupted (the server restarted or was redeployed). Continue: finish answering the owner's last message."); err != nil {
+		app.logger.Error("workbench resume note failed", "error", err)
+	}
+}
+
 func (app *application) wbClaim(ctx context.Context, thread uuid.UUID) (bool, error) {
+	if app.wbIsDraining() {
+		return false, nil
+	}
 	tag, err := app.db.Exec(ctx, `UPDATE wb_threads SET run_state='running', run_owner=$2, run_heartbeat=now()
 		WHERE id=$1 AND (run_state='idle' OR run_heartbeat < now() - $3::interval)`, thread, app.wb.instance, fmt.Sprintf("%d seconds", int(wbLease.Seconds())))
 	return err == nil && tag.RowsAffected() == 1, err
@@ -135,13 +184,13 @@ func (app *application) wbRelease(ctx context.Context, thread uuid.UUID) error {
 
 func (app *application) wbOldestPending(ctx context.Context, thread uuid.UUID) uuid.UUID {
 	var id uuid.UUID
-	_ = app.db.QueryRow(ctx, `SELECT id FROM wb_messages WHERE thread_id=$1 AND role='user' AND handled_at IS NULL ORDER BY created_at,id LIMIT 1`, thread).Scan(&id)
+	_ = app.db.QueryRow(ctx, `SELECT id FROM wb_messages WHERE thread_id=$1 AND `+wbPendingSQL+` ORDER BY created_at,id LIMIT 1`, thread).Scan(&id)
 	return id
 }
 
 func (app *application) wbHasPendingUser(ctx context.Context, thread uuid.UUID) bool {
 	var n int
-	_ = app.db.QueryRow(ctx, `SELECT count(*) FROM wb_messages WHERE thread_id=$1 AND role='user' AND handled_at IS NULL`, thread).Scan(&n)
+	_ = app.db.QueryRow(ctx, `SELECT count(*) FROM wb_messages WHERE thread_id=$1 AND `+wbPendingSQL, thread).Scan(&n)
 	return n > 0
 }
 
@@ -214,7 +263,8 @@ var wbEffortRank = map[string]int{"low": 0, "medium": 1, "high": 2, "xhigh": 3}
 
 func (app *application) wbRunOnce(ctx context.Context, thread uuid.UUID) {
 	var user uuid.UUID
-	if err := app.db.QueryRow(ctx, `SELECT user_id FROM wb_threads WHERE id=$1`, thread).Scan(&user); err != nil {
+	var stuck string
+	if err := app.db.QueryRow(ctx, `SELECT user_id, stuck_reason FROM wb_threads WHERE id=$1`, thread).Scan(&user, &stuck); err != nil {
 		app.logger.Error("workbench thread lookup failed", "error", err)
 		return
 	}
@@ -245,10 +295,18 @@ func (app *application) wbRunOnce(ctx context.Context, thread uuid.UUID) {
 	finish := func(status, message string) {
 		bg := context.Background()
 		_, _ = app.db.Exec(bg, `UPDATE wb_runs SET status=$2, error=$3, finished_at=now() WHERE id=$1`, runID, status, message)
-		_, _ = app.wbEmit(bg, thread, "run.finished", map[string]any{"runId": runID, "status": status, "message": message})
-		if status != "capped" {
+		var reason string
+		_ = app.db.QueryRow(bg, `SELECT stuck_reason FROM wb_threads WHERE id=$1`, thread).Scan(&reason)
+		_, _ = app.wbEmit(bg, thread, "run.finished", map[string]any{"runId": runID, "status": status, "message": message, "freshThread": reason != ""})
+		if status != "capped" && status != "interrupted" {
 			app.wbPushNudge(bg, user, thread, status)
 		}
+	}
+	if stuck != "" {
+		_, _ = app.db.Exec(ctx, `UPDATE wb_messages SET handled_at=now(), run_id=$2, status='blocked' WHERE id=ANY($1) AND role='user'`, ids, runID)
+		_, _ = app.db.Exec(ctx, `UPDATE wb_messages SET handled_at=now(), run_id=$2 WHERE id=ANY($1) AND role='note' AND context ? 'resume'`, ids, runID)
+		finish("error", "This thread can't continue ("+stuck+"). Start a fresh thread to keep going.")
+		return
 	}
 
 	spend, err := app.wbMonthSpend(ctx, app.db, user)
@@ -266,6 +324,23 @@ func (app *application) wbRunOnce(ctx context.Context, thread uuid.UUID) {
 		return
 	}
 
+	// Old images give way to placeholders before the transcript grows past
+	// what one request may carry; a history that still can't fit is stuck.
+	if err := app.wbCompactHistory(ctx, thread, wbKeepImageTurns); err != nil {
+		app.logger.Error("workbench history compaction failed", "error", err)
+	}
+	if size, _ := app.wbTranscriptBytes(ctx, thread); size > wbReplayByteCap {
+		if err := app.wbCompactHistory(ctx, thread, 0); err != nil {
+			app.logger.Error("workbench history compaction failed", "error", err)
+		}
+		if size, _ = app.wbTranscriptBytes(ctx, thread); size > wbReplayByteCap {
+			app.wbMarkStuck(ctx, thread, "the conversation is too large to send")
+			_, _ = app.db.Exec(ctx, `UPDATE wb_messages SET handled_at=now(), run_id=$2, status='blocked' WHERE id=ANY($1) AND role='user'`, ids, runID)
+			_, _ = app.db.Exec(ctx, `UPDATE wb_messages SET handled_at=now(), run_id=$2 WHERE id=ANY($1) AND role='note'`, ids, runID)
+			finish("error", "This thread has grown too large to continue. Start a fresh thread to keep going.")
+			return
+		}
+	}
 	turn, err := app.wbBuildUserTurn(ctx, pending)
 	if err == nil {
 		turn.Content = append(app.wbDanglingResults(ctx, thread), turn.Content...)
@@ -297,7 +372,17 @@ func (app *application) wbRunOnce(ctx context.Context, thread uuid.UUID) {
 	app.wb.hub.notify(thread)
 
 	status, message := app.wbLoop(ctx, thread, user, runID, effort)
+	if ctx.Err() != nil && app.wbIsDraining() {
+		status, message = "interrupted", "Interrupted by a deploy; another instance picks it up."
+		app.wbResumeNote(context.Background(), thread)
+	}
 	finish(status, message)
+}
+
+func (app *application) wbMarkStuck(ctx context.Context, thread uuid.UUID, reason string) {
+	reason = wbCleanText(reason, 300)
+	_, _ = app.db.Exec(context.Background(), `UPDATE wb_threads SET stuck_reason=$2 WHERE id=$1`, thread, reason)
+	_, _ = app.wbEmit(context.Background(), thread, "thread.updated", map[string]any{"stuck": reason})
 }
 
 // wbAppendTurnTx appends one Messages API turn to the thread's transcript.
@@ -424,41 +509,55 @@ func (app *application) wbParams(messages []anthropic.BetaMessageParam, effort s
 		Tools:        wbTools(),
 		Messages:     messages,
 		CacheControl: anthropic.NewBetaCacheControlEphemeralParam(),
-		Thinking:     anthropic.BetaThinkingConfigParamUnion{OfAdaptive: &anthropic.BetaThinkingConfigAdaptiveParam{}},
+		// drop_block: if history compaction ever invalidates a thinking block,
+		// the API drops it instead of failing the turn.
+		Thinking: anthropic.BetaThinkingConfigParamUnion{OfAdaptive: &anthropic.BetaThinkingConfigAdaptiveParam{
+			BlockBinding: anthropic.BetaThinkingBlockBindingParam{PrefixMismatchBehavior: "drop_block"},
+		}},
 		OutputConfig: anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(effort)},
 		Fallbacks:    anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()},
-		Betas:        []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
+		Betas:        []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01, anthropic.AnthropicBetaThinkingBindingControls2026_08_01},
 	}
 }
 
 // wbLoop runs model calls until the turn ends, a budget is hit or the
 // iteration limit is reached. It returns the run's status and a message.
 func (app *application) wbLoop(ctx context.Context, thread, user, runID uuid.UUID, effort string) (string, string) {
+	external := []string{}
 	for i := 0; i < app.wb.cfg.MaxIterations; i++ {
 		app.wbHeartbeat(ctx, thread)
-		if spend, err := app.wbMonthSpend(ctx, app.db, user); err == nil && spend.Blocked {
-			return "capped", "The monthly Workbench budget ran out mid-turn; the agent stopped."
-		}
-		turns, err := app.wbLoadTurns(ctx, thread)
+		turns, raws, err := app.wbLoadTurnsRaw(ctx, thread)
 		if err != nil {
 			return "error", "Could not load the conversation."
+		}
+		promptEstimate := wbPromptEstimate(raws)
+		spend, err := app.wbMonthSpend(ctx, app.db, user)
+		if err == nil && spend.Blocked {
+			return "capped", "The monthly Workbench budget ran out mid-turn; the agent stopped."
+		}
+		if err == nil {
+			if est := app.wbEstimateCall(ctx, thread, promptEstimate); spend.SpentUSD+est > spend.CapUSD {
+				return "capped", fmt.Sprintf("This step would likely cross the monthly budget (about %s needed, %s left), so the agent stopped before calling the model.",
+					wbFormatUSD(est), wbFormatUSD(math.Max(0, spend.CapUSD-spend.SpentUSD)))
+			}
 		}
 		msg, msgID, err := app.wbStreamOnce(ctx, thread, runID, app.wbParams(turns, effort))
 		if err != nil {
 			app.logger.Error("workbench model call failed", "thread", thread, "error", err)
+			if reason := wbPermanentError(err); reason != "" {
+				app.wbMarkStuck(ctx, thread, reason)
+				return "error", "The model refused this thread's history (" + reason + "). Start a fresh thread to keep going."
+			}
 			return "error", wbAPIErrorText(err)
 		}
 		cost := wbCost(app.wb.cfg.Model, msg.Usage)
+		_, _ = app.db.Exec(ctx, `UPDATE wb_threads SET last_prompt_tokens=$2, last_output_tokens=$3, last_prompt_estimate=$4 WHERE id=$1`,
+			thread, cost.Input+cost.CacheRead+cost.CacheWrite, cost.Output, promptEstimate)
 		if err := app.wbRecordSpend(ctx, thread, user, runID, cost); err != nil {
 			app.logger.Error("workbench spend update failed", "error", err)
 		}
-		toolUses := []anthropic.BetaContentBlockUnion{}
-		for _, b := range msg.Content {
-			if b.Type == "tool_use" {
-				toolUses = append(toolUses, b)
-			}
-		}
-		param := msg.ToParam()
+		toolUses := wbToolUses(msg)
+		param := wbEchoParam(msg)
 		if len(param.Content) == 0 {
 			param = anthropic.BetaMessageParam{Role: anthropic.BetaMessageParamRoleAssistant, Content: []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock("[no reply]")}}
 		}
@@ -468,7 +567,8 @@ func (app *application) wbLoop(ctx context.Context, thread, user, runID uuid.UUI
 		app.wbFinishMessage(ctx, thread, msgID, msg, cost)
 		switch msg.StopReason {
 		case anthropic.BetaStopReasonToolUse:
-			results := app.wbRunTools(ctx, thread, user, toolUses)
+			results, read := app.wbRunTools(ctx, thread, user, toolUses, external)
+			external = wbMergeSources(external, read)
 			if err := app.wbAppendTurn(ctx, thread, "user", anthropic.NewBetaUserMessage(results...)); err != nil {
 				return "error", "Could not save tool results."
 			}
@@ -495,6 +595,24 @@ func (app *application) wbLoop(ctx context.Context, thread, user, runID uuid.UUI
 		return "done", ""
 	}
 	return "done", "Stopped after the maximum number of steps for one turn."
+}
+
+// wbPermanentError names a non-retryable request error (the same history
+// would fail the same way every time), or returns "".
+func wbPermanentError(err error) string {
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) {
+		return ""
+	}
+	switch apiErr.StatusCode {
+	case 400, 404, 413, 422:
+		msg := apiErr.Error()
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return fmt.Sprintf("HTTP %d: %s", apiErr.StatusCode, msg)
+	}
+	return ""
 }
 
 func wbAPIErrorText(err error) string {
@@ -546,10 +664,6 @@ func (app *application) wbStreamOnce(ctx context.Context, thread, runID uuid.UUI
 		switch v := ev.AsAny().(type) {
 		case anthropic.BetaRawContentBlockStartEvent:
 			switch v.ContentBlock.Type {
-			case "fallback":
-				// A refusal mid-stream: the fallback model starts over.
-				pending.Reset()
-				_, _ = app.wbEmit(ctx, thread, "message.reset", map[string]any{"id": msgID})
 			case "tool_use":
 				flush()
 			}
@@ -571,19 +685,66 @@ func (app *application) wbStreamOnce(ctx context.Context, thread, runID uuid.UUI
 	return acc, msgID, nil
 }
 
-// wbMessageText is the visible text of a reply: text blocks after the last
-// fallback boundary (a refused partial is not shown).
+// wbLastFallback is the index of the last `fallback` block (a mid-output
+// switch to another model), or -1.
+func wbLastFallback(m anthropic.BetaMessage) int {
+	last := -1
+	for i, b := range m.Content {
+		if b.Type == "fallback" {
+			last = i
+		}
+	}
+	return last
+}
+
+// wbEchoParam is the assistant turn as it goes back in the next request.
+// After a mid-output fallback, thinking, redacted_thinking, tool_use and any
+// other model-internal block before the final fallback block are omitted;
+// text before the boundary and everything after it echo normally. The
+// fallback markers themselves are dropped (they are ignored audit markers).
+func wbEchoParam(m anthropic.BetaMessage) anthropic.BetaMessageParam {
+	last := wbLastFallback(m)
+	p := anthropic.BetaMessageParam{Role: anthropic.BetaMessageParamRoleAssistant}
+	for i, b := range m.Content {
+		if b.Type == "fallback" || (i < last && b.Type != "text") {
+			continue
+		}
+		p.Content = append(p.Content, b.ToParam())
+	}
+	return p
+}
+
+// wbToolUses are the tool calls to run: only those after the last fallback.
+func wbToolUses(m anthropic.BetaMessage) []anthropic.BetaContentBlockUnion {
+	last := wbLastFallback(m)
+	out := []anthropic.BetaContentBlockUnion{}
+	for i, b := range m.Content {
+		if i > last && b.Type == "tool_use" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// wbMessageText is the visible text of a reply. The fallback model continues
+// the partial's text, so text across a fallback boundary joins directly;
+// separate text blocks otherwise get a paragraph break.
 func wbMessageText(m anthropic.BetaMessage) string {
-	var parts []string
+	var sb strings.Builder
+	afterFallback := false
 	for _, b := range m.Content {
 		switch b.Type {
 		case "fallback":
-			parts = nil
+			afterFallback = true
 		case "text":
-			parts = append(parts, b.Text)
+			if sb.Len() > 0 && !afterFallback {
+				sb.WriteString("\n\n")
+			}
+			sb.WriteString(b.Text)
+			afterFallback = false
 		}
 	}
-	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+	return strings.TrimSpace(sb.String())
 }
 
 func (app *application) wbFinishMessage(ctx context.Context, thread, msgID uuid.UUID, msg anthropic.BetaMessage, cost wbUsage) {
@@ -646,6 +807,8 @@ func (app *application) wbRecover(ctx context.Context) {
 	}
 	for _, t := range threads {
 		var runs []uuid.UUID
+		// Messages a dead run had taken are re-answered: a resume note
+		// queues a turn that picks up where it stopped.
 		runs, _ = wbCollect(wbRows(app.db.Query(ctx, `UPDATE wb_runs SET status='interrupted', finished_at=now() WHERE thread_id=$1 AND status='running' RETURNING id`, t)), func(row pgx.Row) (uuid.UUID, error) {
 			var id uuid.UUID
 			return id, row.Scan(&id)
@@ -654,8 +817,23 @@ func (app *application) wbRecover(ctx context.Context) {
 		for _, r := range runs {
 			_, _ = app.wbEmit(ctx, t, "run.finished", map[string]any{"runId": r, "status": "interrupted", "message": "The server restarted mid-turn."})
 		}
-		if app.wbHasPendingUser(ctx, t) {
-			app.wbKick(t)
+		if len(runs) > 0 {
+			app.wbResumeNote(ctx, t)
 		}
+	}
+	// Any idle thread with unanswered messages (a kick lost to a restart, a
+	// deploy drain, a resume note) gets its turn.
+	idle, err := wbCollect(wbRows(app.db.Query(ctx, `SELECT DISTINCT t.id FROM wb_threads t JOIN wb_messages m ON m.thread_id=t.id
+		WHERE (t.run_state='idle' OR t.run_heartbeat < now() - $1::interval) AND t.stuck_reason='' AND m.`+wbPendingSQL,
+		fmt.Sprintf("%d seconds", int(wbLease.Seconds())))), func(row pgx.Row) (uuid.UUID, error) {
+		var id uuid.UUID
+		return id, row.Scan(&id)
+	})
+	if err != nil {
+		app.logger.Error("workbench recovery scan failed", "error", err)
+		return
+	}
+	for _, t := range idle {
+		app.wbKick(t)
 	}
 }

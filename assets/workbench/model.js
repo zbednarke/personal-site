@@ -184,6 +184,7 @@
         state.running = false;
         state.notice = p.status === "done" ? (p.message || "") : (p.message || `Stopped (${p.status}).`);
         state.noticeStatus = p.status;
+        if (p.freshThread && state.thread) state.thread.stuck = state.thread.stuck || "stuck";
         break;
       case "spend.updated":
         state.spend = { monthUsd: p.monthUsd, capUsd: p.capUsd, blocked: p.blocked, threadUsd: p.threadUsd };
@@ -191,6 +192,7 @@
         break;
       case "thread.updated":
         if (state.thread && p.title != null) state.thread.title = p.title;
+        if (state.thread && p.stuck) state.thread.stuck = p.stuck;
         break;
     }
     return true;
@@ -347,51 +349,163 @@
   }
 
   // ---- Text --------------------------------------------------------------------------
+  // Markdown is parsed into a plain tree and built with createElement and
+  // textContent (markdownToDOM). No HTML string is ever produced, and no
+  // pattern ever runs over generated markup, so text can never become markup.
 
-  function escapeHTML(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  /** An href is kept only for http(s) URLs and same-origin paths ("/x", not "//x"). */
+  function safeHref(raw) {
+    raw = String(raw || "").trim();
+    if (raw.startsWith("/")) {
+      if (raw.startsWith("//") || raw.startsWith("/\\")) return null;
+      try {
+        const u = new URL(raw, "https://placeholder.invalid");
+        return u.origin === "https://placeholder.invalid" ? u.pathname + u.search + u.hash : null;
+      } catch { return null; }
+    }
+    try {
+      const u = new URL(raw);
+      return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+    } catch { return null; }
   }
 
-  function inline(s) {
-    return s
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g, (m, label, href) => `<a href="${href}" target="${href.startsWith("/") ? "_self" : "_blank"}" rel="noopener noreferrer">${label}</a>`)
-      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (m, pre, href) => `${pre}<a href="${href}" target="_blank" rel="noopener noreferrer">${href}</a>`);
-  }
+  const BARE_URL = /https?:\/\/[^\s<>"'`]+/g;
 
-  /** A small, safe Markdown subset: paragraphs, lists, code, emphasis, links. Input is escaped first. */
-  function renderMarkdown(text) {
-    const lines = escapeHTML(text || "").split("\n");
+  /** Plain source text → text and link nodes for bare URLs. */
+  function linkify(text) {
     const out = [];
+    let last = 0;
+    for (const m of text.matchAll(BARE_URL)) {
+      let url = m[0];
+      while (/[.,;:!?)\]]$/.test(url)) url = url.slice(0, -1);
+      const href = safeHref(url);
+      if (!href) continue;
+      if (m.index > last) out.push({ type: "text", text: text.slice(last, m.index) });
+      out.push({ type: "link", href, children: [{ type: "text", text: url }] });
+      last = m.index + url.length;
+    }
+    if (last < text.length) out.push({ type: "text", text: text.slice(last) });
+    return out;
+  }
+
+  /** Inline Markdown (code, **strong**, *em*, [label](url), bare URLs) → nodes. */
+  function parseInline(s, depth, noLinks) {
+    depth = depth || 0;
+    const out = [];
+    let buf = "";
+    const flush = () => {
+      if (!buf) return;
+      if (noLinks) out.push({ type: "text", text: buf }); else out.push(...linkify(buf));
+      buf = "";
+    };
+    let i = 0;
+    while (i < s.length) {
+      const c = s[i];
+      if (c === "`") {
+        const end = s.indexOf("`", i + 1);
+        if (end > i + 1) { flush(); out.push({ type: "code", text: s.slice(i + 1, end) }); i = end + 1; continue; }
+      } else if (c === "*" && s[i + 1] === "*" && depth < 4) {
+        const end = s.indexOf("**", i + 2);
+        if (end > i + 2) { flush(); out.push({ type: "strong", children: parseInline(s.slice(i + 2, end), depth + 1, noLinks) }); i = end + 2; continue; }
+      } else if (c === "*" && s[i + 1] && !/[\s*]/.test(s[i + 1]) && depth < 4) {
+        const end = s.indexOf("*", i + 1);
+        if (end > i + 1 && s[end + 1] !== "*") { flush(); out.push({ type: "em", children: parseInline(s.slice(i + 1, end), depth + 1, noLinks) }); i = end + 1; continue; }
+      } else if (c === "[" && !noLinks) {
+        const close = s.indexOf("](", i + 1);
+        const end = close > i ? s.indexOf(")", close + 2) : -1;
+        const href = end > close ? safeHref(s.slice(close + 2, end)) : null;
+        if (href) {
+          flush();
+          out.push({ type: "link", href, children: parseInline(s.slice(i + 1, close), depth + 1, true) });
+          i = end + 1;
+          continue;
+        }
+      }
+      buf += c;
+      i++;
+    }
+    flush();
+    return out;
+  }
+
+  /** Block Markdown: paragraphs (with line breaks), lists, fenced code, headings. */
+  function parseMarkdown(text) {
+    const lines = String(text || "").split("\n");
+    const blocks = [];
     let list = null, para = [], code = null;
-    const flushPara = () => { if (para.length) out.push(`<p>${inline(para.join("<br>"))}</p>`); para = []; };
-    const flushList = () => { if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
+    const flushPara = () => {
+      if (!para.length) return;
+      const children = [];
+      para.forEach((line, n) => { if (n) children.push({ type: "br" }); children.push(...parseInline(line)); });
+      blocks.push({ type: "p", children });
+      para = [];
+    };
+    const flushList = () => { if (list) blocks.push(list); list = null; };
     for (const line of lines) {
       if (code !== null) {
-        if (/^```/.test(line)) { out.push(`<pre><code>${code.join("\n")}</code></pre>`); code = null; } else code.push(line);
+        if (/^```/.test(line)) { blocks.push({ type: "pre", text: code.join("\n") }); code = null; } else code.push(line);
         continue;
       }
       if (/^```/.test(line)) { flushPara(); flushList(); code = []; continue; }
       const ul = line.match(/^\s*[-*]\s+(.*)$/), ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
       if (ul || ol) {
         flushPara();
-        const tag = ul ? "ul" : "ol";
-        if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
-        list.items.push((ul || ol)[1]);
+        const type = ul ? "ul" : "ol";
+        if (!list || list.type !== type) { flushList(); list = { type, items: [] }; }
+        list.items.push(parseInline((ul || ol)[1]));
         continue;
       }
       if (!line.trim()) { flushPara(); flushList(); continue; }
       const h = line.match(/^#{1,4}\s+(.*)$/);
-      if (h) { flushPara(); flushList(); out.push(`<p><strong>${inline(h[1])}</strong></p>`); continue; }
+      if (h) { flushPara(); flushList(); blocks.push({ type: "p", children: [{ type: "strong", children: parseInline(h[1]) }] }); continue; }
       flushList();
       para.push(line);
     }
-    if (code !== null) out.push(`<pre><code>${code.join("\n")}</code></pre>`);
+    if (code !== null) blocks.push({ type: "pre", text: code.join("\n") });
     flushPara();
     flushList();
-    return out.join("");
+    return blocks;
+  }
+
+  /** Build DOM nodes for Markdown with createElement, textContent and setAttribute only. */
+  function markdownToDOM(text, doc) {
+    const frag = doc.createDocumentFragment();
+    const inline = (parent, nodes) => {
+      for (const n of nodes) {
+        if (n.type === "text") parent.appendChild(doc.createTextNode(n.text));
+        else if (n.type === "br") parent.appendChild(doc.createElement("br"));
+        else if (n.type === "code") { const el = doc.createElement("code"); el.textContent = n.text; parent.appendChild(el); }
+        else if (n.type === "strong" || n.type === "em") { const el = doc.createElement(n.type); inline(el, n.children); parent.appendChild(el); }
+        else if (n.type === "link") {
+          const href = safeHref(n.href);
+          const el = doc.createElement(href ? "a" : "span");
+          if (href) {
+            el.setAttribute("href", href);
+            el.setAttribute("target", href.startsWith("/") ? "_self" : "_blank");
+            el.setAttribute("rel", "noopener noreferrer");
+          }
+          inline(el, n.children);
+          parent.appendChild(el);
+        }
+      }
+    };
+    for (const b of parseMarkdown(text)) {
+      if (b.type === "pre") {
+        const pre = doc.createElement("pre"), code = doc.createElement("code");
+        code.textContent = b.text;
+        pre.appendChild(code);
+        frag.appendChild(pre);
+      } else if (b.type === "p") {
+        const p = doc.createElement("p");
+        inline(p, b.children);
+        frag.appendChild(p);
+      } else {
+        const listEl = doc.createElement(b.type);
+        for (const item of b.items) { const li = doc.createElement("li"); inline(li, item); listEl.appendChild(li); }
+        frag.appendChild(listEl);
+      }
+    }
+    return frag;
   }
 
   function formatUSD(v) {
@@ -440,6 +554,6 @@
     API, layoutFor, deviceKind, newId, clip, pageContext, localDate,
     createState, applySnapshot, applyEvent, addPending, timeline, pendingApprovals,
     mergeDraft, remoteTyping, backoff, createOutbox, memoryStorage, outboxLabel, streamURL,
-    escapeHTML, renderMarkdown, formatUSD, spendLine, stepLabel, TRIAGE, lightFor, isToggleKey,
+    safeHref, parseMarkdown, markdownToDOM, formatUSD, spendLine, stepLabel, TRIAGE, lightFor, isToggleKey,
   };
 });

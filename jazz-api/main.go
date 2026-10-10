@@ -16,9 +16,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
@@ -54,6 +56,9 @@ const recordingFxColumns = `CASE WHEN r.fx_uploaded_at IS NOT NULL THEN COALESCE
 // recordingAssetColumns selects what recordingAssets.scanTargets expects.
 const recordingAssetColumns = `r.media_kind,r.object_name,r.content_type,COALESCE(r.video_object_name,''),COALESCE(r.video_content_type,''),
 	COALESCE(r.fx_object_name,''),COALESCE(r.fx_content_type,''),r.fx_uploaded_at IS NOT NULL`
+
+// wbCancelRuns cancels in-flight Workbench turns (set in WORKBENCH_MODE).
+var wbCancelRuns context.CancelFunc = func() {}
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
@@ -251,14 +256,21 @@ func main() {
 			slog.Warn("WORKBENCH_OWNER_SUBJECT is unset; relying on the gateway's sign-in allow-list alone")
 		}
 		app.wb, app.wbOnly = newWorkbench(wbCfg), true
+		runs, cancelRuns := context.WithCancel(context.Background())
+		app.wb.baseCtx = runs
 		go app.wbListen(ctx)
 		app.wbRecover(ctx)
 		go func() {
-			// Leases of instances that died are reclaimed within a couple of minutes.
+			// Leases of instances that died are reclaimed within a couple of
+			// minutes, and idle threads with unanswered messages get their turn.
 			for range time.Tick(time.Minute) {
-				app.wbRecover(ctx)
+				if !app.wbIsDraining() {
+					app.wbRecover(ctx)
+				}
 			}
 		}()
+		defer cancelRuns()
+		wbCancelRuns = cancelRuns
 	}
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -272,6 +284,24 @@ func main() {
 		IdleTimeout:  90 * time.Second,
 	}
 	slog.Info("jazz API listening", "port", cfg.Port, "workbench", app.wbOnly)
+	if app.wbOnly {
+		// Cloud Run sends SIGTERM and allows 10 s: stop claiming turns, let
+		// running ones finish for 7 s, cancel the rest (they are marked
+		// interrupted and re-answered elsewhere), then close the streams,
+		// which devices resume from Last-Event-ID on another instance.
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		go func() {
+			<-sig
+			slog.Info("workbench draining")
+			app.wbDrain(wbCancelRuns, 7*time.Second)
+			shutdown, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			if err := server.Shutdown(shutdown); err != nil {
+				server.Close()
+			}
+		}()
+	}
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)

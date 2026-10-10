@@ -139,8 +139,19 @@ func wbDecode(raw []byte, out any) error {
 
 // ---- Running tool calls --------------------------------------------------------------
 
-func (app *application) wbRunTools(ctx context.Context, thread, user uuid.UUID, uses []anthropic.BetaContentBlockUnion) []anthropic.BetaContentBlockParamUnion {
+// wbExternalSources names, per tool, the outside content it returns (data
+// written by people other than the owner). A proposal made after the model
+// has read such content in the same turn is flagged on its card.
+var wbExternalSources = map[string]string{"github_list_issues": "GitHub", "site_status": "GitHub"}
+
+type wbExternalKey struct{}
+
+// wbRunTools runs one response's tool calls. external lists the outside
+// sources the model has already read this turn; read is what these calls add.
+func (app *application) wbRunTools(ctx context.Context, thread, user uuid.UUID, uses []anthropic.BetaContentBlockUnion, external []string) ([]anthropic.BetaContentBlockParamUnion, []string) {
 	results := make([]anthropic.BetaContentBlockParamUnion, 0, len(uses))
+	read := []string{}
+	ctx = context.WithValue(ctx, wbExternalKey{}, external)
 	for _, tu := range uses {
 		_, _ = app.wbEmit(ctx, thread, "tool.started", map[string]any{"toolUseId": tu.ID, "name": tu.Name})
 		text, card, err := app.wbRunTool(ctx, thread, user, tu.ID, tu.Name, tu.Input)
@@ -154,8 +165,11 @@ func (app *application) wbRunTools(ctx context.Context, thread, user uuid.UUID, 
 		}
 		_, _ = app.wbEmit(ctx, thread, "tool.finished", finished)
 		results = append(results, anthropic.NewBetaToolResultBlock(tu.ID, text, err != nil))
+		if src := wbExternalSources[tu.Name]; src != "" && err == nil {
+			read = wbMergeSources(read, []string{src})
+		}
 	}
-	return results
+	return results, read
 }
 
 func (app *application) wbRunTool(ctx context.Context, thread, user uuid.UUID, toolUseID, name string, input json.RawMessage) (string, any, error) {
@@ -302,6 +316,9 @@ func (app *application) wbTriage(ctx context.Context, thread, user uuid.UUID, to
 // ---- Approvals ----------------------------------------------------------------------
 
 func (app *application) wbPropose(ctx context.Context, thread, user uuid.UUID, kind, tool string, input json.RawMessage, toolUseID, title string, detail map[string]any) (wbApproval, error) {
+	if external, _ := ctx.Value(wbExternalKey{}).([]string); len(external) > 0 {
+		detail["afterExternal"] = external
+	}
 	detailJSON, _ := json.Marshal(detail)
 	if len(input) == 0 {
 		input = json.RawMessage(`{}`)

@@ -301,13 +301,13 @@ func TestWorkbenchOutboxReplayIsIdempotent(t *testing.T) {
 }
 
 func TestWorkbenchMonthlyCapBlocksNewTurns(t *testing.T) {
-	// $0.01 cap: one turn of 2,000 input + 200 output tokens costs $0.012.
-	h := newWBHarness(t, func(c *wbConfig) { c.MonthlyCapUSD = 0.01 }, fakeTurn{Blocks: []fakeBlock{{Text: "Here you go."}}, Input: 2000, Output: 200})
+	// $0.05 cap: one turn of 10,000 input + 1,000 output tokens costs $0.06.
+	h := newWBHarness(t, func(c *wbConfig) { c.MonthlyCapUSD = 0.05 }, fakeTurn{Blocks: []fakeBlock{{Text: "Here you go."}}, Input: 10000, Output: 1000})
 	thread := h.newThread()
 	h.send(thread, "First question")
 	h.wait()
 	spend := h.call("GET", wbBase+"/spend", nil, 200)
-	if math.Abs(spend["spentUsd"].(float64)-0.012) > 1e-9 || spend["blocked"] != true {
+	if math.Abs(spend["spentUsd"].(float64)-0.06) > 1e-9 || spend["blocked"] != true {
 		t.Fatalf("spend from usage, now over the cap: %v", spend)
 	}
 	h.send(thread, "Second question")
@@ -331,8 +331,39 @@ func TestWorkbenchMonthlyCapBlocksNewTurns(t *testing.T) {
 	var threadMicro, runMicro int64
 	h.app.db.QueryRow(context.Background(), `SELECT spend_micro_usd FROM wb_threads WHERE id=$1`, thread).Scan(&threadMicro)
 	h.app.db.QueryRow(context.Background(), `SELECT sum(spend_micro_usd) FROM wb_runs WHERE thread_id=$1`, thread).Scan(&runMicro)
-	if threadMicro != 12000 || runMicro != 12000 {
+	if threadMicro != 60000 || runMicro != 60000 {
 		t.Fatalf("thread %d and run %d micro-dollars", threadMicro, runMicro)
+	}
+}
+
+// The cap is checked against an estimate before each call, so a turn that
+// would cross it is refused instead of overshooting.
+func TestWorkbenchCapEstimateStopsBeforeOvershoot(t *testing.T) {
+	// $0.05 cap. The first call costs $0.026 (4,000 in, 500 out). The next is
+	// estimated at ~4,600 prompt tokens ($0.018) plus a 1,000-token reply
+	// allowance ($0.02): $0.026 + $0.038 crosses $0.05, so it never runs.
+	h := newWBHarness(t, func(c *wbConfig) { c.MonthlyCapUSD = 0.05 },
+		fakeTurn{Blocks: []fakeBlock{{Text: "First."}}, Input: 4000, Output: 500},
+		fakeTurn{Blocks: []fakeBlock{{Text: "Second."}}, Input: 4600, Output: 500})
+	thread := h.newThread()
+	h.send(thread, "First question")
+	h.wait()
+	if spend := h.call("GET", wbBase+"/spend", nil, 200); spend["blocked"] != false {
+		t.Fatalf("under the cap after one turn: %v", spend)
+	}
+	h.send(thread, "Second question")
+	h.wait()
+	if h.model.callCount() != 1 {
+		t.Fatalf("the estimate refused the call: %d calls", h.model.callCount())
+	}
+	events := h.events(thread, 0)
+	var p map[string]any
+	json.Unmarshal(events[len(events)-1].Payload, &p)
+	if p["status"] != "capped" || !strings.Contains(p["message"].(string), "would likely cross") {
+		t.Fatalf("the refusal says why: %v", p)
+	}
+	if spend := h.call("GET", wbBase+"/spend", nil, 200); spend["spentUsd"].(float64) > 0.05 {
+		t.Fatalf("never above the cap: %v", spend)
 	}
 }
 

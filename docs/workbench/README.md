@@ -65,10 +65,31 @@ code yet; that comes in phase 2 (issue #81).
     update), the others get `409` and the outcome. Low-risk captures (a
     Moment, a practice note) run immediately.
   - Tool output is wrapped in `<untrusted_data>`; the system prompt says it
-    is data, never instructions.
+    is data, never instructions. A proposal made after the model read GitHub
+    content in the same turn says so on its card. Cards show the full text to
+    be written. GitHub writes (and flagged proposals) can't be approved from a
+    notification; it opens the page.
+  - Replies are rendered from Markdown with `createElement`/`textContent`
+    only (links: http(s) or same-origin paths), and the hosting pages send
+    `script-src 'self'; object-src 'none'; base-uri 'self'`.
 - **Spend.** Each response's `usage` (per hop, when a fallback served it) is
-  priced and added to the thread, the run and the month. When the month
-  reaches `WORKBENCH_MONTHLY_CAP_USD` new turns stop with a `capped` notice.
+  priced and added to the thread, the run and the month. Before each call the
+  cost is estimated (the previous prompt plus what was appended, at the uncached
+  rate, and a reply allowance); a call that would cross
+  `WORKBENCH_MONTHLY_CAP_USD` is not made, and turns stop with a `capped` notice.
+- **Request limits.** Images are validated and downscaled on upload (at most
+  1568 px, JPEG or PNG). Images older than the last six transcript turns are
+  replaced once by a placeholder, thinking blocks after that edit are removed,
+  and requests send `prefix_mismatch_behavior: "drop_block"` as a safety net.
+  A history the API refuses with a non-retryable 4xx (or one still over 20 MB)
+  marks the thread stuck, and the sheet offers a fresh thread.
+- **Refusal fallbacks.** After a mid-output fallback, thinking and tool_use
+  blocks before the last `fallback` block are omitted from the echoed turn,
+  only later tool calls run, and the visible reply keeps the partial text.
+- **Deploys.** On SIGTERM the service stops claiming turns, lets running ones
+  finish for 7 s, then cancels them as `interrupted` with a resume note; startup
+  and a minute-by-minute sweep re-answer interrupted turns and any idle thread
+  with unanswered messages.
 - **Voice.** Hold-to-talk records audio in the browser and uploads it as an
   attachment. The Messages API has no audio input, so the server stores the
   clip (playable in the thread) and the agent sees

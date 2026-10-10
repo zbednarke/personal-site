@@ -144,6 +144,8 @@ async function waitForServer() {
     await laptop.keyboard.press("Enter");
     await phone.waitForSelector('.wb-card[data-status="pending"] .wb-btn-primary', { timeout: 15000 });
     await laptop.waitForSelector('.wb-card[data-status="pending"] .wb-btn-primary');
+    const preview = await laptop.locator('.wb-card[data-status="pending"] .wb-preview').innerText();
+    assert.ok(preview.endsWith("END-OF-BODY") && preview.length > 1000, "the whole issue body is shown before approval");
     await laptop.screenshot({ path: path.join(out, "desktop-approval.png") });
     await laptop.click('.wb-card[data-status="pending"] .wb-btn-primary');
     await phone.waitForSelector('.wb-card[data-status="approved"] >> text=Created issue', { timeout: 10000 });
@@ -185,8 +187,17 @@ async function waitForServer() {
     await laptop.screenshot({ path: path.join(out, "desktop-status.png") });
     await noSideScroll(phone, "phone with cards");
 
+    // Hostile Markdown renders as text and plain links, with no handlers or script URLs.
+    await laptop.fill(".wb-input", "markdown check");
+    await laptop.keyboard.press("Enter");
+    await laptop.waitForSelector(".wb-msg-assistant a[href^='https://x.com/']", { timeout: 15000 });
+    const unsafe = await laptop.evaluate(() => [...document.querySelectorAll(".wb *")].filter((n) =>
+      [...n.attributes].some((a) => /^on/i.test(a.name)) || /^\s*javascript:/i.test(n.getAttribute("href") || "")).map((n) => n.outerHTML));
+    assert.deepEqual(unsafe, [], "no event-handler attributes or script URLs in rendered replies");
+    assert.ok(!(await laptop.title()).includes("PWNED"));
+
     assert.deepEqual(errors, []);
-    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, no runtime errors.");
+    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, CSP in place, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     try { await fetch(base + "/__preview_stop", { method: "POST" }); } catch { /* stopped */ }

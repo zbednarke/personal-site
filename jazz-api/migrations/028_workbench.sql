@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS wb_threads (
   output_tokens bigint NOT NULL DEFAULT 0,
   cache_read_tokens bigint NOT NULL DEFAULT 0,
   cache_write_tokens bigint NOT NULL DEFAULT 0,
+  -- The previous call's prompt size, for estimating the next call's cost.
+  last_prompt_tokens bigint NOT NULL DEFAULT 0,
+  last_output_tokens bigint NOT NULL DEFAULT 0,
+  last_prompt_estimate bigint NOT NULL DEFAULT 0,
+  -- Set when the API refuses the thread's history for good (a non-retryable
+  -- 4xx): the sheet offers a fresh thread instead of failing every turn.
+  stuck_reason text NOT NULL DEFAULT '' CHECK (char_length(stuck_reason) <= 500),
   archived_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()

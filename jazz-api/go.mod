@@ -2,7 +2,6 @@ module github.com/zbednarke/personal-site/jazz-api
 
 go 1.24
 
-
 require (
 	cloud.google.com/go/cloudsqlconn v1.14.2
 	cloud.google.com/go/iam v1.4.2
@@ -12,6 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2
 	golang.org/x/crypto v0.40.0
+	golang.org/x/image v0.27.0
 	golang.org/x/net v0.41.0
 	golang.org/x/oauth2 v0.30.0
 	golang.org/x/text v0.27.0

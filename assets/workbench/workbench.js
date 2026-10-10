@@ -611,7 +611,7 @@
   function messageNode(item) {
     const cls = `wb-msg wb-msg-${item.role}${item.pending ? " wb-pending" : ""}${item.status === "streaming" ? " wb-streaming" : ""}`;
     const node = el("div", { class: cls, "data-id": item.id });
-    if (item.role === "assistant") node.innerHTML = M.renderMarkdown(item.text);
+    if (item.role === "assistant") node.append(M.markdownToDOM(item.text, document));
     else node.textContent = item.text;
     node.append(...attachmentNodes(item.attachments));
     const meta = item.pending ? (item.status === "failed" ? "Not sent" : navigator.onLine ? "Sending…" : "Queued, sends when you're back online")
@@ -632,7 +632,11 @@
       el("span", { class: "wb-tag" }, tag),
       el("h4", {}, a.kind === "triage" && action ? action.title : a.title),
       a.kind === "triage" && d.reason ? el("p", {}, d.reason) : null,
-      body ? el("div", { class: "wb-preview" }, M.clip(body, 600)) : null);
+      // The whole text that would be written, scrollable, never clipped.
+      body ? el("div", { class: "wb-preview", tabindex: "0", role: "region", "aria-label": "What will be written" }, body) : null,
+      Array.isArray(d.afterExternal) && d.afterExternal.length
+        ? el("p", { class: "wb-warn" }, `Proposed after reading external content (${d.afterExternal.join(", ")}). Check it before approving.`)
+        : null);
     if (a.status === "pending") {
       const yes = el("button", { class: "wb-btn wb-btn-primary", type: "button" }, a.kind === "triage" ? "Confirm" : "Approve");
       const no = el("button", { class: "wb-btn", type: "button" }, "Not now");
@@ -709,6 +713,8 @@
     if (state.running && state.steps.length) extra.push(el("div", { class: "wb-steps" }, ...state.steps.slice(-4).map((s) => el("span", {}, M.stepLabel(s)))));
     if (state.running && !state.steps.length && !items.some((i) => i.status === "streaming")) extra.push(el("div", { class: "wb-notice" }, "Thinking…"));
     if (state.notice) extra.push(el("div", { class: `wb-notice${state.noticeStatus && state.noticeStatus !== "done" ? " wb-bad" : ""}` }, state.notice));
+    if (state.thread && state.thread.stuck) extra.push(el("div", { class: "wb-notice wb-bad" }, "This thread can't continue. ",
+      el("button", { class: "wb-chip wb-fresh", type: "button", onclick: () => newThread() }, "Start a fresh thread")));
     if (statusCard) extra.push(cardNode(statusCard));
     for (const n of extra) { n.classList.add("wb-transient"); log.append(n); }
 

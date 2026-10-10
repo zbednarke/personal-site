@@ -112,7 +112,8 @@ html.wb-split-open body { margin-right: min(46vw, 460px) !important; transition:
 .wb-card h4 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
 .wb-card p { margin: 4px 0; color: var(--wb-ink-2); }
 .wb-card .wb-tag { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 999px; background: var(--wb-mark); color: var(--wb-lamp); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
-.wb-card .wb-preview { max-height: 9.5em; overflow: hidden; white-space: pre-wrap; font-size: 13px; color: var(--wb-ink-2); border-left: 2px solid var(--wb-hair); padding-left: 8px; margin: 6px 0; }
+.wb-card .wb-warn { color: var(--wb-amber); font-size: 12px; font-weight: 560; }
+.wb-card .wb-preview { max-height: 18em; overflow-y: auto; overscroll-behavior: contain; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; color: var(--wb-ink-2); border-left: 2px solid var(--wb-hair); padding-left: 8px; margin: 6px 0; }
 .wb-card .wb-actions { display: flex; gap: 8px; margin-top: 10px; }
 .wb-btn { min-height: 40px; padding: 0 16px; border-radius: 12px; border: .5px solid var(--wb-hair); background: transparent; cursor: pointer; font-weight: 560; }
 .wb-btn-primary { background: var(--wb-lamp); color: var(--wb-lamp-ink); border-color: transparent; }

@@ -196,6 +196,8 @@ function discordFixtureDir() {
 
     // The bundle Moment: the hour lights the page, the label, the screenshots.
     await page.goto(`${base}/commonplace/#m/${bundleId}`);
+    // Wait for this Moment, not the one still on screen from the capture above.
+    await page.waitForFunction(() => /Sample Friend/.test((document.querySelector(".prov") || {}).textContent || ""));
     await page.waitForSelector(".shot img");
     await page.waitForFunction(() => [...document.querySelectorAll(".shot img")].every((i) => i.complete && i.naturalWidth > 0));
     assert.equal(await page.locator(".hour").first().innerText(), "11:41pm");

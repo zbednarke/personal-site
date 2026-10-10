@@ -122,6 +122,21 @@ type wbPushPayload struct {
 	ThreadID   string `json:"threadId,omitempty"`
 	ApprovalID string `json:"approvalId,omitempty"`
 	Tag        string `json:"tag,omitempty"`
+	// Actions offers Approve / Not now on the notification itself. Never for
+	// writes to the public repository: those are reviewed on the page.
+	Actions bool `json:"actions,omitempty"`
+}
+
+// wbApproveFromNotification: may this approval be answered without opening
+// the page? Not GitHub writes (public, permanent), and not proposals made
+// after reading outside content.
+func wbApproveFromNotification(a wbApproval) bool {
+	if strings.HasPrefix(a.ToolName, "github_") {
+		return false
+	}
+	var d map[string]any
+	_ = json.Unmarshal(a.Detail, &d)
+	return d["afterExternal"] == nil
 }
 
 // wbPushTo sends to the owner's devices (all, or nudge-opted only), skipping
@@ -164,7 +179,7 @@ func (app *application) wbPushTo(ctx context.Context, user uuid.UUID, nudgesOnly
 func wbThreadURL(thread uuid.UUID) string { return "/jazz/?workbench=" + thread.String() }
 
 func (app *application) wbPushApproval(ctx context.Context, user, thread uuid.UUID, a wbApproval) {
-	app.wbPushTo(ctx, user, false, "", wbPushPayload{Kind: "approval", Title: "Workbench", Body: "An approval is waiting.", URL: wbThreadURL(thread), ThreadID: thread.String(), ApprovalID: a.ID.String(), Tag: "wb-approval-" + a.ID.String()})
+	app.wbPushTo(ctx, user, false, "", wbPushPayload{Kind: "approval", Title: "Workbench", Body: "An approval is waiting.", URL: wbThreadURL(thread), ThreadID: thread.String(), ApprovalID: a.ID.String(), Tag: "wb-approval-" + a.ID.String(), Actions: wbApproveFromNotification(a)})
 }
 
 func (app *application) wbPushNudge(ctx context.Context, user, thread uuid.UUID, status string) {

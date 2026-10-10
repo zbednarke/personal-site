@@ -37,6 +37,8 @@ type fakeTurn struct {
 	Hold chan struct{}
 	// Delay between text chunks (default 3ms).
 	Delay time.Duration
+	// Status, when set, answers with that HTTP error instead of a stream.
+	Status int
 }
 
 type fakeAnthropic struct {
@@ -103,6 +105,12 @@ func (f *fakeAnthropic) serve(w http.ResponseWriter, r *http.Request) {
 	turn := f.script[0]
 	f.script = f.script[1:]
 	f.mu.Unlock()
+	if turn.Status != 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(turn.Status)
+		fmt.Fprintf(w, `{"type":"error","error":{"type":"invalid_request_error","message":"fake: %d"}}`, turn.Status)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	flusher := w.(http.Flusher)

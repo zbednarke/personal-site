@@ -130,7 +130,10 @@ func previewReply(body map[string]any) fakeTurn {
 	case toolResult:
 		return fakeTurn{Blocks: []fakeBlock{{Text: "Done. The card is up on every device."}}, Input: 800, Output: 12}
 	case strings.Contains(lower, "file an issue"):
-		return fakeTurn{Blocks: []fakeBlock{{Text: "Here is a draft."}, {ToolName: "github_create_issue", ToolInput: map[string]any{"title": "Sample: calmer metronome click", "body": "Fictional fixture issue for the browser check."}}}, Stop: "tool_use", Input: 900, Output: 40}
+		return fakeTurn{Blocks: []fakeBlock{{Text: "Here is a draft."}, {ToolName: "github_create_issue", ToolInput: map[string]any{"title": "Sample: calmer metronome click", "body": "Fictional fixture issue for the browser check. " + strings.Repeat("The whole body is shown before approval, never clipped. ", 20) + "END-OF-BODY"}}}, Stop: "tool_use", Input: 900, Output: 40}
+	case strings.Contains(lower, "markdown check"):
+		// Hostile Markdown from the review of PR #83: must render as inert text and links.
+		return fakeTurn{Blocks: []fakeBlock{{Text: "[a](https://x.com/(https://y/onmouseover=document.title='PWNED:'+location.protocol+) and https://z.example/\"onmouseover=alert(1)// and [b](javascript:alert(1))"}}, Input: 100, Output: 20}
 	case strings.Contains(lower, "status"):
 		return fakeTurn{Blocks: []fakeBlock{{ToolName: "site_status", ToolInput: map[string]any{}}}, Stop: "tool_use", Input: 700, Output: 20}
 	case strings.Contains(lower, "voice note attached"):
