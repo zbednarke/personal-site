@@ -46,6 +46,9 @@ type blockRecordingSummary struct {
 	VideoContentType string    `json:"videoContentType,omitempty"`
 	VideoWidth       int       `json:"videoWidth,omitempty"`
 	VideoHeight      int       `json:"videoHeight,omitempty"`
+	FxContentType    string    `json:"fxContentType,omitempty"`
+	FxSizeBytes      int64     `json:"fxSizeBytes,omitempty"`
+	FxPreset         string    `json:"fxPreset,omitempty"`
 }
 
 type blockDefinition struct {
@@ -413,9 +416,10 @@ func reconcileBlockPracticeTime(block *practiceBlock) {
 
 func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID uuid.UUID) ([]blockRecordingSummary, error) {
 	rows, err := app.db.Query(ctx, `
-		SELECT id,status,content_type,COALESCE(duration_ms,0),recorded_at,COALESCE(take_number,0),COALESCE(notes,''),practice_block_id,
-		       COALESCE(media_kind,'audio'),COALESCE(video_content_type,''),COALESCE(video_width,0),COALESCE(video_height,0)
-		FROM recordings WHERE user_id=$1 AND practice_block_id=$2 AND status <> 'deleted' ORDER BY recorded_at,id`, userID, blockID)
+		SELECT r.id,r.status,r.content_type,COALESCE(r.duration_ms,0),r.recorded_at,COALESCE(r.take_number,0),COALESCE(r.notes,''),r.practice_block_id,
+		       COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_width,0),COALESCE(r.video_height,0),
+		       `+recordingFxColumns+`
+		FROM recordings r WHERE r.user_id=$1 AND r.practice_block_id=$2 AND r.status <> 'deleted' ORDER BY r.recorded_at,r.id`, userID, blockID)
 	if err != nil {
 		return nil, err
 	}
@@ -425,7 +429,7 @@ func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID
 		var recording blockRecordingSummary
 		if err := rows.Scan(&recording.ID, &recording.Status, &recording.ContentType, &recording.DurationMS, &recording.RecordedAt,
 			&recording.TakeNumber, &recording.Notes, &recording.PracticeBlockID, &recording.MediaKind, &recording.VideoContentType,
-			&recording.VideoWidth, &recording.VideoHeight); err != nil {
+			&recording.VideoWidth, &recording.VideoHeight, &recording.FxContentType, &recording.FxSizeBytes, &recording.FxPreset); err != nil {
 			return nil, err
 		}
 		recordings = append(recordings, recording)

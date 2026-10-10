@@ -29,7 +29,21 @@ class PitchEngine extends AudioWorkletProcessor {
     this.vR = [1, 1]; this.vT = [1, 1]; this.vOn = [0, 0];
     this.ph = [0, 0, 0];
 
-    this.port.onmessage = (e) => Object.assign(this, e.data);
+    this.port.onmessage = (e) => this.configure(e.data);
+  }
+
+  // Only accept the known settings; anything else could clobber the
+  // processor's buffers and state.
+  configure(data) {
+    if (!data || typeof data !== "object") return;
+    if (["off", "tune", "harmony"].includes(data.mode)) this.mode = data.mode;
+    if (Number.isInteger(data.keyRoot) && data.keyRoot >= 0 && data.keyRoot < 12) this.keyRoot = data.keyRoot;
+    if (Array.isArray(data.scale) && data.scale.length > 0 && data.scale.length <= 12 &&
+        data.scale.every((step) => Number.isInteger(step) && step >= 0 && step < 12)) this.scale = data.scale.slice();
+    if (["third", "triad", "fifthdown", "octaves"].includes(data.voicing)) this.voicing = data.voicing;
+    if (Number.isFinite(data.strength)) this.strength = Math.max(0, Math.min(1, data.strength));
+    if (Number.isFinite(data.glideMs)) this.glideMs = Math.max(1, Math.min(2000, data.glideMs));
+    if (Number.isFinite(data.harmMix)) this.harmMix = Math.max(0, Math.min(2, data.harmMix));
   }
 
   read(delaySamples) {
