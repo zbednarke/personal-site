@@ -9,7 +9,7 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    are kept. The API's `/health` must answer before the site is published.
 3. A new static release on `actual-server` (`actual-budget-zb`, `us-west1-a`, over
    IAP) made by `deploy/publish-static-release.sh`: it copies the live release,
-   overlays `index.html`, `.nojekyll`, `assets/`, `jazz/` and `trumpets/` from the
+   overlays `index.html`, `.nojekyll`, `assets/`, `jazz/`, `trumpets/` and `privacy/` from the
    commit, then switches `/srv/zachbednarke.com/current` atomically. Films in
    `/srv/zachbednarke.com/films` are separate and untouched. The log prints the
    previous release and a one-line rollback.
