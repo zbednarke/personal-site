@@ -107,12 +107,14 @@ def updated_caddyfile(text):
     return text
 
 
-def write_atomic(path, data, mode, group=None):
+def write_atomic(path, data, mode, group=None, owner=None):
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name + '.')
     with os.fdopen(fd, 'wb') as handle:
         handle.write(data)
     os.chmod(tmp, mode)
-    if group:
+    if owner:
+        os.chown(tmp, *owner)
+    elif group:
         shutil.chown(tmp, user='root', group=group)
     os.replace(tmp, path)
 
@@ -156,7 +158,11 @@ def main():
 
     original_config = CONFIG.read_bytes()
     original_caddy = CADDYFILE.read_text()
-    caddy_mode = stat.S_IMODE(CADDYFILE.stat().st_mode)
+    caddy_stat = CADDYFILE.stat()
+    caddy_mode = stat.S_IMODE(caddy_stat.st_mode)
+    # Caddy runs as the caddy user and reads the file through its group, so
+    # every rewrite must keep the original owner and group, not just the mode.
+    caddy_owner = (caddy_stat.st_uid, caddy_stat.st_gid)
     original_binary = BINARY.read_bytes() if BINARY.exists() else None
     config = merged_config(args, json.loads(original_config))
     caddy_text = updated_caddyfile(original_caddy)
@@ -174,7 +180,7 @@ def main():
         staged_binary.unlink()
         fail('New configuration rejected by jazz-auth: ' + (result.stderr.strip().splitlines() or ['unknown error'])[-1] + '; nothing changed')
     candidate = Path('/etc/caddy/Caddyfile.google-sign-in')
-    candidate.write_text(caddy_text)
+    write_atomic(candidate, caddy_text.encode(), caddy_mode, owner=caddy_owner)
     result = subprocess.run(['caddy', 'validate', '--config', str(candidate), '--adapter', 'caddyfile'], env=caddy_env(), capture_output=True)
     if result.returncode:
         staged_config.unlink()
@@ -192,7 +198,7 @@ def main():
         if original_binary is not None:
             write_atomic(BINARY, original_binary, 0o755)
         subprocess.run(['systemctl', 'restart', 'jazz-auth'])
-        write_atomic(CADDYFILE, original_caddy.encode(), caddy_mode)
+        write_atomic(CADDYFILE, original_caddy.encode(), caddy_mode, owner=caddy_owner)
         subprocess.run(['systemctl', 'reload', 'caddy'])
         fail(f'{reason}; previous sign-in restored')
 
@@ -201,7 +207,6 @@ def main():
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     if subprocess.run(['systemctl', 'restart', 'jazz-auth']).returncode or not wait_for_service():
         rollback('jazz-auth did not start')
-    candidate.chmod(caddy_mode)
     os.replace(candidate, CADDYFILE)
     if subprocess.run(['systemctl', 'reload', 'caddy'], capture_output=True).returncode:
         rollback('Caddy reload failed')
