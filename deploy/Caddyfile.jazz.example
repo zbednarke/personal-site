@@ -1,9 +1,8 @@
-# Add these directives inside the existing zachbednarke.com site block,
-# before its file_server directive. Do not commit a plaintext password.
-#
-# To use the same login as portal.zachbednarke.com, replace the environment
-# placeholders with the existing username and password hash from that site's
-# basic_auth block. Caddy accepts password hashes only, never plaintext.
+# Add these directives inside the existing zachbednarke.com site block. The
+# whole fragment is one `route`, so Caddy runs it in the order written; it must
+# wrap the site's file_server. Do not commit secrets: the sign-in service reads
+# /etc/jazz-auth.json, and JAZZ_API_URL / JAZZ_GATEWAY_KEY live in the Caddy
+# service environment. See deploy/jazz-auth.md.
 
 # If the parent site has a site-wide Permissions-Policy that disables the
 # microphone, scope that policy away from Jazz. Two header directives that set
@@ -16,58 +15,83 @@
 
 header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 
+# Private paths. To protect another app, add its page and asset paths here;
+# nothing else needs to change. /commonplace is reserved now so its pages are
+# private from the first release.
 @jazz_private {
-    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/*
+    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/* /commonplace /commonplace/* /assets/commonplace/*
     not path /jazz/share/*
 }
 
-basic_auth @jazz_private bcrypt restricted {
-    {$JAZZ_AUTH_USER} {$JAZZ_AUTH_HASH}
-}
-
-header @jazz_private {
-    X-Robots-Tag "noindex, nofollow, noarchive"
-    Cache-Control "private, no-store"
-    Referrer-Policy "no-referrer"
-    # The page has no third-party frames; Chrome still requires site permission.
-    Permissions-Policy "camera=*, microphone=*, geolocation=()"
-}
-
-# Keep this block before the site's file_server. Caddy strips /jazz/api,
-# forwards the authenticated username, and adds a gateway secret that is never
-# exposed to browser JavaScript. Set JAZZ_API_URL and JAZZ_GATEWAY_KEY in the
-# Caddy service environment, not in this repository.
-handle_path /jazz/api/* {
-    reverse_proxy {$JAZZ_API_URL} {
-        header_up Host {upstream_hostport}
-        header_up X-Jazz-User {http.auth.user.id}
-        header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+route {
+    # Sign-in pages and the Google callback are public and served by the
+    # loopback jazz-auth service. Keep this outside @jazz_private.
+    route /auth/* {
+        reverse_proxy 127.0.0.1:8768
     }
-}
 
-# Permanent opaque share links are deliberately outside Basic Auth. The API
-# validates the bearer token and redirects each request to a fresh short-lived
-# private-storage URL; the recording bucket itself remains private.
-handle_path /jazz/share/* {
-    rewrite * /v1/public/recordings{http.request.uri.path}
-    reverse_proxy {$JAZZ_API_URL} {
-        header_up Host {upstream_hostport}
+    # Every private request is checked first. A valid session cookie returns
+    # 200 with X-Jazz-User; otherwise jazz-auth answers the browser directly:
+    # a 302 to /auth/login for page loads, or 401 JSON for API/asset calls.
+    # It never sends WWW-Authenticate, so no Basic dialog appears.
+    route @jazz_private {
+        reverse_proxy 127.0.0.1:8768 {
+            method GET
+            rewrite /check
+            header_up X-Forwarded-Method {method}
+            header_up X-Forwarded-Uri {uri}
+            @authenticated status 2xx
+            handle_response @authenticated {
+                request_header X-Jazz-User {rp.header.X-Jazz-User}
+                header +Set-Cookie {rp.header.Set-Cookie}
+            }
+        }
     }
-}
 
-# Finished films persist across static releases and inherit Jazz authentication.
-handle_path /jazz/films/* {
-    root * /srv/zachbednarke.com/films
+    header @jazz_private {
+        X-Robots-Tag "noindex, nofollow, noarchive"
+        Cache-Control "private, no-store"
+        Referrer-Policy "no-referrer"
+        # The page has no third-party frames; Chrome still requires site permission.
+        Permissions-Policy "camera=*, microphone=*, geolocation=()"
+    }
+
+    # Caddy strips /jazz/api, forwards the verified username (set above from
+    # jazz-auth, overwriting anything the browser sent), and adds a gateway
+    # secret that is never exposed to browser JavaScript.
+    handle_path /jazz/api/* {
+        reverse_proxy {$JAZZ_API_URL} {
+            header_up Host {upstream_hostport}
+            header_up X-Jazz-User {http.request.header.X-Jazz-User}
+            header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+        }
+    }
+
+    # Permanent opaque share links are deliberately outside sign-in. The API
+    # validates the bearer token and redirects each request to a fresh
+    # short-lived private-storage URL; the recording bucket itself remains private.
+    handle_path /jazz/share/* {
+        rewrite * /v1/public/recordings{http.request.uri.path}
+        reverse_proxy {$JAZZ_API_URL} {
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    # Finished films persist across static releases and inherit Jazz sign-in.
+    handle_path /jazz/films/* {
+        root * /srv/zachbednarke.com/films
+        file_server
+    }
+
+    # Trumpet notes and feedback inherit the same private gateway. Machine
+    # clients use the Cloud Run URL directly with a separate scoped bearer token.
+    handle_path /trumpets/api/* {
+        reverse_proxy {$JAZZ_API_URL} {
+            header_up Host {upstream_hostport}
+            header_up X-Jazz-User {http.request.header.X-Jazz-User}
+            header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+        }
+    }
+
     file_server
-}
-
-
-# Trumpet notes and feedback inherit the same private gateway. Machine clients
-# use the Cloud Run URL directly with a separate scoped bearer token.
-handle_path /trumpets/api/* {
-    reverse_proxy {$JAZZ_API_URL} {
-        header_up Host {upstream_hostport}
-        header_up X-Jazz-User {http.auth.user.id}
-        header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
-    }
 }

@@ -87,14 +87,12 @@ with a shared physical horn identity. Use `GET /machine/listings` for that compa
    `/trumpets/api/*` reverse proxy from `deploy/Caddyfile.jazz.example`.
    Reuse the existing authenticated identity and gateway secret; overwrite client
    identity headers at the gateway. Validate Caddy before reload.
-3. Preserve whichever existing login is deployed. The example uses Basic Auth;
-   the repository also supports `jazz-auth`'s seven-day cookie. For the cookie
-   deployment retain its existing `route @jazz_private` authentication gate and
-   forward `X-Jazz-User {http.request.header.X-Jazz-User}` as on Jazz, rather than
-   replacing it with a new Basic Auth gate. The expanded matcher includes Trumpets
-   in both authentication and privacy headers. `deploy/verify-jazz-auth.py` now
-   checks Trumpets too. Do not rerun the one-time login installer on an already
-   installed cookie deployment merely to add this route.
+3. Sign-in is handled by `jazz-auth` (Sign in with Google; see
+   `deploy/jazz-auth.md`). Keep its `route @jazz_private` check and forward
+   `X-Jazz-User {http.request.header.X-Jazz-User}` as on Jazz. The matcher
+   includes Trumpets in both sign-in and privacy headers, and
+   `deploy/verify-jazz-auth.py` checks Trumpets too. Do not rerun the one-time
+   installers merely to add a route.
 4. After validating and reloading the private routes, publish `trumpets/` and
    `assets/trumpets/` in the existing static release. Switch the release symlink
    atomically and keep the previous release and Caddy configuration for rollback.

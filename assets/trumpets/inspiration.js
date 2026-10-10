@@ -9,7 +9,7 @@
     TM = window.TrumpetModel,
     $ = (s) => document.querySelector(s),
     BASE = "/trumpets/api/v1/trumpets",
-    LOGIN = "Your private session needs a login. Reload the page to sign in.";
+    LOGIN = "Signed out. Sign in again to continue.";
   const state = {
     items: [],
     archived: [],
