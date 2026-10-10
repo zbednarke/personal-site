@@ -115,9 +115,13 @@ async function waitForServer() {
     await phone.fill(".wb-input", "What should I practise today?");
     await phone.tap(".wb-send");
     await laptop.waitForSelector(".wb-msg-user >> text=What should I practise today?");
-    await laptop.waitForSelector(".wb-msg-assistant.wb-streaming", { timeout: 10000 });
-    const partial = await laptop.locator(".wb-msg-assistant.wb-streaming").innerText();
-    assert.ok(partial.length > 0 && !partial.includes("one chorus of guide tones."), "the laptop sees the reply mid-stream");
+    // Poll for a partial reply: the streaming bubble can exist before its first words render.
+    const midStream = await laptop.waitForFunction(() => {
+      const el = document.querySelector(".wb-msg-assistant.wb-streaming");
+      const text = el ? el.innerText.trim() : "";
+      return text.length > 0 && !text.includes("one chorus of guide tones.");
+    }, null, { timeout: 10000 }).then(() => true, () => false);
+    assert.ok(midStream, "the laptop sees the reply mid-stream");
     await phone.screenshot({ path: path.join(out, "phone-streaming.png") });
     await laptop.waitForFunction(() => !__workbench.state.running && __workbench.state.items.some((i) => i.role === "assistant" && i.status === "done" && i.text.endsWith("guide tones.")), null, { timeout: 15000 });
     await phone.waitForFunction(() => !__workbench.state.running && __workbench.state.items.some((i) => i.role === "assistant" && i.status === "done" && i.text.endsWith("guide tones.")), null, { timeout: 15000 });
