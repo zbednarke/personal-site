@@ -1,4 +1,15 @@
-# Local Clip Studio editor
+# Retired local Magic Film prototype
+
+Clip Studio's **Make today's film** now runs as an on-demand Cloud Run Job. It
+does not require this computer, a loopback server, an open browser tab, or the
+old VM publisher. Progress, cancellation, drafts and private video/poster
+access all go through the Jazz API. Deployment is documented in
+[`jazz-api/README.md`](../../jazz-api/README.md#magic-film-cloud-run-job).
+
+The Python files below are retained temporarily as a rollout reference. The
+site no longer calls them, and `start.ps1` is not needed for the hosted feature.
+
+## Legacy prototype behavior
 
 From Clip Studio, **Make today's film** opens a loopback worker on this PC. It snapshots the selected day's existing non-rejected candidates, prioritizes manual/liked moments, launches `gpt-6-astra` with `model_reasoning_effort="medium"`, validates the returned cut list, and renders a local 1080p MP4. No YouTube upload is performed.
 

@@ -57,6 +57,32 @@ gcloud run deploy jazz-api --source . --region us-central1 \
   --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
 ```
 
+## Magic Film Cloud Run job
+
+Magic Film is asynchronous and does not need a local server or an always-on
+renderer. The API freezes the chosen day's eligible moments in Postgres and
+invokes one Cloud Run Job execution. The worker builds bounded evidence, asks
+the configured OpenAI Responses model for a strict edit plan, validates source
+boundaries, renders with FFmpeg, and stores the MP4/poster privately in GCS.
+The browser can close and later recover job status and finished films.
+
+Create the worker once (dry-run first), then enable image updates in deploys:
+
+```sh
+# First create Secret Manager secret magic-film-openai-api-key.
+python3 deploy/create-magic-film-job.py
+python3 deploy/create-magic-film-job.py --apply
+# Set repository variable MAGIC_FILM_ENABLED=true.
+```
+
+The job has no idle instance, uses one task with no retries, and is capped at
+2 vCPU, 4 GiB and 45 minutes. The application permits one active film per user,
+at most 60 clips, at most 15 minutes of evidence per candidate, and a film no
+longer than the selected target plus 15 seconds. `MAGIC_FILM_MODEL` defaults to
+`gpt-6-astra`; set it on `jazz-api` before setup if another Responses API model
+should be used. The setup script grants the API service account access to the
+OpenAI secret and invocation of only this job.
+
 To try a feature branch against real data without changing the live site,
 deploy a tagged revision that receives no traffic, then point the local pages at
 it. Startup migrations run against the shared database, so only do this for
@@ -117,6 +143,12 @@ starter list and imports the legacy campaign roadmap stages once
   writes a `repertoire_events` row; `practiceBlockId` links it to a practice day.
 - `GET /v1/repertoire/tunes/{tuneId}/history` groups linked blocks and takes by
   day, with change events and guide-tone drill stats.
+- `POST /v1/repertoire/tunes/{tuneId}/sheets` accepts a raw PDF (25 MB max) plus
+  `X-Sheet-*` metadata and stores it in the private object bucket. `GET` and
+  `DELETE /v1/repertoire/sheets/{sheetId}` open it through a short-lived signed
+  URL or remove it. Tune responses include their `sheets` list. The seed library
+  contains an original B♭ blues practice chart; copyrighted charts are only
+  added from the owner's licensed or owned files.
 - `PATCH /v1/repertoire/settings` sets `setTargetDate`.
 
 Practice blocks link to tunes through `practice_blocks.tune_id`. Bootstrap and

@@ -75,6 +75,16 @@ jobs:
           gcloud run services update-traffic workbench --to-latest --quiet "${flags[@]}"
           url=$(gcloud run services describe workbench "${flags[@]}" --format 'value(status.url)')
           curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/health"
+      - name: Update Magic Film worker image
+        # The zero-idle Cloud Run Job is created once with
+        # deploy/create-magic-film-job.py. Each release only changes its image.
+        if: vars.MAGIC_FILM_ENABLED == 'true'
+        run: |
+          flags=(--project "$RUN_PROJECT" --region "$RUN_REGION")
+          revision=$(gcloud run services describe jazz-api "${flags[@]}" --format 'value(status.latestReadyRevisionName)')
+          image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
+          gcloud run jobs update jazz-magic-film --image "$image" --quiet "${flags[@]}" \
+            --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 45m --cpu 2 --memory 4Gi
       - name: Package the static site
         run: tar -czf "site-${{ steps.commit.outputs.sha }}.tar.gz" index.html .nojekyll assets jazz trumpets commonplace privacy
       - name: Publish the static release

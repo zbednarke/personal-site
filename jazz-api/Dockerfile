@@ -7,7 +7,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/jazz-ap
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 65532 --no-create-home app
 COPY --from=build /out/jazz-api /jazz-api

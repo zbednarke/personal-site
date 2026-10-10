@@ -301,6 +301,7 @@
       tune.milestones?.gigReady === "solid" ? '<span class="tune-badge gig">Gig-ready</span>' : "",
       !tune.chosen ? '<span class="tune-badge">Not chosen</span>' : "",
       tune.archivedAt ? '<span class="tune-badge">Archived</span>' : "",
+      tune.sheets?.length ? `<span class="tune-badge">${tune.sheets.length} chart${tune.sheets.length === 1 ? "" : "s"}</span>` : "",
     ].join("");
   }
 
@@ -536,6 +537,30 @@
       </div>`;
   }
 
+  function sheetLibrary(tune, readonly) {
+    const partLabel = { concert: "Concert", bb: "B♭ part", score: "Full score", other: "Other" };
+    const rightsLabel = { original: "Original", public_domain: "Public domain", licensed: "Licensed", owned_copy: "Owned copy", unknown: "Rights unknown" };
+    const sizeLabel = (bytes) => bytes ? `${Math.max(1, Math.round(bytes / 1024))} KB` : "Bundled";
+    const rows = (tune.sheets || []).map((sheet) => `
+      <li class="sheet-row">
+        <div><strong>${escapeHTML(sheet.title)}</strong><span>${escapeHTML(partLabel[sheet.part] || sheet.part)} · ${escapeHTML(rightsLabel[sheet.rights] || sheet.rights)} · ${sizeLabel(sheet.sizeBytes)}</span></div>
+        <div class="sheet-actions"><a class="button button-quiet" href="${API_BASE}/repertoire/sheets/${encodeURIComponent(sheet.id)}" target="_blank" rel="noopener">Open PDF</a>${readonly ? "" : `<button type="button" class="button button-quiet" data-delete-sheet="${escapeHTML(sheet.id)}">Remove</button>`}</div>
+      </li>`).join("");
+    return `
+      <section class="tune-detail-section sheet-library">
+        <h3>Sheet music <small>${(tune.sheets || []).length} linked PDF${(tune.sheets || []).length === 1 ? "" : "s"}</small></h3>
+        <ul>${rows || '<li class="sheet-empty">No PDF linked to this tune yet.</li>'}</ul>
+        ${readonly ? "" : `<form class="sheet-upload" data-sheet-upload>
+          <label class="wide"><span>PDF</span><input name="file" type="file" accept="application/pdf,.pdf" required></label>
+          <label class="wide"><span>Chart title</span><input name="title" maxlength="160" placeholder="Defaults to the filename"></label>
+          <label><span>Part</span><select name="part"><option value="bb">B♭ part</option><option value="concert">Concert</option><option value="score">Full score</option><option value="other">Other</option></select></label>
+          <label><span>Permission</span><select name="rights"><option value="owned_copy">I own this copy</option><option value="licensed">Licensed</option><option value="public_domain">Public domain</option><option value="original">My original</option><option value="unknown">Unknown</option></select></label>
+          <label class="wide"><span>Source link (optional, https)</span><input name="sourceUrl" type="url" pattern="https://.*" placeholder="https://"></label>
+          <div class="wide sheet-upload-foot"><button type="submit" class="button button-primary">Add PDF</button><small>Upload only music you created, licensed, own, or may legally use. 25 MB max.</small></div>
+        </form>`}
+      </section>`;
+  }
+
   function renderDetail() {
     const dialog = $("#tune-dialog");
     const body = $("#tune-dialog-body");
@@ -579,6 +604,7 @@
         <label class="wide"><span>Reference link (https)</span><input name="referenceUrl" type="url" maxlength="500" pattern="https://.*" placeholder="https://" value="${value("referenceUrl")}" ${readonly ? "disabled" : ""}></label>
         <label><span>Original key (concert)</span><input name="concertKey" maxlength="12" placeholder="e.g. Bb" value="${value("concertKey")}" ${readonly ? "disabled" : ""}></label>
       </form>
+      ${sheetLibrary(tune, readonly)}
       <section class="tune-detail-section"><h3>Keys known <small>${state.display === "bb-trumpet" ? "written for B♭ trumpet" : "concert"}</small></h3>${keyEditor(tune, readonly)}</section>
       <section class="tune-detail-section"><h3>Milestones</h3><div class="milestone-selectors">${M.MILESTONES.filter((item) => item.key !== "keysKnown").map((item) => milestoneSelector(tune, item, readonly)).join("")}</div></section>
       <section class="tune-detail-section"><h3>Deeply learned ${tune.deeplyLearned ? "· ✓" : ""}</h3>${deepChecklist(tune)}</section>
@@ -626,6 +652,53 @@
     }));
     $$("[data-set-milestone]", body).forEach((button) => { button.dataset.focusKey = `${button.dataset.setMilestone}-${button.dataset.value}`; });
     wireKeyEditor(body, tune, "");
+    const sheetForm = $("[data-sheet-upload]", body);
+    sheetForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const file = sheetForm.elements.file.files[0];
+      if (!file) return;
+      if (file.size > 25 * 1024 * 1024) { toast("PDFs must be 25 MB or smaller"); return; }
+      const button = $("button[type='submit']", sheetForm);
+      button.disabled = true;
+      button.textContent = "Uploading…";
+      try {
+        const response = await fetch(`${API_BASE}/repertoire/tunes/${encodeURIComponent(tune.tuneId)}/sheets`, {
+          method: "POST",
+          headers: {
+            "Content-Type": file.type === "application/pdf" ? file.type : "application/pdf",
+            "X-File-Name": encodeURIComponent(file.name),
+            "X-Sheet-Title": encodeURIComponent(sheetForm.elements.title.value.trim()),
+            "X-Sheet-Part": sheetForm.elements.part.value,
+            "X-Sheet-Rights": sheetForm.elements.rights.value,
+            "X-Source-URL": encodeURIComponent(sheetForm.elements.sourceUrl.value.trim()),
+          },
+          body: file,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || `Upload failed (${response.status})`);
+        tune.sheets = [...(tune.sheets || []), result.sheet];
+        render();
+        toast(`${result.sheet.title} linked`);
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+        button.textContent = "Add PDF";
+      }
+    });
+    $$('[data-delete-sheet]', body).forEach((button) => button.addEventListener("click", async () => {
+      const sheet = (tune.sheets || []).find((item) => item.id === button.dataset.deleteSheet);
+      if (!sheet || !confirm(`Remove ${sheet.title} from this tune?`)) return;
+      button.disabled = true;
+      try {
+        await api(`/repertoire/sheets/${encodeURIComponent(sheet.id)}`, { method: "DELETE" });
+        tune.sheets = tune.sheets.filter((item) => item.id !== sheet.id);
+        render();
+        toast(`${sheet.title} removed`);
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    }));
     $("[data-archive-tune]", body)?.addEventListener("click", () => {
       if (!confirm(`Archive ${tune.title}? It leaves your goals and set list; practice history and takes stay.`)) return;
       patchTune(tune.tuneId, { archived: true }).then(() => toast(`${tune.title} archived`)).catch(() => {});

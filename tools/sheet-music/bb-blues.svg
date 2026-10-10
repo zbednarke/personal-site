@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 612 792">
+  <rect width="612" height="792" fill="#fff"/>
+  <style>
+    .serif{font-family:Georgia,'DejaVu Serif',serif}.sans{font-family:Arial,'DejaVu Sans',sans-serif}
+    .muted{fill:#666}.rule{stroke:#171717;stroke-width:1.5;fill:none}.small{font-size:8px}.body{font-size:10px}
+  </style>
+  <text x="42" y="62" class="serif" font-size="31" font-weight="700">B♭ Blues</text>
+  <text x="570" y="45" class="sans body" text-anchor="end">12-bar practice chart</text>
+  <text x="570" y="60" class="sans body" font-weight="700" text-anchor="end">Written for B♭ trumpet</text>
+  <line x1="42" y1="76" x2="570" y2="76" stroke="#171717" stroke-width="3"/>
+  <text x="42" y="101" class="sans body">A flexible form for learning the blues by ear. Large symbols are written for trumpet;</text>
+  <text x="42" y="116" class="sans body">concert chords appear below. Start with roots, then guide tones, then make a melody.</text>
+  <text x="42" y="151" class="serif" font-size="16" font-weight="700">Chorus — written chords</text>
+
+  <g transform="translate(42 166)">
+    <path class="rule" d="M0 0H528V204H0Z M132 0V204 M264 0V204 M396 0V204 M0 68H528 M0 136H528"/>
+    <g class="sans">
+      <g transform="translate(11 24)"><text font-size="19" font-weight="700">C7</text><text y="30" class="small muted">concert B♭7</text></g>
+      <g transform="translate(143 24)"><text font-size="19" font-weight="700">F7</text><text y="30" class="small muted">concert E♭7</text></g>
+      <g transform="translate(275 24)"><text font-size="19" font-weight="700">C7</text><text y="30" class="small muted">concert B♭7</text></g>
+      <g transform="translate(407 24)"><text font-size="19" font-weight="700">C7</text><text y="30" class="small muted">concert B♭7</text></g>
+      <g transform="translate(11 92)"><text font-size="19" font-weight="700">F7</text><text y="30" class="small muted">concert E♭7</text></g>
+      <g transform="translate(143 92)"><text font-size="19" font-weight="700">F♯°7</text><text y="30" class="small muted">concert E°7</text></g>
+      <g transform="translate(275 92)"><text font-size="19" font-weight="700">C7</text><text y="30" class="small muted">concert B♭7</text></g>
+      <g transform="translate(407 92)"><text font-size="19" font-weight="700">A7</text><text y="30" class="small muted">concert G7</text></g>
+      <g transform="translate(11 160)"><text font-size="19" font-weight="700">Dm7</text><text y="30" class="small muted">concert Cm7</text></g>
+      <g transform="translate(143 160)"><text font-size="19" font-weight="700">G7</text><text y="30" class="small muted">concert F7</text></g>
+      <g transform="translate(275 160)"><text font-size="16" font-weight="700">C7    A7</text><text y="30" class="small muted">concert B♭7 / G7</text></g>
+      <g transform="translate(407 160)"><text font-size="16" font-weight="700">Dm7    G7</text><text y="30" class="small muted">concert Cm7 / F7</text></g>
+    </g>
+  </g>
+
+  <text x="42" y="410" class="serif" font-size="16" font-weight="700">Sound palette</text>
+  <rect x="42" y="423" width="528" height="46" fill="#f5f2eb" stroke="#999"/>
+  <text x="57" y="451" class="sans" font-size="12"><tspan font-weight="700">Written C blues:</tspan> C · E♭ · F · G♭ · G · B♭</text>
+  <text x="350" y="451" class="sans" font-size="12"><tspan font-weight="700">Guide tones:</tspan> 3rds and 7ths</text>
+
+  <text x="42" y="508" class="serif" font-size="16" font-weight="700">Four useful passes</text>
+  <g class="sans" font-size="11">
+    <text x="48" y="538">□  Roots only; make the time feel good</text>
+    <text x="318" y="538">□  3rds and 7ths with smooth voice leading</text>
+    <text x="48" y="573">□  One rhythmic idea through all 12 bars</text>
+    <text x="318" y="573">□  Sing a phrase, then answer it on trumpet</text>
+  </g>
+
+  <text x="42" y="627" class="serif" font-size="16" font-weight="700">Practice notes</text>
+  <g stroke="#aaa"><line x1="42" y1="651" x2="570" y2="651"/><line x1="42" y1="681" x2="570" y2="681"/><line x1="42" y1="711" x2="570" y2="711"/></g>
+  <line x1="42" y1="754" x2="570" y2="754" stroke="#aaa"/>
+  <text x="42" y="770" class="sans muted small">Original educational practice chart — no copyrighted melody</text>
+  <text x="570" y="770" class="sans muted small" text-anchor="end">zachbednarke.com · repertoire library</text>
+</svg>

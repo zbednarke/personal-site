@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -45,7 +46,8 @@ func TestRepertoireIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	app := &application{db: isolated, logger: slog.Default()}
+	objects := newMemoryObjects("https://signed.example/")
+	app := &application{db: isolated, logger: slog.Default(), objects: objects}
 	userID, err := app.userID(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -307,5 +309,57 @@ func TestRepertoireIntegration(t *testing.T) {
 	_ = json.Unmarshal(call(app.createRepertoireTune, "POST", "/", nil, map[string]any{"title": "Skylark", "category": "ballad", "chosen": false, "clientMutationId": uuid.NewString()}, 201), &duplicate)
 	if duplicate.TuneID != "skylark-2" || duplicate.Chosen || duplicate.Position != 11 {
 		t.Fatalf("suffixed duplicate: %+v", duplicate)
+	}
+
+	// 9. The bundled chart is linked, and private PDFs can be uploaded, opened
+	// through a short-lived signed URL, returned with the tune, and removed.
+	bbBlues := find(load("2026-10-09"), "bb-blues")
+	if bbBlues == nil || len(bbBlues.Sheets) != 1 || bbBlues.Sheets[0].ID != "bb-blues-practice-chart" {
+		t.Fatalf("bundled chart: %+v", bbBlues)
+	}
+	upload := httptest.NewRequest("POST", "/", bytes.NewReader([]byte("%PDF-1.7\nprivate chart\n%%EOF"))).WithContext(ctx)
+	upload.SetPathValue("tuneId", "skylark")
+	upload.Header.Set("Content-Type", "application/pdf")
+	upload.Header.Set("X-File-Name", "skylark-chart.pdf")
+	upload.Header.Set("X-Sheet-Title", "Skylark%20licensed%20chart")
+	upload.Header.Set("X-Sheet-Part", "bb")
+	upload.Header.Set("X-Sheet-Rights", "licensed")
+	upload.Header.Set("X-Source-URL", "https%3A%2F%2Fexample.com%2Freceipt")
+	uploadResponse := httptest.NewRecorder()
+	app.uploadRepertoireSheet(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	var uploaded struct {
+		Sheet repertoireSheet `json:"sheet"`
+	}
+	if err := json.Unmarshal(uploadResponse.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Sheet.Title != "Skylark licensed chart" || uploaded.Sheet.Rights != "licensed" || objects.count("repertoire/") != 1 {
+		t.Fatalf("uploaded chart: %+v objects=%d", uploaded.Sheet, objects.count("repertoire/"))
+	}
+	skylarkWithSheet := find(load("2026-10-09"), "skylark")
+	if skylarkWithSheet == nil || len(skylarkWithSheet.Sheets) != 1 || skylarkWithSheet.Sheets[0].ID != uploaded.Sheet.ID {
+		t.Fatalf("chart not cross-linked: %+v", skylarkWithSheet)
+	}
+	open := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	open.SetPathValue("sheetId", uploaded.Sheet.ID)
+	openResponse := httptest.NewRecorder()
+	app.openRepertoireSheet(openResponse, open)
+	if openResponse.Code != http.StatusFound || !strings.HasPrefix(openResponse.Header().Get("Location"), "https://signed.example/repertoire/") {
+		t.Fatalf("open chart: %d %q", openResponse.Code, openResponse.Header().Get("Location"))
+	}
+	call(app.deleteRepertoireSheet, "DELETE", "/", map[string]string{"sheetId": uploaded.Sheet.ID}, nil, 200)
+	if objects.count("repertoire/") != 0 || len(find(load("2026-10-09"), "skylark").Sheets) != 0 {
+		t.Fatal("deleting a chart did not remove its file and tune link")
+	}
+	badUpload := httptest.NewRequest("POST", "/", strings.NewReader("not a pdf")).WithContext(ctx)
+	badUpload.SetPathValue("tuneId", "skylark")
+	badUpload.Header.Set("Content-Type", "application/pdf")
+	badResponse := httptest.NewRecorder()
+	app.uploadRepertoireSheet(badResponse, badUpload)
+	if badResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid PDF: %d %s", badResponse.Code, badResponse.Body.String())
 	}
 }

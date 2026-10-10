@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -57,13 +58,14 @@ type repertoireTune struct {
 	Revision        int64             `json:"revision"`
 	ArchivedAt      *time.Time        `json:"archivedAt,omitempty"`
 	// Derived from milestones and linked practice; never stored.
-	DeeplyLearned     bool   `json:"deeplyLearned"`
-	PracticeStatus    string `json:"practiceStatus"`
-	LastPracticedDate string `json:"lastPracticedDate,omitempty"`
-	TotalPracticeMS   int64  `json:"totalPracticeMs"`
-	WeekPracticeMS    int64  `json:"weekPracticeMs"`
-	SessionCount      int    `json:"sessionCount"`
-	TakeCount         int    `json:"takeCount"`
+	DeeplyLearned     bool              `json:"deeplyLearned"`
+	PracticeStatus    string            `json:"practiceStatus"`
+	LastPracticedDate string            `json:"lastPracticedDate,omitempty"`
+	TotalPracticeMS   int64             `json:"totalPracticeMs"`
+	WeekPracticeMS    int64             `json:"weekPracticeMs"`
+	SessionCount      int               `json:"sessionCount"`
+	TakeCount         int               `json:"takeCount"`
+	Sheets            []repertoireSheet `json:"sheets"`
 }
 
 // tunePractice is the practice history derived for one tune_id.
@@ -481,6 +483,14 @@ func ensureRepertoireSeeded(ctx context.Context, tx pgx.Tx, userID uuid.UUID) er
 			return err
 		}
 	}
+	if _, err := tx.Exec(ctx, `INSERT INTO repertoire_sheets
+		(user_id,id,tune_id,title,part,rights,original_name,source_url,size_bytes)
+		SELECT $1,'bb-blues-practice-chart','bb-blues','B♭ Blues Practice Chart','bb','original',
+		       'bb-blues-practice-chart.pdf','/assets/jazz/sheets/bb-blues.pdf',0
+		WHERE EXISTS (SELECT 1 FROM repertoire_tunes WHERE user_id=$1 AND tune_id='bb-blues')
+		ON CONFLICT (user_id,id) DO NOTHING`, userID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -489,8 +499,31 @@ func repertoirePrivacy(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && (!repertoireBodyTypeAllowed(r) || r.Header.Get("Sec-Fetch-Site") == "cross-site") {
+			writeError(w, http.StatusForbidden, "same-site request with an allowed body type required")
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || (u.Host != r.Host && !(u.Scheme == "https" && u.Host == "zachbednarke.com")) {
+				writeError(w, http.StatusForbidden, "origin rejected")
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func repertoireBodyTypeAllowed(r *http.Request) bool {
+	if r.Method == http.MethodDelete {
+		return true // DELETE is never a CORS-safelisted method and requires preflight.
+	}
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if contentType == "application/json" {
+		return true
+	}
+	return r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sheets") &&
+		(contentType == "application/pdf" || contentType == "application/octet-stream")
 }
 
 func (app *application) repertoireRoutes(mux *http.ServeMux) {
@@ -500,6 +533,9 @@ func (app *application) repertoireRoutes(mux *http.ServeMux) {
 		"POST /v1/repertoire/tunes":                 app.createRepertoireTune,
 		"PATCH /v1/repertoire/tunes/{tuneId}":       app.updateRepertoireTune,
 		"GET /v1/repertoire/tunes/{tuneId}/history": app.repertoireTuneHistory,
+		"POST /v1/repertoire/tunes/{tuneId}/sheets": app.uploadRepertoireSheet,
+		"GET /v1/repertoire/sheets/{sheetId}":       app.openRepertoireSheet,
+		"DELETE /v1/repertoire/sheets/{sheetId}":    app.deleteRepertoireSheet,
 	}
 	for path, handler := range routes {
 		mux.Handle(path, repertoirePrivacy(app.authenticate(handler)))
@@ -610,6 +646,10 @@ func (app *application) loadRepertoire(ctx context.Context, userID uuid.UUID, to
 	if err != nil {
 		return response, err
 	}
+	sheets, err := loadRepertoireSheets(ctx, app.db, userID, "")
+	if err != nil {
+		return response, err
+	}
 	rows, err := app.db.Query(ctx, `SELECT `+tuneColumns+` FROM repertoire_tunes WHERE user_id=$1
 		ORDER BY CASE category WHEN 'ballad' THEN 0 WHEN 'upbeat' THEN 1 WHEN 'pop' THEN 2 ELSE 3 END, position, title`, userID)
 	if err != nil {
@@ -627,6 +667,10 @@ func (app *application) loadRepertoire(ctx context.Context, userID uuid.UUID, to
 		}
 		known[tune.TuneID] = true
 		tune.applyPractice(practice[tune.TuneID])
+		tune.Sheets = sheets[tune.TuneID]
+		if tune.Sheets == nil {
+			tune.Sheets = []repertoireSheet{}
+		}
 		deriveTuneState(&tune)
 		if tune.ArchivedAt == nil {
 			response.Tunes = append(response.Tunes, tune)
@@ -667,6 +711,14 @@ func (app *application) loadRepertoireTune(ctx context.Context, db dbQuerier, us
 		return tune, err
 	}
 	tune.applyPractice(practice[tuneID])
+	sheets, err := loadRepertoireSheets(ctx, db, userID, tuneID)
+	if err != nil {
+		return tune, err
+	}
+	tune.Sheets = sheets[tuneID]
+	if tune.Sheets == nil {
+		tune.Sheets = []repertoireSheet{}
+	}
 	deriveTuneState(&tune)
 	return tune, nil
 }

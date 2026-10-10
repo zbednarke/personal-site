@@ -58,6 +58,9 @@ and current pop, with goal progress, pace toward the spring target and a
 "could I hold a set tonight" check. Tunes link to practice sections, so time,
 notes and takes on a linked section become the tune's history without manual
 entry, and Practice now adds a linked section to today's plan.
+Each tune also has a private sheet-music library. PDF uploads record the part
+and usage provenance, live in the private media bucket and open through signed
+links; an original B-flat blues practice chart is included with the starter set.
 
 The private paths (`/jazz/`, `/trumpets/`, `/commonplace/`, their assets and
 APIs) use Sign in with Google. Caddy asks the loopback

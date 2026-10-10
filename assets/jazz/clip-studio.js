@@ -92,27 +92,12 @@
     },
   };
 
-  globalThis.JazzClipStudioLocal = {
+  globalThis.JazzClipStudioMagic = {
     restorePrevious() {
       const saved = localStorage.getItem(`${projectStorageKey()}:before-local-draft`);
-      if (!saved) throw new Error("There is no previous local-draft timeline for this day");
+      if (!saved) throw new Error("There is no previous Magic Film timeline for this day");
       state.project = Model.normalizeProject(JSON.parse(saved), state.date);
       persistProject(); $("#studio-output-title").value = state.project.title; renderOutputTimeline();
-    },
-    async snapshot() {
-      if (!state.initialized || state.loadingDay) throw new Error("Open Clip Studio and wait for the day to load");
-      const date = state.date;
-      const candidates = state.candidates.filter(c => c.reviewStatus !== "rejected").map(c => ({ ...c }));
-      if (!candidates.length) throw new Error("Add manual moments or scan for suggestions first");
-      const ids = new Set(candidates.map(c => c.recordingId));
-      const recordings = state.recordings.filter(r => ids.has(r.id)).map(r => ({ ...r }));
-      const sources = [];
-      for (const r of recordings) {
-        const audio = await api(`/recordings/${r.id}/playback-url?asset=audio`, { method: "POST", body: "{}" });
-        const video = r.mediaKind === "video" ? await api(`/recordings/${r.id}/playback-url?asset=video`, { method: "POST", body: "{}" }) : null;
-        sources.push({ id: r.id, title: titleFor(r), durationMs: r.durationMs, audioUrl: audio.url, videoUrl: video?.url || null });
-      }
-      return { date, candidates, recordings: sources };
     },
     importDraft({ date, project }) {
       if (state.date !== date) throw new Error(`Select ${date} in Clip Studio, then open the draft again`);
@@ -133,7 +118,6 @@
 
     },
   };
-
   function initialize() {
     if (state.initialized) return;
     state.initialized = true;

@@ -71,6 +71,9 @@ type config struct {
 	ServiceAccountEmail string
 	PublicShareBaseURL  string
 	AllowInsecureLocal  bool
+	MagicFilmProject    string
+	MagicFilmRegion     string
+	MagicFilmJob        string
 }
 
 type application struct {
@@ -85,6 +88,7 @@ type application struct {
 	// preview client are used); tests inject fakes.
 	objects         objectStore
 	inspirationHTTP *http.Client
+	magicFilmInvoke func(context.Context, uuid.UUID) (string, error)
 	// wb is set only in the Workbench service (WORKBENCH_MODE=1) and in tests.
 	wb *workbench
 	// wbOnly serves just the Workbench routes (the separate Cloud Run service).
@@ -232,7 +236,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer storageClient.Close()
-	tokenSource, err := google.DefaultTokenSource(ctx, storage.ScopeReadWrite)
+	tokenSource, err := google.DefaultTokenSource(ctx, storage.ScopeReadWrite, "https://www.googleapis.com/auth/cloud-platform")
 	if err != nil {
 		slog.Error("google credentials failed", "error", err)
 		os.Exit(1)
@@ -247,6 +251,15 @@ func main() {
 	app := &application{
 		cfg: cfg, db: db, storage: storageClient, tokenSource: tokenSource,
 		iamSigner: iamSigner, httpClient: &http.Client{Timeout: 15 * time.Second}, logger: slog.Default(),
+	}
+	if jobID := strings.TrimSpace(os.Getenv("MAGIC_FILM_JOB_ID")); jobID != "" {
+		jobCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
+		defer stop()
+		if err := app.runMagicFilmJob(jobCtx, jobID); err != nil {
+			slog.Error("magic film job failed", "job_id", jobID, "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if os.Getenv("WORKBENCH_MODE") == "1" {
 		// Same image, separate Cloud Run service: long-lived event streams and
@@ -317,6 +330,9 @@ func loadConfig() (config, error) {
 		ServiceAccountEmail: strings.TrimSpace(os.Getenv("GCP_SERVICE_ACCOUNT")),
 		PublicShareBaseURL:  strings.TrimRight(envOr("PUBLIC_SHARE_BASE_URL", "https://zachbednarke.com/jazz/share"), "/"),
 		AllowInsecureLocal:  os.Getenv("JAZZ_ALLOW_INSECURE_LOCAL") == "1",
+		MagicFilmProject:    strings.TrimSpace(os.Getenv("MAGIC_FILM_PROJECT")),
+		MagicFilmRegion:     envOr("MAGIC_FILM_REGION", "us-central1"),
+		MagicFilmJob:        strings.TrimSpace(os.Getenv("MAGIC_FILM_JOB")),
 	}
 	if cfg.DatabaseURL == "" || cfg.Bucket == "" || cfg.ServiceAccountEmail == "" {
 		return cfg, errors.New("DATABASE_URL, GCS_BUCKET, and GCP_SERVICE_ACCOUNT are required")
@@ -378,6 +394,7 @@ func (app *application) routes() http.Handler {
 	}
 	app.trumpetRoutes(mux)
 	app.repertoireRoutes(mux)
+	app.magicFilmRoutes(mux)
 	app.commonplaceRoutes(mux)
 	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
