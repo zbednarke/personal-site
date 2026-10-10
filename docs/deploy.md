@@ -21,6 +21,12 @@ workflow does not make. Commonplace needs its API route once:
 `sudo python3 deploy/install-commonplace-route.py` (see
 [docs/commonplace/README.md](commonplace/README.md#deploy)).
 
+Workbench runs as a second Cloud Run service, `workbench`, from the API's
+image. It is created once by hand and needs its Caddy route once (see
+[docs/workbench/README.md](workbench/README.md#deploy)); after that, with the
+repository variable `WORKBENCH_ENABLED=true`, each deploy ships the new image
+to it as well.
+
 ## One-time setup
 
 The workflow does nothing until the repository variable `DEPLOY_ENABLED` is

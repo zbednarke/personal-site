@@ -43,6 +43,16 @@ func (m *memoryObjects) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
+func (m *memoryObjects) Get(ctx context.Context, name string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	body, ok := m.objects[name]
+	if !ok {
+		return nil, errors.New("object not found")
+	}
+	return append([]byte(nil), body...), nil
+}
+
 func (m *memoryObjects) SignedGet(ctx context.Context, name string, expires time.Time) (string, error) {
 	return m.signedBase + name + "?expires=" + expires.UTC().Format(time.RFC3339), nil
 }

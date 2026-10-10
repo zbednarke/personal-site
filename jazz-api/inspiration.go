@@ -137,6 +137,15 @@ func (s gcsObjectStore) Delete(ctx context.Context, name string) error {
 	return err
 }
 
+func (s gcsObjectStore) Get(ctx context.Context, name string) ([]byte, error) {
+	r, err := s.app.storage.Bucket(s.app.cfg.Bucket).Object(name).NewReader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(io.LimitReader(r, 64<<20))
+}
+
 func (s gcsObjectStore) SignedGet(ctx context.Context, name string, expires time.Time) (string, error) {
 	return s.app.signedObjectURL(ctx, name, expires, nil)
 }

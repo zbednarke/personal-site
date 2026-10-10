@@ -80,6 +80,10 @@ type application struct {
 	// preview client are used); tests inject fakes.
 	objects         objectStore
 	inspirationHTTP *http.Client
+	// wb is set only in the Workbench service (WORKBENCH_MODE=1) and in tests.
+	wb *workbench
+	// wbOnly serves just the Workbench routes (the separate Cloud Run service).
+	wbOnly bool
 }
 
 type contextKey string
@@ -239,6 +243,23 @@ func main() {
 		cfg: cfg, db: db, storage: storageClient, tokenSource: tokenSource,
 		iamSigner: iamSigner, httpClient: &http.Client{Timeout: 15 * time.Second}, logger: slog.Default(),
 	}
+	if os.Getenv("WORKBENCH_MODE") == "1" {
+		// Same image, separate Cloud Run service: long-lived event streams and
+		// an agent loop that keeps running after the request that started it.
+		wbCfg := loadWorkbenchConfig()
+		if wbCfg.OwnerSubject == "" {
+			slog.Warn("WORKBENCH_OWNER_SUBJECT is unset; relying on the gateway's sign-in allow-list alone")
+		}
+		app.wb, app.wbOnly = newWorkbench(wbCfg), true
+		go app.wbListen(ctx)
+		app.wbRecover(ctx)
+		go func() {
+			// Leases of instances that died are reclaimed within a couple of minutes.
+			for range time.Tick(time.Minute) {
+				app.wbRecover(ctx)
+			}
+		}()
+	}
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           app.routes(),
@@ -250,7 +271,7 @@ func main() {
 		WriteTimeout: 0,
 		IdleTimeout:  90 * time.Second,
 	}
-	slog.Info("jazz API listening", "port", cfg.Port)
+	slog.Info("jazz API listening", "port", cfg.Port, "workbench", app.wbOnly)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
@@ -288,6 +309,17 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
+	// The API and Workbench services start from the same image and both
+	// migrate on startup; a session-level advisory lock keeps them in turn.
+	conn, err := db.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(7310128)`); err != nil {
+		return err
+	}
+	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock(7310128)`)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -296,7 +328,7 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 		if err != nil {
 			return err
 		}
-		if _, err := db.Exec(ctx, string(contents)); err != nil {
+		if _, err := conn.Exec(ctx, string(contents)); err != nil {
 			return fmt.Errorf("%s: %w", entry.Name(), err)
 		}
 	}
@@ -308,6 +340,12 @@ func (app *application) routes() http.Handler {
 	// Cloud Run's front end answers /healthz itself, so external checks use /health.
 	mux.HandleFunc("GET /health", app.health)
 	mux.HandleFunc("GET /healthz", app.health)
+	if app.wb != nil {
+		app.workbenchRoutes(mux)
+	}
+	if app.wbOnly {
+		return app.recoverPanic(app.logRequests(mux))
+	}
 	app.trumpetRoutes(mux)
 	app.repertoireRoutes(mux)
 	app.commonplaceRoutes(mux)
