@@ -505,10 +505,26 @@ function syntheticPng(width, height) {
     await page.waitForFunction(() => document.querySelector("#inspiration-detail").open && /1st Harrelson Muse/.test(document.querySelector("#inspiration-detail-title").textContent));
     assert.equal(await page.locator("#detail").evaluate((n) => n.open), false);
     await page.getByRole("button", { name: "Close inspiration" }).click();
+    // An ended session answers API calls with 401 signin_required: the page
+    // shows one calm banner that signs in and returns here (no Basic dialog).
+    await page.route("**/trumpets/api/v1/trumpets/__signed_out_probe", (r) =>
+      r.fulfill({ status: 401, contentType: "application/json", body: '{"error":"signin_required","login":"/auth/login"}' }),
+    );
+    const probe = await page.evaluate(async () => (await fetch("/trumpets/api/v1/trumpets/__signed_out_probe")).status);
+    assert.equal(probe, 401);
+    const signedOut = page.getByRole("status").filter({ hasText: "Signed out." });
+    await signedOut.waitFor();
+    assert.equal(
+      await signedOut.getByRole("link", { name: "Sign in again" }).getAttribute("href"),
+      "/auth/login?next=" + encodeURIComponent(await page.evaluate(() => location.pathname + location.search + location.hash)),
+    );
+    await page.screenshot({ path: path.join(out, "signed-out-banner.png") });
+    await signedOut.getByRole("button", { name: "Dismiss" }).click();
+    assert.equal(await signedOut.isHidden(), true);
     assert.deepEqual(thirdParty.filter((u) => !u.startsWith("https://www.youtube-nocookie.com/") && !u.startsWith("https://fixtures.invalid/")), []);
     assert.deepEqual(errors, []);
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, signed-out banner, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

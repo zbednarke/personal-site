@@ -55,11 +55,18 @@ and current pop, with goal progress, pace toward the spring target and a
 notes and takes on a linked section become the tune's history without manual
 entry, and Practice now adds a linked section to today's plan.
 
-The live `/jazz/` route is protected by Caddy HTTP Basic Authentication.
-`deploy/Caddyfile.jazz.example` documents the path matcher and privacy headers;
-the live configuration reuses the existing Portal credential hash and forwards
-authenticated API requests through a private gateway secret. Passwords, hashes,
-and gateway credentials do not belong in this repository.
+The private paths (`/jazz/`, `/trumpets/`, their assets and APIs, and the
+reserved `/commonplace/`) use Sign in with Google. Caddy asks the loopback
+`jazz-auth` service (`jazz-api/cmd/jazz-auth`) to check each request: a signed
+session cookie (30 days by default) passes, a signed-out page load goes to
+`/auth/login`, and a signed-out API call gets a 401 JSON response that the pages
+turn into a "Signed out. Sign in again" banner; there is no Basic Auth dialog.
+Only the Google accounts listed in the server's allowlist get in, and the API
+still sees the same single user, so existing data is unchanged. A password form
+exists as an off-by-default fallback. `deploy/jazz-auth.md` covers the design,
+the one-time Google setup and the installer; `deploy/Caddyfile.jazz.example`
+documents the routes and privacy headers. Client secrets, password hashes,
+signing keys and gateway credentials do not belong in this repository.
 
 ## Local Jazz development
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Jazz Project seven-day login
+Description=Private-path sign-in (Google) for zachbednarke.com
 After=network.target
 
 [Service]

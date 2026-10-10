@@ -1,4 +1,7 @@
-"""Run as root on the existing site VM. Preserve the current login and API identity."""
+"""Historical first step: put jazz-auth in front of the private paths, replacing
+Caddy basic_auth. Run as root on the site VM. Preserves the API identity and
+enables the password form at /auth/login; install-google-sign-in.py then
+switches to Sign in with Google (see jazz-auth.md)."""
 from pathlib import Path
 import base64, hashlib, hmac, json, os, re, secrets, shutil, subprocess, time, urllib.request, urllib.error
 caddy=Path('/etc/caddy/Caddyfile')
@@ -8,10 +11,14 @@ match=re.search(pattern,original)
 if not match: raise SystemExit('Expected Jazz login block was not found; no configuration changed')
 config=Path('/etc/jazz-auth.json')
 if not config.exists():
- config.write_text(json.dumps(dict(User=match[1],Hash=match[2],Key=secrets.token_urlsafe(48))))
+ # Password sign-in through /auth/login until install-google-sign-in.py runs.
+ config.write_text(json.dumps(dict(User=match[1],Hash=match[2],Key=secrets.token_urlsafe(48),AllowPassword=True)))
  shutil.chown(config,user='root',group='caddy');config.chmod(0o640)
 replacement="""
     route {
+    route /auth/* {
+        reverse_proxy 127.0.0.1:8768
+    }
     route @jazz_private {
         reverse_proxy 127.0.0.1:8768 {
             method GET

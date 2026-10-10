@@ -48,7 +48,7 @@
       } catch {}
       throw new Error(
         response.status === 401
-          ? "Your private session needs a login. Reload the page to sign in."
+          ? "Signed out. Sign in again to continue."
           : error || `Data service returned ${response.status}`,
       );
     }
