@@ -1,5 +1,5 @@
 {
-  "_fixture": "FICTIONAL Responses API reply (web_search + json_schema output). The cited source is the same eBay item id as the requested URL.",
+  "_fixture": "FICTIONAL Responses API reply (web_search + json_schema output). A search result and the answer's url_citation are the same eBay item id as the requested URL.",
   "id": "resp_fixture_match",
   "status": "completed",
   "output": [
@@ -21,7 +21,10 @@
       "content": [
         {
           "type": "output_text",
-          "text": "{\"url\":\"https://www.ebay.com/itm/900000000003\",\"title\":\"Monette Raja Bb trumpet raw brass FICTIONAL FIXTURE\",\"state\":\"available\",\"price\":4950,\"currency\":\"USD\",\"shipping\":55,\"evidence\":\"Buy It Now $4,950 shown on the item page\"}"
+          "text": "{\"url\":\"https://www.ebay.com/itm/900000000003\",\"title\":\"Monette Raja Bb trumpet raw brass FICTIONAL FIXTURE\",\"state\":\"available\",\"price\":4950,\"currency\":\"USD\",\"shipping\":55,\"evidence\":\"Buy It Now $4,950 shown on the item page\"}",
+          "annotations": [
+            { "type": "url_citation", "url": "https://www.ebay.com/itm/monette-raja-fixture/900000000003", "title": "Monette Raja FICTIONAL FIXTURE", "start_index": 0, "end_index": 40 }
+          ]
         }
       ]
     }

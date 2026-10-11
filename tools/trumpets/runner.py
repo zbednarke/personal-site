@@ -56,15 +56,23 @@ HORN_WORD = r'\btrumpets?\b|\btrompette\b|\btrompete\b|\btrompet\b|トランペ�
 INCLUDED = r'\s*(?:,|;|\(|\+|&|\bw/|\bwith\b|\bplus\b|\band\b|\bin\b|\bfor\b|\bfits\b|\bincl(?:udes?|uding|\.)?|\s[-–—|]\s)\s*'
 
 
+ONLY_ACCESSORY = r'\b(?:cases?|bags?|gig ?bags?|mouthpieces?|lead ?pipes?|valves?|valve (?:caps?|tops?|buttons?)|backbores?|mutes?|stands?|parts?|body|bell)\s*(?:\)\s*)?only\b'
+
+
 def is_accessory(subject, extra=''):
-    """True only when the item itself is the accessory: no horn word is left once
-    accessory phrases are removed, or an accessory is the head noun of the
+    """True only when the item itself is the accessory: "(case only)", a title
+    that starts with the accessory ("trumpet mouthpiece ..."), no horn word left
+    once accessory phrases are removed, or an accessory as the head noun of the
     item's own phrase (the part before "with", ",", "+", "includes"...)."""
     subject=subject.lower()
+    if re.search(ONLY_ACCESSORY,subject): return True
     head=re.split(INCLUDED,subject,maxsplit=1)[0]
     if re.search(r'\b(?:'+OTHER_INSTRUMENTS+(extra and '|'+extra)+r')\b',head): return True
     accessory=r'\b(?:'+ACCESSORY+r')\b|'+CASE_PHRASE
     if not re.search(accessory,subject): return False
+    # "Trumpet mouthpiece Monette B2 ..." / "Mouthpiece for ...": the accessory
+    # is the first noun of the item itself.
+    if re.match(r'\s*(?:(?:bb|b-flat|b♭)\s+)?(?:(?:'+HORN_WORD+r')\s+)?(?:'+ACCESSORY+r')\b',head): return True
     if not re.search(HORN_WORD,re.sub(accessory,' ',subject)): return True
     horns=[m.end() for m in re.finditer(HORN_WORD,head)]
     parts=[m.start() for m in re.finditer(accessory,head)]
@@ -393,12 +401,22 @@ REVERB_TRUMPETS='d1c7768e-068d-4b0f-8e3d-b4e7be71a751'
 REVERB_STATES={'live':'active','sold':'sold','ordered':'sold','ended':'removed','suspended':'removed'}
 
 
+REVERB_DOMAINS=('reverb.com',)
+# eBay's registrable domains; lookalikes such as ebay.example.org never match.
+EBAY_DOMAINS=('ebay.com','ebay.co.uk','ebay.de','ebay.fr','ebay.it','ebay.es','ebay.ca','ebay.com.au','ebay.ie','ebay.at','ebay.ch','ebay.nl','ebay.be','ebay.pl')
+
+
+def host_in(url, domains):
+    """True when the URL's host is one of domains or a subdomain of one."""
+    host=(urllib.parse.urlsplit(url or '').hostname or '').lower().rstrip('.')
+    return any(host==d or host.endswith('.'+d) for d in domains)
+
+
 def reverb_id(url):
     """The item id of any reverb.com/item/<id>-slug URL, including app links
     (applink.reverb.com, m.reverb.com) and links wrapped in a query parameter."""
     p=urllib.parse.urlsplit(url or '')
-    host=(p.hostname or '').lower()
-    if host!='reverb.com' and not host.endswith('.reverb.com'): return ''
+    if p.scheme not in ('https','http') or not host_in(url,REVERB_DOMAINS): return ''
     match=re.search(r'/item/([0-9]+)',p.path)
     if match: return match[1]
     for values in urllib.parse.parse_qs(p.query).values():
@@ -502,8 +520,7 @@ EBAY_TRUMPETS='16214'
 
 def ebay_id(url):
     p=urllib.parse.urlsplit(url or '')
-    host=(p.hostname or '').lower().removeprefix('www.')
-    if not (host.startswith('ebay.') or '.ebay.' in host): return ''
+    if p.scheme not in ('https','http') or not host_in(url,EBAY_DOMAINS): return ''
     match=re.search(r'/itm/(?:[^/]+/)?([0-9]{9,15})(?:[/?]|$)',p.path+'/')
     return match[1] if match else ''
 
@@ -848,6 +865,23 @@ def search_openai(query, key):
     return results[:10]
 
 
+# Report fields newer than some deployed APIs; a 400 for unknown JSON retries
+# once without them so a runner deployed before its API still records runs.
+NEW_REPORT_FIELDS=('verifiedVia',)
+
+
+def submit_run(client, report):
+    try: return client.call('/runs',report)
+    except urllib.error.HTTPError as error:
+        if error.code!=400: raise
+        try: body=error.read().decode('utf-8','replace')
+        except Exception: body=''
+        if 'unknown field' not in body and 'invalid run JSON' not in body: raise
+        stripped=dict(report,listings=[{k:v for k,v in l.items() if k not in NEW_REPORT_FIELDS} for l in report.get('listings',[])])
+        print(json.dumps({'note':'API predates new report fields; resubmitted without them'}),flush=True)
+        return client.call('/runs',stripped)
+
+
 class Client:
     def __init__(self):
         self.base=os.environ['TRUMPETS_API_URL'].rstrip('/')+'/v1/trumpets/machine'
@@ -1084,34 +1118,54 @@ def verify_via_search(url, key, get=None, sleep=None):
                      'Do not guess or use other listings. URL: '+url}
     payload=api_json(OPENAI_RESPONSES,{'Authorization':'Bearer '+key,'Content-Type':'application/json'},json.dumps(request).encode(),get,sleep=sleep)
     if payload.get('status')!='completed': return None
-    sources=[];text=''
+    sources=[];citations=[];text=''
     for item in payload.get('output',[]):
         if item.get('type')=='web_search_call' and item.get('status')=='completed':
             action=item.get('action') or {}
-            sources+=[s.get('url','') for s in action.get('sources') or [] if isinstance(s,dict)]
-            if action.get('url'):sources.append(action['url'])
+            # Only search results count: an open_page/find_in_page of the URL we
+            # supplied proves nothing (the fetch itself may have been blocked).
+            if action.get('type')=='search':
+                sources+=[s.get('url','') for s in action.get('sources') or [] if isinstance(s,dict)]
         if item.get('type')=='message':
-            text+=''.join(c.get('text','') for c in item.get('content',[]) if c.get('type')=='output_text')
-    if not any(same_listing(s,url) for s in sources): return None
+            for content in item.get('content',[]):
+                if content.get('type')!='output_text':continue
+                text+=content.get('text','')
+                citations+=[a.get('url','') for a in content.get('annotations') or [] if isinstance(a,dict) and a.get('type')=='url_citation']
+    # The listing must be among the search results AND cited by the answer.
+    if not any(same_listing(s,url) for s in sources) or not any(same_listing(c,url) for c in citations): return None
     try: data=json.loads(text)
     except ValueError: return None
     return data if valid_verification(data) else None
 
 
-def apply_search_verification(listing, data):
-    """Conservative: sold/ended only when the source says so; prices only when
-    the page states them with a currency."""
-    if not data or data['state']=='unknown': return None
+def unconfirmed_marker(state):
+    return f'search provider reports {state} (unconfirmed)'
+
+
+def apply_search_verification(listing, data, today=None):
+    """Returns (checked listing or None, failure reason or None).
+
+    "available" confirms an already verified offer is still for sale (and a
+    stated price). A single "sold"/"ended" never retires a verified offer: it is
+    recorded as a failed check, and only the same report on a later UTC day
+    retires it. Prices only when the page states them with a currency."""
+    if not data or data['state']=='unknown': return None,None
+    today=today or dt.datetime.now(dt.timezone.utc).date().isoformat()
+    state=data['state']
+    if state in ('sold','ended'):
+        earlier=str(listing.get('lastCheckAttempt') or '')[:10]
+        if unconfirmed_marker(state) not in str(listing.get('lastCheckError') or '') or not earlier or earlier>=today:
+            return None,unconfirmed_marker(state)
     c={k:copy.deepcopy(v) for k,v in listing.items() if k in ALLOWED_FIELDS}
     c.update(discoveryType='rediscovered',verifiedVia='search-provider',
-             status={'available':'active','sold':'sold','ended':'removed'}[data['state']],
-             evidence='Search-provider verification (web search source matched this listing) / '+data['state'])
+             status={'available':'active','sold':'sold','ended':'removed'}[state],
+             evidence='Search-provider verification (web search source matched this listing) / '+state+(' on two separate days' if state!='available' else ''))
     currency=(data['currency'] or '').upper()
     if data['state']=='available' and data['price'] is not None and currency:
         if currency!=c.get('currency'):c['shipping']=None
         c.update(price=round(float(data['price']),2),currency=currency)
         if data['shipping'] is not None:c['shipping']=round(float(data['shipping']),2)
-    return c
+    return c,None
 
 
 # ---- Marketplace discovery through official APIs -------------------------------
@@ -1194,17 +1248,18 @@ def daily(client):
     ebay=EbayAPI.from_env()
     verify_limit=int(os.environ.get('TRUMPETS_VERIFY_LIMIT') or VERIFY_LIMIT);verifier=collections.Counter()
     def search_provider_check(listing,domain):
-        """Fallback after a blocked direct check; True when verified."""
-        if not openai or listing.get('verificationState')=='candidate' or verifier['calls']>=verify_limit or time.monotonic()-started>35*60: return False
+        """Fallback after a blocked direct check: (verified, failure reason)."""
+        if not openai or listing.get('verificationState')=='candidate': return False,None
+        if verifier['calls']>=verify_limit or time.monotonic()-started>35*60: return False,'search-provider check budget reached'
         verifier['calls']+=1
-        try: checked=apply_search_verification(listing,verify_via_search(listing['url'],openai))
-        except Exception: checked=None
+        try: checked,reason=apply_search_verification(listing,verify_via_search(listing['url'],openai))
+        except Exception: checked,reason=None,None
         if not checked:
-            verifier['rejected']+=1;return False
+            verifier['rejected']+=1;return False,reason or 'search-provider check found no matching cited source'
         verifier['accepted']+=1;live[domain]['pagesOpened']+=1;live[domain]['verifiedOffers']+=1
         if checked['status']=='removed':live[domain]['staleResults']+=1
         link_physical_horn(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
-        return True
+        return True,None
     def record_failure(listing,domain,reason):
         report['checkFailures'].append({'id':listing['id'],'reason':(domain+' / '+reason)[:500]})
         if listing.get('verificationState')!='candidate':
@@ -1217,6 +1272,10 @@ def daily(client):
         if not listing['url']: continue
         domain=urllib.parse.urlsplit(listing['url']).hostname.removeprefix('www.')
         lead=listing.get('verificationState')=='candidate'
+        if lead and ebay is None and ebay_id(listing['url']):
+            # eBay pages refuse the VM and search-provider answers never promote a
+            # lead, so eBay leads wait (without using a lead slot) for review.
+            leads['ebay']+=1;continue
         if lead:
             if candidate_checks>=LEAD_CHECKS_PER_RUN or time.monotonic()-started>35*60: continue
             if domain in blocked:
@@ -1227,8 +1286,8 @@ def daily(client):
             # No eBay developer keys: eBay pages always refuse the VM, so the
             # source-matched search-provider check is the primary path.
             live[domain]
-            if search_provider_check(listing,domain):continue
-            record_failure(listing,domain,'eBay: search-provider check found no matching source' if verifier['calls']<verify_limit else 'eBay: search-provider check budget reached');leads['failed']+=lead
+            ok,reason=search_provider_check(listing,domain)
+            if not ok:record_failure(listing,domain,'eBay: '+(reason or 'search-provider check unavailable'))
             continue
         try:
             checked=recheck(listing,fetch,profile,ebay=ebay)
@@ -1244,10 +1303,13 @@ def daily(client):
             refused=isinstance(error,ChallengePage) or (isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES)
             if refused:blocked.add(domain)
             # Official API, then direct page, then the search-provider fallback.
-            if refused and search_provider_check(listing,domain):continue
-            record_failure(listing,domain,failure_reason(error));leads['failed']+=lead
+            ok,reason=search_provider_check(listing,domain) if refused else (False,None)
+            if ok:continue
+            record_failure(listing,domain,failure_reason(error)+(' / '+reason if reason else ''));leads['failed']+=lead
     if candidate_checks or leads['skipped']:
         notes.append(f"Lead rotation: {candidate_checks} queued leads checked ({leads['verified']} verified, {leads['retired']} retired as gone, {leads['unverified']} still unverified, {leads['failed']} unreachable), {leads['skipped']} skipped on blocked domains")
+    if leads['ebay']:
+        notes.append(f"{leads['ebay']} eBay leads await review (no eBay API keys; search-provider answers never promote a lead)")
     if not key and not openai: failures.append('No search provider key configured')
     else:
         for task in search_plan(profile):
@@ -1374,17 +1436,17 @@ def daily(client):
                     verifier['calls']+=1;live['ebay.com']['pagesOpened']+=1
                     try:data=verify_via_search(url,openai)
                     except Exception:data=None
-                    if not data or data['state']!='available' or data['price'] is None or not data['currency']:
+                    if not data or data['state']!='available':
                         verifier['rejected']+=1;continue
                     verifier['accepted']+=1
-                    p={'name':data['title'] or result.get('title',''),'productID':item,
-                       'offers':{'price':data['price'],'priceCurrency':data['currency'].upper(),'availability':'InStock'}}
-                    c=normalize_product(p,url,'eBay',profile)
-                    if c:
-                        if data['shipping'] is not None:c['shipping']=round(float(data['shipping']),2)
-                        c['evidence']='Search-provider verification (web search source matched this eBay item) / available'
-                        keep_market(c,item,'ebay.com',check,'search-provider')
-                check['note']+=f"{len(terms)} web searches; {check['candidates']} offers verified from a matching eBay source."
+                    # A search-provider answer is a lead, never a verified offer:
+                    # no price, stock or date is asserted.
+                    c=candidate_hint(dict(result,url=url,title=data['title'] or result.get('title','')),'eBay',profile)
+                    if c and not old:
+                        stated=f" Search provider reported it available{' at '+str(data['price'])+' '+str(data['currency']) if data['price'] is not None and data['currency'] else ''} (unverified)."
+                        c.update(url=url,sourceListingId=item,evidence='Search-provider lead (cited eBay source); not a market observation',searchRationale=c['searchRationale']+stated)
+                        report['listings'].append(c);submitted.add(canonical_url(url));domain_finds['ebay.com']+=1;check['candidates']+=1
+                check['note']+=f"{len(terms)} web searches; {check['candidates']} eBay leads from cited sources (unverified)."
             except Exception as error:
                 check.update(status='failed',note='eBay web search failed: '+failure_reason(error));failures.append('eBay web search failed')
     else:
@@ -1425,7 +1487,7 @@ def daily(client):
         else:by_domain[domain].update(counts)
     report['error']='; '.join(dict.fromkeys(failures+notes))[:10000]
     if failures:report['status']='partial'
-    result=client.call('/runs',report);print(json.dumps(result),flush=True)
+    result=submit_run(client,report);print(json.dumps(result),flush=True)
     return 0 if result.get('status')=='succeeded' else 2
 
 
@@ -1442,7 +1504,7 @@ def main():
         return 0
     if args.report:
         with open(args.report) as source: report=json.load(source)
-        result=client.call('/runs',report);print(json.dumps(result));return 0
+        result=submit_run(client,report);print(json.dumps(result));return 0
     return daily(client)
 
 if __name__=='__main__':

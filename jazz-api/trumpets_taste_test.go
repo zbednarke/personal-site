@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Fictional fixtures only: no real listings, sellers, prices or feedback.
@@ -183,7 +185,7 @@ func TestTasteActiveLearning(t *testing.T) {
 
 func TestTasteBlendedScoreDrivesAlertsWithSameThreshold(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	listings := []trumpetListing{tasteListing("liked", "Brassworks", "R", "raw brass", 2000), tasteListing("other", "Brassworks", "S", "raw brass", 2000)}
+	listings := []trumpetListing{tasteListing("liked", "Brassworks", "R", "raw brass", 2000), tasteListing("other", "Brassworks", "S", "raw brass", 2000), tasteListing("third", "Brassworks", "T", "raw brass", 2000)}
 	for i := range listings {
 		listings[i].SearchScore = 60
 	}
@@ -193,7 +195,7 @@ func TestTasteBlendedScoreDrivesAlertsWithSameThreshold(t *testing.T) {
 	}
 	events := []tasteEvent{}
 	for i := 0; i < 12; i++ {
-		events = append(events, swipe(int64(i+1), "other", "up", now))
+		events = append(events, swipe(int64(i+1), []string{"other", "third"}[i%2], "up", now))
 	}
 	m, d := buildTasteModel(listings, events, now)
 	applyTasteScores(listings, m, d)
@@ -258,9 +260,25 @@ func TestTastePreferencesArePriors(t *testing.T) {
 	if w, _ := m.weight("maker:brassworks"); w != 0.5 {
 		t.Fatalf("liked maker prior %v", w)
 	}
+	// Learned taste (incl. stated preferences) leaves scores alone until the
+	// owner has reacted; the affinity itself already reflects the preference.
 	liked, disliked, plain := m.score(60, d.keys("liked")), m.score(60, d.keys("disliked")), m.score(60, d.keys("plain"))
-	if liked.Blended <= 60 || disliked.Blended >= 60 || plain.Blended != 60 {
-		t.Fatalf("stated preferences did not steer: %v %v %v", liked, disliked, plain)
+	if liked.Blended != 60 || disliked.Blended != 60 || plain.Blended != 60 || liked.Taste <= 50 || disliked.Taste >= 50 {
+		t.Fatalf("scores moved before any reaction: %v %v %v", liked, disliked, plain)
+	}
+	listings = append(listings, tasteListing("other", "Elsewhere", "E", "silver plate", 2000))
+	events := []tasteEvent{}
+	for i := 0; i < 10; i++ {
+		action := "right"
+		if i%2 == 1 {
+			action = "left"
+		}
+		events = append(events, swipe(int64(i+1), "other", action, now))
+	}
+	m, d = buildTasteModel(listings, events, now, p)
+	liked, disliked, plain = m.score(60, d.keys("liked")), m.score(60, d.keys("disliked")), m.score(60, d.keys("plain"))
+	if liked.Blended <= 60 || disliked.Blended >= 60 || plain.Blended != 60 || liked.LearnedShare != 1 {
+		t.Fatalf("stated preferences did not steer after reactions: %v %v %v", liked, disliked, plain)
 	}
 	if _, err := normalizeTastePreferences(tastePreferencesInput{Statements: []string{strings.Repeat("x", 201)}}); err == nil {
 		t.Fatal("long statement accepted")
@@ -268,6 +286,98 @@ func TestTastePreferencesArePriors(t *testing.T) {
 	if _, err := normalizeTastePreferences(tastePreferencesInput{PriceGuidance: strings.Repeat("x", 501)}); err == nil {
 		t.Fatal("long price note accepted")
 	}
+}
+
+// Review fix: ratings alone must not change Today's alerts on deploy, and the
+// favorite/rating bonuses are not counted twice once the blend is active.
+func TestTasteBlendWaitsForReactionsAndAlertsDoNotDoubleCount(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := []trumpetListing{}
+	for i := 0; i < 20; i++ {
+		rating := 1 + i%5
+		listings = append(listings, tasteListing(fmt.Sprintf("r%d", i), fmt.Sprintf("Maker%d", i%4), "M", []string{"raw brass", "gold plate"}[i%2], 2000, func(l *trumpetListing) {
+			l.Feedback.Rating = &rating
+			l.Feedback.Favorite = i%3 == 0
+			l.SearchScore = 58
+		}))
+	}
+	events := []json.RawMessage{}
+	for _, l := range listings {
+		events = append(events, json.RawMessage(`{"listingId":"`+l.ID+`","kind":"new listing"}`))
+	}
+	before := selectTrumpetAlerts(listings, events)
+	m, d := buildTasteModel(listings, nil, now)
+	applyTasteScores(listings, m, d)
+	for _, l := range listings {
+		if l.TasteScore.Blended != l.SearchScore || l.TasteScore.LearnedShare != 0 {
+			t.Fatalf("ratings alone moved %s: %+v", l.ID, l.TasteScore)
+		}
+	}
+	if after := selectTrumpetAlerts(listings, events); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatal("alerts changed on deploy with zero reactions")
+	}
+	// With a fully phased-in blend, a favorite gets no extra +15 on top.
+	fav := listings[0]
+	fav.TasteScore = &tasteScore{Blended: 60, LearnedShare: 1}
+	one := []json.RawMessage{json.RawMessage(`{"listingId":"r0","kind":"new listing"}`)}
+	if got := selectTrumpetAlerts([]trumpetListing{fav}, one); len(got) != 0 {
+		t.Fatal("favorite/rating bonus double-counted over the learned score")
+	}
+	fav.TasteScore.LearnedShare = 0
+	if got := selectTrumpetAlerts([]trumpetListing{fav}, one); len(got) != 1 {
+		t.Fatal("rule-only scoring lost its favorite bonus")
+	}
+}
+
+// Review fix: features seen once stay at their prior; the fit is bounded and
+// cached, and a cache hit is effectively free.
+func TestTasteFitPrunesAndIsFastAndCached(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := []trumpetListing{}
+	for i := 0; i < 600; i++ {
+		i := i
+		listings = append(listings, tasteListing(fmt.Sprintf("l%03d", i), fmt.Sprintf("Maker%02d", i%40), fmt.Sprintf("Model%03d series", i), []string{"raw brass", "gold plate", "lacquer", "silver plate"}[i%4], float64(1500+i*7), func(l *trumpetListing) {
+			l.URL = fmt.Sprintf("https://dealer%03d.invalid/item/%d", i, i) // ~600 distinct sources and families
+		}))
+	}
+	events := []tasteEvent{}
+	for i := 0; i < 1500; i++ {
+		action := []string{"right", "left", "up"}[i%3]
+		events = append(events, swipe(int64(i+1), fmt.Sprintf("l%03d", (i*7)%600), action, now.Add(-time.Duration(i)*time.Minute)))
+	}
+	started := time.Now()
+	m, d := buildTasteModel(listings, events, now)
+	cold := time.Since(started)
+	if len(m.index) > 200 {
+		t.Fatalf("rare features were not pruned: d=%d", len(m.index))
+	}
+	if _, sd := m.weight("source:dealer001.invalid"); sd != 1 {
+		t.Fatalf("a once-seen source should keep the prior: sd=%v", sd)
+	}
+	if cold > 1500*time.Millisecond {
+		t.Fatalf("cold fit took %v", cold)
+	}
+	user := uuid.New()
+	key := tasteCacheKey(listings, events, nil, now)
+	tasteCachePut(user, key, m, d)
+	started = time.Now()
+	hit, _, _ := tasteCacheGet(user, tasteCacheKey(listings, events, nil, now))
+	if hit != m || time.Since(started) > 200*time.Millisecond {
+		t.Fatalf("cache miss or slow hit: %v", time.Since(started))
+	}
+	more := append(append([]tasteEvent{}, events...), swipe(9999, "l001", "right", now))
+	if again, _, warm := tasteCacheGet(user, tasteCacheKey(listings, more, nil, now)); again != nil || warm == nil {
+		t.Fatal("a new reaction must miss the cache and offer a warm start")
+	}
+	started = time.Now()
+	week := tasteCachedWeekAgo(user, m, d, events, now)
+	if tasteCachedWeekAgo(user, m, d, events, now) != week {
+		t.Fatal("week-ago fit not cached")
+	}
+	if total := time.Since(started); total > 1500*time.Millisecond {
+		t.Fatalf("recent-changes fit took %v", total)
+	}
+	_ = tasteChanges(m, week)
 }
 
 func TestCholeskyInverse(t *testing.T) {

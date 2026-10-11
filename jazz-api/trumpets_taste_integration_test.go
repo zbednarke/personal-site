@@ -208,6 +208,29 @@ func TestTrumpetTastePersistence(t *testing.T) {
 		t.Fatalf("stored events = %d, %v", stored, err)
 	}
 
+	// Review fix: a client that disconnects after the commit must not lose the
+	// stored voice note's audio (the response uses a non-cancelled context).
+	cancelCtx, cancel := context.WithCancel(ctx)
+	tasteAfterCommitHook = cancel
+	dropped := httptest.NewRequest("POST", "/v1/trumpets/taste/voice?clientId=voice-0002&listingId="+id(2), bytes.NewReader(silentWAV())).WithContext(cancelCtx)
+	dropped.Header.Set("Content-Type", "audio/wav")
+	dropped.Header.Set("X-Jazz-Gateway-Key", "gateway")
+	dropped.Header.Set("X-Jazz-User", "owner")
+	dw := httptest.NewRecorder()
+	routes.ServeHTTP(dw, dropped)
+	tasteAfterCommitHook = nil
+	if dw.Code != 201 || objects.count("trumpet-taste/") != 2 {
+		t.Fatalf("committed voice note lost its audio after a disconnect: %d objects=%d %s", dw.Code, objects.count("trumpet-taste/"), dw.Body.String())
+	}
+	// Review fix: an undone voice note is no longer served and its audio is removed.
+	call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "undo-voice", "kind": "undo", "undoes": voice.Event.ID}, "owner", 201)
+	if gone := request("GET", "/v1/trumpets/taste/voice/"+jsonNumber(voice.Event.ID), "", nil, "owner", nil); gone.Code != 404 {
+		t.Fatalf("undone voice note still served: %d", gone.Code)
+	}
+	if objects.count("trumpet-taste/") != 1 {
+		t.Fatalf("undone voice audio not deleted: %d", objects.count("trumpet-taste/"))
+	}
+
 	// Owner preference statements: versioned, owner-scoped, same write rules.
 	if empty := call("GET", "/v1/trumpets/taste/preferences", nil, "owner", 200); empty["revision"].(float64) != 0 {
 		t.Fatalf("preferences before any save %v", empty)

@@ -567,6 +567,10 @@ function syntheticPng(width, height) {
     await Promise.all([tastePosts(), page.getByRole("button", { name: "Must see (up arrow)" }).click()]);
     await Promise.all([tastePosts(), page.getByRole("button", { name: "Not for me (left arrow)" }).click()]);
     await page.waitForFunction(() => /3 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
+    // A few more "not for me" so a disliked feature is seen on two horns (features
+    // unique to one horn keep their prior).
+    for (let i = 0; i < 3; i++) await Promise.all([tastePosts(), page.keyboard.press("ArrowLeft")]);
+    await page.waitForFunction(() => /6 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
     assert.ok((await page.locator("#taste-liked li:not(.none)").count()) > 0, "liked traits listed");
     assert.ok((await page.locator("#taste-disliked li:not(.none)").count()) > 0, "disliked traits listed");
     // Head to head: tap a side, then answer by keyboard; undo the last choice.
@@ -578,7 +582,7 @@ function syntheticPng(width, height) {
     await page.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.getAttribute("aria-label")).join("|") !== p, pairBefore);
     await Promise.all([tastePosts(), page.keyboard.press("ArrowDown")]);
     await Promise.all([tastePosts(), page.keyboard.press("z")]);
-    await page.waitForFunction(() => /4 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
+    await page.waitForFunction(() => /7 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
     await page.getByRole("button", { name: "Swipe", exact: true }).click();
     await page.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 20));
     await page.screenshot({ path: path.join(out, "taste-desktop.png") });

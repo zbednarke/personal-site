@@ -20,8 +20,9 @@ import (
 
 // Taste training: Swipe and Head-to-head reactions are append-only events
 // (migration 032). A regularized Bradley-Terry / logistic model over listing
-// features is refit from those events on read, steering the learned listing
-// score, Today's alerts and the daily runner's search budget.
+// features is refit from those events when its inputs change (cached per owner,
+// see trumpets_taste_cache.go), steering the learned listing score, Today's
+// alerts (once the owner has reacted) and the daily runner's search budget.
 
 // One-tap chips. Trait chips assert a feature the owner sees in the horn
 // (added to that horn's feature set); reason chips are recorded for analysis.
@@ -41,6 +42,12 @@ const (
 	tasteReseeAfter         = 14 * 24 * time.Hour
 	tasteQueueLimit         = 30
 	tastePairLimit          = 10
+	tasteMinSupport         = 2  // distinct horns; fewer and the feature keeps its prior
+	tasteNewtonIterations   = 10 // warm-started from the previous fit
+	// The learned blend phases in over the owner's first taste reactions
+	// (swipes and head-to-head picks), so deploying with only existing ratings
+	// leaves Today's alerts exactly as they were.
+	tasteReactionsForFullBlend = 10.0
 )
 
 type tasteFeature struct {
@@ -77,6 +84,9 @@ type tasteScore struct {
 	Taste   float64 `json:"taste"`   // 0–100, 50 = neutral
 	Blended float64 `json:"blended"` // rule score adjusted by the learned taste
 	SD      float64 `json:"sd"`      // uncertainty of the learned affinity
+	// Share of the learned adjustment in Blended (0 before any reaction); the
+	// alert ranking scales its separate rating/favorite bonuses by 1 - share.
+	LearnedShare float64 `json:"learnedShare"`
 }
 type tasteQueueItem struct {
 	ListingID string  `json:"listingId"`
@@ -114,10 +124,11 @@ type tasteModel struct {
 }
 
 type tasteObs struct {
-	keys []string
-	vals []float64
-	y, w float64
-	bias bool
+	keys  []string
+	vals  []float64
+	horns []string // physical horn each key came from (for feature support)
+	y, w  float64
+	bias  bool
 }
 
 // ---- Features -------------------------------------------------------------
@@ -324,23 +335,63 @@ func sigmoid(z float64) float64 { return 1 / (1 + math.Exp(-z)) }
 // fitTaste fits a regularized logistic (swipes, ratings) / Bradley-Terry
 // (pairs) model by Newton's method and keeps the Laplace covariance.
 // prior holds the owner's stated preferences as prior means (0 otherwise).
-func fitTaste(obs []tasteObs, features map[string]tasteFeature, prior map[string]float64) *tasteModel {
+// Features seen on fewer than tasteMinSupport distinct horns stay at their
+// prior (pruned from the fit): a feature unique to one horn cannot be told
+// apart from that horn, and pruning bounds the matrix size. warm, when given,
+// starts Newton from a previous fit's weights ("" is the intercept).
+func fitTaste(obs []tasteObs, features map[string]tasteFeature, prior map[string]float64, warm ...map[string]float64) *tasteModel {
 	m := &tasteModel{index: map[string]int{}, features: features, counts: map[string]float64{}, prior: prior}
-	priorKeys := make([]string, 0, len(prior))
-	for k := range prior {
-		priorKeys = append(priorKeys, k)
+	horns := map[string]map[string]bool{}
+	for _, o := range obs {
+		for i, k := range o.keys {
+			if horns[k] == nil {
+				horns[k] = map[string]bool{}
+			}
+			horn := "?"
+			if i < len(o.horns) {
+				horn = o.horns[i]
+			}
+			horns[k][horn] = true
+		}
 	}
-	sort.Strings(priorKeys)
-	for _, k := range priorKeys {
+	support := map[string]int{}
+	for k, set := range horns {
+		support[k] = len(set)
+	}
+	keys := make([]string, 0, len(support)+len(prior))
+	for k := range prior {
+		keys = append(keys, k)
+	}
+	for k, n := range support {
+		if _, stated := prior[k]; !stated && n >= tasteMinSupport {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		m.index[k] = len(m.index) + 1
 	}
+	type sparse struct {
+		idx []int
+		val []float64
+		y   float64
+		w   float64
+	}
+	data := make([]sparse, 0, len(obs))
 	for _, o := range obs {
 		m.effective += o.w
-		for _, k := range o.keys {
-			if _, ok := m.index[k]; !ok {
-				m.index[k] = len(m.index) + 1
+		s := sparse{y: o.y, w: o.w}
+		if o.bias {
+			s.idx, s.val = append(s.idx, 0), append(s.val, 1)
+		}
+		for i, k := range o.keys {
+			if p, ok := m.index[k]; ok {
+				s.idx, s.val = append(s.idx, p), append(s.val, o.vals[i])
+				m.counts[k] += o.w
 			}
-			m.counts[k] += o.w
+		}
+		if len(s.idx) > 0 {
+			data = append(data, s)
 		}
 	}
 	d := len(m.index) + 1
@@ -350,46 +401,52 @@ func fitTaste(obs []tasteObs, features map[string]tasteFeature, prior map[string
 		mean[m.index[k]] = v
 	}
 	copy(m.theta, mean)
+	for _, start := range warm {
+		if v, ok := start[""]; ok {
+			m.theta[0] = v
+		}
+		for k, i := range m.index {
+			if v, ok := start[k]; ok {
+				m.theta[i] = v
+			}
+		}
+	}
 	precision := func(i int) float64 {
 		if i == 0 {
 			return tasteInterceptPrecision
 		}
 		return tastePriorPrecision
 	}
-	hessian := func() ([][]float64, []float64) {
-		a := make([][]float64, d)
-		g := make([]float64, d)
+	a := make([][]float64, d)
+	for i := range a {
+		a[i] = make([]float64, d)
+	}
+	g := make([]float64, d)
+	hessian := func() {
 		for i := range a {
-			a[i] = make([]float64, d)
+			for j := range a[i] {
+				a[i][j] = 0
+			}
 			a[i][i] = precision(i)
 			g[i] = -precision(i) * (m.theta[i] - mean[i])
 		}
-		for _, o := range obs {
-			idx := make([]int, 0, len(o.keys)+1)
-			val := make([]float64, 0, len(o.keys)+1)
-			if o.bias {
-				idx, val = append(idx, 0), append(val, 1)
-			}
-			for i, k := range o.keys {
-				idx, val = append(idx, m.index[k]), append(val, o.vals[i])
-			}
+		for _, o := range data {
 			z := 0.0
-			for i, p := range idx {
-				z += m.theta[p] * val[i]
+			for i, p := range o.idx {
+				z += m.theta[p] * o.val[i]
 			}
 			p := sigmoid(z)
 			r, s := o.w*(o.y-p), o.w*p*(1-p)
-			for i, pi := range idx {
-				g[pi] += r * val[i]
-				for j, pj := range idx {
-					a[pi][pj] += s * val[i] * val[j]
+			for i, pi := range o.idx {
+				g[pi] += r * o.val[i]
+				for j, pj := range o.idx {
+					a[pi][pj] += s * o.val[i] * o.val[j]
 				}
 			}
 		}
-		return a, g
 	}
-	for iter := 0; iter < 50; iter++ {
-		a, g := hessian()
+	for iter := 0; iter < tasteNewtonIterations; iter++ {
+		hessian()
 		step, ok := choleskySolve(a, g)
 		if !ok {
 			break
@@ -403,13 +460,22 @@ func fitTaste(obs []tasteObs, features map[string]tasteFeature, prior map[string
 			m.theta[i] += step[i]
 			largest = math.Max(largest, math.Abs(step[i]))
 		}
-		if largest < 1e-8 {
+		if largest < 1e-6 {
 			break
 		}
 	}
-	a, _ := hessian()
+	hessian()
 	m.cov = choleskyInverse(a)
 	return m
+}
+
+// thetaMap exports the fitted weights for warm-starting the next fit.
+func (m *tasteModel) thetaMap() map[string]float64 {
+	out := map[string]float64{"": m.theta[0]}
+	for k, i := range m.index {
+		out[k] = m.theta[i]
+	}
+	return out
 }
 
 func cholesky(a [][]float64) ([][]float64, bool) {
@@ -535,19 +601,28 @@ func (m *tasteModel) covariance(a, b []string) float64 {
 	return c
 }
 
-// confidence grows with reactions; stated preferences count as one
-// observation each (at most eight), so they move scores before any swipe.
+// confidence grows with the data behind the fit (reactions and ratings);
+// stated preferences count as one observation each, at most eight.
 func (m *tasteModel) confidence() float64 {
 	n := m.effective + math.Min(8, float64(len(m.prior)))
 	return n / (n + tasteConfidenceHalf)
 }
 
-// score blends the rule score with the learned affinity. Without reactions it
-// is exactly the rule score, so Today's 65 threshold keeps its meaning.
+// learnedShare phases the blend in over the first taste reactions: 0 with no
+// swipes or picks (ratings and stated preferences alone never move alerts),
+// 1 from tasteReactionsForFullBlend reactions on.
+func (m *tasteModel) learnedShare() float64 {
+	return math.Min(1, float64(m.swipes+m.pairs)/tasteReactionsForFullBlend)
+}
+
+// score blends the rule score with the learned affinity. Until the owner has
+// reacted it is exactly the rule score, so Today's 65 threshold and its alerts
+// are unchanged by deploying the model.
 func (m *tasteModel) score(rule float64, keys []string) tasteScore {
 	z, v := m.affinity(keys)
-	blended := rule + tasteBlendPoints*m.confidence()*(2*sigmoid(z)-1)
-	return tasteScore{Taste: math.Round(1000*sigmoid(z)) / 10, Blended: math.Round(10*math.Max(0, math.Min(100, blended))) / 10, SD: math.Round(1000*math.Sqrt(v)) / 1000}
+	share := m.learnedShare()
+	blended := rule + tasteBlendPoints*m.confidence()*share*(2*sigmoid(z)-1)
+	return tasteScore{Taste: math.Round(1000*sigmoid(z)) / 10, Blended: math.Round(10*math.Max(0, math.Min(100, blended))) / 10, SD: math.Round(1000*math.Sqrt(v)) / 1000, LearnedShare: share}
 }
 
 func (m *tasteModel) weights() []tasteWeight {
@@ -659,10 +734,11 @@ func (d *tasteData) observations(events []tasteEvent, now time.Time, before *tim
 	single := func(id string, y, w float64) {
 		keys := d.keys(id)
 		vals := make([]float64, len(keys))
+		horns := make([]string, len(keys))
 		for i := range vals {
-			vals[i] = 1
+			vals[i], horns[i] = 1, d.byListing[id].HornID
 		}
-		obs = append(obs, tasteObs{keys: keys, vals: vals, y: y, w: w, bias: true})
+		obs = append(obs, tasteObs{keys: keys, vals: vals, horns: horns, y: y, w: w, bias: true})
 	}
 	for _, e := range events {
 		if e.undone || (before != nil && !e.CreatedAt.Before(*before)) {
@@ -708,7 +784,11 @@ func (d *tasteData) observations(events []tasteEvent, now time.Time, before *tim
 				}
 				sort.Strings(keys)
 				for _, k := range keys {
-					o.keys, o.vals = append(o.keys, k), append(o.vals, diff[k])
+					horn := d.byListing[winner].HornID
+					if diff[k] < 0 {
+						horn = d.byListing[loser].HornID
+					}
+					o.keys, o.vals, o.horns = append(o.keys, k), append(o.vals, diff[k]), append(o.horns, horn)
 				}
 				if len(o.keys) > 0 {
 					obs = append(obs, o)
@@ -741,6 +821,10 @@ func (d *tasteData) observations(events []tasteEvent, now time.Time, before *tim
 }
 
 func buildTasteModel(listings []trumpetListing, events []tasteEvent, now time.Time, prefs ...*tastePreferences) (*tasteModel, *tasteData) {
+	return buildTasteModelWarm(listings, events, now, nil, prefs...)
+}
+
+func buildTasteModelWarm(listings []trumpetListing, events []tasteEvent, now time.Time, warm map[string]float64, prefs ...*tastePreferences) (*tasteModel, *tasteData) {
 	d := newTasteData(listings, events)
 	prior := map[string]float64{}
 	for _, p := range prefs {
@@ -751,7 +835,11 @@ func buildTasteModel(listings []trumpetListing, events []tasteEvent, now time.Ti
 			}
 		}
 	}
-	m := fitTaste(d.observations(events, now, nil), d.all, prior)
+	var start []map[string]float64
+	if warm != nil {
+		start = append(start, warm)
+	}
+	m := fitTaste(d.observations(events, now, nil), d.all, prior, start...)
 	for _, e := range events {
 		if e.undone {
 			continue
@@ -941,10 +1029,14 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	return out
 }
 
-// tasteChanges compares the model with one fit on reactions older than a week.
-func tasteChanges(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) []tasteChange {
+// tasteWeekAgoFit is the model fitted on reactions older than a week.
+func tasteWeekAgoFit(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) *tasteModel {
 	cut := now.Add(-7 * 24 * time.Hour)
-	old := fitTaste(d.observations(events, now, &cut), d.all, m.prior)
+	return fitTaste(d.observations(events, now, &cut), d.all, m.prior, m.thetaMap())
+}
+
+// tasteChanges compares the model with the fit from a week ago.
+func tasteChanges(m, old *tasteModel) []tasteChange {
 	out := []tasteChange{}
 	for _, w := range m.weights() {
 		before, _ := old.weight(w.Key)
@@ -1009,8 +1101,14 @@ func (app *application) trumpetTaste(ctx context.Context, user uuid.UUID, listin
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	m, d := buildTasteModel(listings, events, time.Now(), prefs)
-	m.preferences = prefs
+	now := time.Now()
+	key := tasteCacheKey(listings, events, prefs, now)
+	m, d, warm := tasteCacheGet(user, key)
+	if m == nil {
+		m, d = buildTasteModelWarm(listings, events, now, warm, prefs)
+		m.preferences = prefs
+		tasteCachePut(user, key, m, d)
+	}
 	applyTasteScores(listings, m, d)
 	return m, d, events, nil
 }
@@ -1122,7 +1220,7 @@ func (app *application) tasteResponse(ctx context.Context, user uuid.UUID) (map[
 	}
 	summary := tasteMachineSummary(m)
 	return map[string]any{
-		"model": summary, "weights": summary["weights"], "changes": tasteChanges(m, d, events, now),
+		"model": summary, "weights": summary["weights"], "changes": tasteChanges(m, tasteCachedWeekAgo(user, m, d, events, now)),
 		"scores": scores, "queue": tasteQueue(m, d, events, now), "pairs": tastePairs(m, d, events, now),
 		"tags": tags, "tagCounts": counts, "chips": tasteChips, "recent": recent, "preferences": m.preferences,
 		"noteSignals": trumpetNotePreferences(notes),
@@ -1219,62 +1317,91 @@ func listingsOwned(ctx context.Context, tx pgx.Tx, user uuid.UUID, ids ...string
 	return true, nil
 }
 
+// tasteAfterCommitHook lets tests act between commit and response (nil in
+// production).
+var tasteAfterCommitHook func()
+
+// commitTasteEvent stores one event. status is 0 on success, else the HTTP
+// error to return; undoneAudio names a voice note object whose event was
+// just undone (deleted best-effort by the caller after commit).
+func (app *application) commitTasteEvent(ctx context.Context, user uuid.UUID, in tasteEventInput, audio *tasteAudio) (event tasteEvent, replayed bool, undoneAudio *string, status int, err error) {
+	tx, err := app.db.Begin(ctx)
+	if err != nil {
+		return event, false, nil, 500, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if err = lockTrumpetOwner(ctx, tx, user); err != nil {
+		return event, false, nil, 500, err
+	}
+	owned, err := listingsOwned(ctx, tx, user, in.ListingID, in.OtherListingID)
+	if err != nil {
+		return event, false, nil, 500, err
+	}
+	if !owned {
+		return event, false, nil, 404, errors.New("listing not found")
+	}
+	event, replayed, err = insertTasteEvent(ctx, tx, user, in, audio)
+	switch {
+	case errors.Is(err, errTasteNotFound):
+		return event, false, nil, 404, err
+	case errors.Is(err, errTasteAlreadyUndone):
+		return event, false, nil, 409, errors.New("event already undone")
+	case err != nil:
+		return event, false, nil, 500, err
+	}
+	if in.Kind == "undo" && !replayed {
+		if err = tx.QueryRow(ctx, `SELECT audio_object FROM trumpet_taste_events WHERE id=$1 AND user_id=$2`, in.Undoes, user).Scan(&undoneAudio); err != nil {
+			return event, false, nil, 500, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return event, false, nil, 500, err
+	}
+	if tasteAfterCommitHook != nil {
+		tasteAfterCommitHook()
+	}
+	return event, replayed, undoneAudio, 0, nil
+}
+
+// saveTasteEvent commits the event, then answers with the refreshed model.
+// The response is built with a context that survives a client disconnect: the
+// event is already stored either way.
 func (app *application) saveTasteEvent(w http.ResponseWriter, r *http.Request, in tasteEventInput, audio *tasteAudio) {
 	user, err := app.userID(r.Context())
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	tx, err := app.db.Begin(r.Context())
-	if err != nil {
-		app.serverError(w, err)
-		return
+	event, replayed, undoneAudio, status, err := app.commitTasteEvent(r.Context(), user, in, audio)
+	if audio != nil && (status != 0 || replayed) {
+		// Not stored (or a concurrent retry stored another copy): drop the upload.
+		app.deleteObjectsBestEffort(context.WithoutCancel(r.Context()), []string{audio.object})
 	}
-	defer tx.Rollback(r.Context())
-	if err = lockTrumpetOwner(r.Context(), tx, user); err != nil {
-		app.serverError(w, err)
-		return
-	}
-	owned, err := listingsOwned(r.Context(), tx, user, in.ListingID, in.OtherListingID)
-	if err != nil {
-		app.serverError(w, err)
-		return
-	}
-	if !owned {
-		writeError(w, 404, "listing not found")
-		return
-	}
-	event, replayed, err := insertTasteEvent(r.Context(), tx, user, in, audio)
 	switch {
-	case errors.Is(err, errTasteNotFound):
-		writeError(w, 404, "event not found")
-		return
-	case errors.Is(err, errTasteAlreadyUndone):
-		writeError(w, 409, "event already undone")
-		return
-	case err != nil:
+	case status == 500:
 		app.serverError(w, err)
 		return
-	}
-	if err = tx.Commit(r.Context()); err != nil {
-		app.serverError(w, err)
+	case status != 0:
+		writeError(w, status, err.Error())
 		return
 	}
-	if replayed && audio != nil {
-		app.deleteObjectsBestEffort(r.Context(), []string{audio.object})
+	ctx := context.WithoutCancel(r.Context())
+	if undoneAudio != nil {
+		// An undone voice note is no longer served; remove its audio too.
+		app.deleteObjectsBestEffort(ctx, []string{*undoneAudio})
 	}
-	out, err := app.tasteResponse(r.Context(), user)
+	out, err := app.tasteResponse(ctx, user)
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
 	out["event"] = event
 	out["replayed"] = replayed
-	status := 201
+	code := 201
 	if replayed {
-		status = 200
+		code = 200
 	}
-	writeJSON(w, status, out)
+	writeJSON(w, code, out)
 }
 
 func (app *application) postTasteEvent(w http.ResponseWriter, r *http.Request) {
@@ -1307,7 +1434,8 @@ func tasteVoiceTypeAllowed(contentType string) bool {
 
 // postTasteVoice stores a hold-to-talk voice note privately (raw audio body,
 // sniffed like Commonplace audio) and appends a note event referencing it.
-// No transcription is attempted.
+// No transcription is attempted. The object is removed only when the event
+// is not stored; once committed it is never deleted by this request.
 func (app *application) postTasteVoice(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	in := tasteEventInput{ClientID: q.Get("clientId"), Kind: "note", Mode: q.Get("mode"), ListingID: q.Get("listingId"), OtherListingID: q.Get("otherListingId")}
@@ -1336,7 +1464,7 @@ func (app *application) postTasteVoice(w http.ResponseWriter, r *http.Request) {
 	}
 	// A retried upload with the same clientId returns the stored event.
 	if existing, err := scanTasteEvent(app.db.QueryRow(r.Context(), `SELECT `+tasteEventColumns+` FROM trumpet_taste_events WHERE user_id=$1 AND client_id=$2`, user, in.ClientID)); err == nil {
-		out, err := app.tasteResponse(r.Context(), user)
+		out, err := app.tasteResponse(context.WithoutCancel(r.Context()), user)
 		if err != nil {
 			app.serverError(w, err)
 			return
@@ -1350,25 +1478,11 @@ func (app *application) postTasteVoice(w http.ResponseWriter, r *http.Request) {
 		app.serverError(w, err)
 		return
 	}
-	audio := &tasteAudio{object: name, contentType: media.ContentType, size: len(body), durationMs: duration}
-	app.saveTasteEvent(&cleanupOnError{ResponseWriter: w, cleanup: func() { app.deleteObjectsBestEffort(context.Background(), []string{name}) }}, r, in, audio)
-}
-
-// cleanupOnError removes an uploaded object when the event is not stored.
-type cleanupOnError struct {
-	http.ResponseWriter
-	cleanup func()
-}
-
-func (c *cleanupOnError) WriteHeader(status int) {
-	if status >= 400 {
-		c.cleanup()
-	}
-	c.ResponseWriter.WriteHeader(status)
+	app.saveTasteEvent(w, r, in, &tasteAudio{object: name, contentType: media.ContentType, size: len(body), durationMs: duration})
 }
 
 // tasteVoice keeps the bucket private: an owner-checked 302 to a ten-minute
-// signed URL, like Commonplace and inspiration media.
+// signed URL, like Commonplace and inspiration media. Undone notes are gone.
 func (app *application) tasteVoice(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -1381,7 +1495,8 @@ func (app *application) tasteVoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var name *string
-	err = app.db.QueryRow(r.Context(), `SELECT audio_object FROM trumpet_taste_events WHERE id=$1 AND user_id=$2`, id, user).Scan(&name)
+	err = app.db.QueryRow(r.Context(), `SELECT e.audio_object FROM trumpet_taste_events e WHERE e.id=$1 AND e.user_id=$2
+ AND NOT EXISTS(SELECT 1 FROM trumpet_taste_events u WHERE u.undoes=e.id)`, id, user).Scan(&name)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && name == nil) {
 		writeError(w, 404, "voice note not found")
 		return

@@ -165,7 +165,8 @@ class SearchProviderVerifierTests(unittest.TestCase):
         self.assertEqual(request['text']['format']['type'], 'json_schema'); self.assertTrue(request['text']['format']['strict'])
         self.assertIn(EBAY_URL, request['input'])
         listing = dict(runner.ebay_offer_from(fixture('ebay_item.json'), EBAY_URL, 'eBay', MONETTE), id='known', verificationState='verified')
-        checked = runner.apply_search_verification(listing, data)
+        checked, reason = runner.apply_search_verification(listing, data)
+        self.assertIsNone(reason)
         self.assertEqual((checked['status'], checked['price'], checked['shipping'], checked['verifiedVia']), ('active', 4950, 55, 'search-provider'))
 
     def test_mismatched_source_prose_or_bad_json_is_rejected(self):
@@ -178,14 +179,38 @@ class SearchProviderVerifierTests(unittest.TestCase):
         incomplete = fixture('openai_verify_match.json'); incomplete['status'] = 'incomplete'
         self.assertIsNone(runner.verify_via_search(EBAY_URL, 'k', FakeResponses(incomplete)))
 
-    def test_conservative_states(self):
-        listing = {'id': 'known', 'url': EBAY_URL, 'title': 't', 'maker': 'Monette', 'model': 'm', 'source': 'eBay', 'price': 5000, 'currency': 'USD', 'status': 'active'}
+    def test_open_page_of_the_given_url_or_an_uncited_answer_is_not_evidence(self):
+        """Review fix: the model opening the URL it was given (even when that
+        fetch was blocked) must not satisfy the source match, and the answer
+        must cite the listing."""
+        opened = fixture('openai_verify_match.json')
+        opened['output'][0]['action'] = {'type': 'open_page', 'url': EBAY_URL}
+        opened['output'][1]['content'][0]['text'] = json.dumps({'url': EBAY_URL, 'title': None, 'state': 'ended', 'price': None, 'currency': None, 'shipping': None, 'evidence': ''})
+        self.assertIsNone(runner.verify_via_search(EBAY_URL, 'k', FakeResponses(opened)))
+        found = fixture('openai_verify_match.json'); found['output'][0]['action']['type'] = 'find_in_page'
+        self.assertIsNone(runner.verify_via_search(EBAY_URL, 'k', FakeResponses(found)))
+        uncited = fixture('openai_verify_match.json'); uncited['output'][1]['content'][0]['annotations'] = []
+        self.assertIsNone(runner.verify_via_search(EBAY_URL, 'k', FakeResponses(uncited)))
+
+    def test_a_single_sold_or_ended_report_never_retires_a_verified_offer(self):
+        listing = {'id': 'known', 'url': EBAY_URL, 'title': 't', 'maker': 'Monette', 'model': 'm', 'source': 'eBay', 'price': 5000, 'currency': 'USD', 'status': 'active', 'verificationState': 'verified'}
         base = {'url': EBAY_URL, 'title': None, 'price': None, 'currency': None, 'shipping': None, 'evidence': ''}
-        self.assertIsNone(runner.apply_search_verification(listing, dict(base, state='unknown')))
-        self.assertEqual(runner.apply_search_verification(listing, dict(base, state='sold'))['status'], 'sold')
-        ended = runner.apply_search_verification(listing, dict(base, state='ended', price=1))
-        self.assertEqual((ended['status'], ended['price']), ('removed', 5000))
-        kept = runner.apply_search_verification(listing, dict(base, state='available'))
+        self.assertEqual(runner.apply_search_verification(listing, dict(base, state='unknown')), (None, None))
+        for state, retired in (('sold', 'sold'), ('ended', 'removed')):
+            checked, reason = runner.apply_search_verification(listing, dict(base, state=state), today='2026-10-11')
+            self.assertIsNone(checked)
+            self.assertEqual(reason, f'search provider reports {state} (unconfirmed)')
+            # The same report on the same UTC day still does not retire it ...
+            same_day = dict(listing, lastCheckError='ebay.com / eBay: ' + reason, lastCheckAttempt='2026-10-11T13:20:00Z')
+            self.assertIsNone(runner.apply_search_verification(same_day, dict(base, state=state), today='2026-10-11')[0])
+            # ... a different state recorded yesterday does not either ...
+            other = dict(same_day, lastCheckAttempt='2026-10-10T13:20:00Z', lastCheckError='ebay.com / eBay: search provider reports available')
+            self.assertIsNone(runner.apply_search_verification(other, dict(base, state=state), today='2026-10-11')[0])
+            # ... agreement on two separate days does.
+            next_day = dict(same_day, lastCheckAttempt='2026-10-10T13:20:00Z')
+            checked, _ = runner.apply_search_verification(next_day, dict(base, state=state, price=1), today='2026-10-11')
+            self.assertEqual((checked['status'], checked['price']), (retired, 5000))
+        kept, _ = runner.apply_search_verification(listing, dict(base, state='available'))
         self.assertEqual((kept['status'], kept['price']), ('active', 5000))
 
     def watch(self, client, fetch, fake, env=None, search_openai=lambda *_: []):
@@ -200,51 +225,105 @@ class SearchProviderVerifierTests(unittest.TestCase):
         c = runner.normalize_product(PRODUCT, f'https://blocked{i}.test/horn', 'Dealer', PROFILE)
         return dict(c, id=f'blocked-{i}', verificationState='verified', acquired=False, feedback={'interestState': 'watch'})
 
+    @staticmethod
+    def reply_for(url, state='available'):
+        r = fixture('openai_verify_match.json')
+        r['output'][0]['action']['sources'] = [{'url': url + '?utm_source=search'}]
+        r['output'][1]['content'][0]['annotations'][0]['url'] = url
+        data = json.loads(r['output'][1]['content'][0]['text']); data['state'] = state
+        r['output'][1]['content'][0]['text'] = json.dumps(data)
+        return r
+
     def test_blocked_or_challenged_pages_fall_back_within_the_cap(self):
-        match = fixture('openai_verify_match.json')
-        def reply(url):  # the fixture's source pointed at a dealer URL
-            r = copy.deepcopy(match); r['output'][0]['action']['sources'] = [{'url': url + '?utm_source=search'}]; return r
         listings = [self.blocked_dealer(0), self.blocked_dealer(1), self.blocked_dealer(2)]
         def fetch(url, *_):
             if 'blocked0' in url: raise http_error(403)
             if 'blocked1' in url: return '<html><head><title>Just a moment...</title></head><body>cf-chl-widget</body></html>'
             raise http_error(429)
-        fake = FakeResponses(reply(listings[0]['url']), reply(listings[1]['url']))
+        fake = FakeResponses(self.reply_for(listings[0]['url']), self.reply_for(listings[1]['url']))
         client = Client(baseline=listings)
         self.assertEqual(self.watch(client, fetch, fake, env={'TRUMPETS_VERIFY_LIMIT': '2'}), 0)
         verified = {l['id']: l for l in client.report['listings']}
         self.assertEqual(set(verified), {'blocked-0', 'blocked-1'})
         self.assertTrue(all(l['verifiedVia'] == 'search-provider' for l in verified.values()))
         self.assertEqual([f['id'] for f in client.report['checkFailures']], ['blocked-2'])  # over the cap
+        self.assertIn('budget reached', client.report['checkFailures'][0]['reason'])
         self.assertIn('Search-provider verification: 2 blocked listings tried, 2 verified', client.report['error'])
 
-    def test_mismatch_is_recorded_as_a_failed_check(self):
+    def test_mismatch_and_single_day_ended_are_recorded_as_failed_checks(self):
         client = Client(baseline=[self.blocked_dealer(0)])
         self.watch(client, lambda url, *_: (_ for _ in ()).throw(http_error(403)), FakeResponses(fixture('openai_verify_mismatch.json')))
         self.assertEqual(client.report['listings'], [])
         self.assertIn('HTTP 403', client.report['checkFailures'][0]['reason'])
+        dealer = self.blocked_dealer(0)
+        client = Client(baseline=[dealer])
+        self.watch(client, lambda url, *_: (_ for _ in ()).throw(http_error(403)), FakeResponses(self.reply_for(dealer['url'], 'ended')))
+        self.assertEqual(client.report['listings'], [])  # never retired on one report
+        self.assertIn('search provider reports ended (unconfirmed)', client.report['checkFailures'][0]['reason'])
 
-    def test_ebay_without_keys_uses_the_search_provider_for_checks_and_discovery(self):
+    def test_ebay_without_keys_checks_via_search_provider_and_discovers_only_leads(self):
         tracked = dict(runner.ebay_offer_from(fixture('ebay_item.json'), 'https://www.ebay.com/itm/monette-raja/900000000003', 'eBay', MONETTE),
                        id='ebay-known', verificationState='verified', acquired=False, feedback={'interestState': 'watch'})
-        new = copy.deepcopy(fixture('openai_verify_match.json'))
-        new['output'][0]['action']['sources'] = [{'url': 'https://www.ebay.com/itm/900000000004'}]
-        new['output'][1]['content'][0]['text'] = json.dumps({'url': 'https://www.ebay.com/itm/900000000004', 'title': 'Monette Prana Bb trumpet raw brass FICTIONAL', 'state': 'available', 'price': 6100, 'currency': 'USD', 'shipping': None, 'evidence': 'Buy It Now'})
+        lead = dict(runner.candidate_hint({'url': 'https://www.ebay.com/itm/900000000005', 'title': 'Monette Raja Bb trumpet'}, 'eBay', MONETTE),
+                    id='ebay-lead', feedback={'interestState': 'watch'})
+        new = self.reply_for('https://www.ebay.com/itm/900000000004')
         fake = FakeResponses(fixture('openai_verify_match.json'), new)
         searches = []
         def search_openai(query, key):
             searches.append(query)
             return [{'url': 'https://www.ebay.com/itm/monette-prana-trumpet/900000000004', 'title': 'Monette Prana Bb trumpet'}] if len(searches) == 1 else []
-        client = Client(baseline=[tracked])
+        client = Client(baseline=[tracked, lead], due=[tracked, lead])
         self.watch(client, lambda url, *_: self.fail('eBay page fetched: ' + url), fake, search_openai=search_openai)
         found = {l.get('sourceListingId') or l.get('id'): l for l in client.report['listings']}
         self.assertEqual(found['900000000003']['price'], 4950)
-        self.assertEqual((found['900000000004']['price'], found['900000000004']['verifiedVia']), (6100, 'search-provider'))
+        # A new eBay item from the search provider is a lead, never verified-active.
+        discovered = found['900000000004']
+        self.assertEqual((discovered['verificationState'], discovered['status'], discovered['price']), ('candidate', 'stale', None))
+        self.assertNotIn('verifiedVia', discovered)
         ebay_queries = [q for q in searches if q.startswith('site:ebay.com ') and q.endswith(' Bb trumpet')]
         self.assertGreaterEqual(len(ebay_queries), 6)  # eBay discovery runs every time
         coverage = next(s for s in client.report['sources'] if s['source'] == 'eBay via web search')
         self.assertEqual((coverage['status'], coverage['candidates']), ('checked', 1))
+        # Review fix: eBay leads skip the lead queue instead of failing with a misleading reason.
         self.assertEqual(client.report['checkFailures'], [])
+        self.assertIn('1 eBay leads await review', client.report['error'])
+        self.assertNotIn('Lead rotation', client.report['error'])
+
+
+class HostAllowlistTests(unittest.TestCase):
+    """Review fix: lookalike hosts are not eBay or Reverb."""
+    def test_lookalikes_rejected(self):
+        for url in ['https://ebay.attacker.example/itm/900000000003', 'https://ebay.com.evil.io/itm/900000000003',
+                    'https://notebay.com/itm/900000000003', 'https://www.ebay.example/itm/900000000003', 'ftp://ebay.com/itm/900000000003']:
+            self.assertEqual(runner.ebay_id(url), '', url)
+            self.assertEqual(runner.listing_id(url), '', url)
+            self.assertFalse(runner.same_listing(url, EBAY_URL), url)
+        for url in ['https://www.ebay.de/itm/900000000003', 'https://m.ebay.com.au/itm/slug/900000000003', 'https://ebay.ch/itm/900000000003']:
+            self.assertEqual(runner.ebay_id(url), '900000000003', url)
+        for url in ['https://reverb.com.evil.io/item/900000001', 'https://reverb.attacker.example/item/900000001', 'https://evilreverb.com/item/900000001']:
+            self.assertEqual(runner.reverb_id(url), '', url)
+
+
+class OldApiCompatibilityTests(unittest.TestCase):
+    """Review fix: a runner deployed before its API still records runs."""
+    def test_unknown_field_rejection_is_retried_once_without_new_fields(self):
+        import io
+        sent = []
+        class OldApi:
+            def call(self, path, body=None):
+                sent.append(copy.deepcopy(body))
+                if any('verifiedVia' in l for l in body['listings']):
+                    raise urllib.error.HTTPError('https://api.fixture.invalid/runs', 400, 'Bad Request', {}, io.BytesIO(b'{"error":"invalid run JSON"}'))
+                return {'status': body['status'], 'runId': 'saved'}
+        report = {'externalId': 'x', 'status': 'succeeded', 'listings': [{'id': 'a', 'verifiedVia': 'api', 'price': 1}]}
+        with patch('builtins.print'):
+            self.assertEqual(runner.submit_run(OldApi(), report)['runId'], 'saved')
+        self.assertEqual(len(sent), 2); self.assertEqual(sent[1]['listings'], [{'id': 'a', 'price': 1}])
+        class Broken:
+            def call(self, path, body=None):
+                raise urllib.error.HTTPError('https://api.fixture.invalid/runs', 400, 'Bad Request', {}, io.BytesIO(b'{"error":"listing identity conflict"}'))
+        with self.assertRaises(urllib.error.HTTPError):
+            runner.submit_run(Broken(), report)
 
 
 if __name__ == '__main__':

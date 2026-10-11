@@ -23,10 +23,14 @@ class AccessoryTests(unittest.TestCase):
              'Taylor Chicago II trumpet with extra leadpipe',
              'Taylor Chicago II trumpet + 2 mouthpieces and practice mute',
              'Taylor Chicago II Bb trumpet incl. lead pipe set and stand',
-             'Taylor Chicago II trumpet w/ valve caps, backbore and case']
+             'Taylor Chicago II trumpet w/ valve caps, backbore and case',
+             'Taylor Chicago II Bb trumpet with hard case', 'Taylor Chicago II trumpet with hard case and two mouthpieces']
     ACCESSORIES = ['Taylor trumpet mouthpiece 5mm', 'Taylor Chicago leadpipe for trumpet', 'Harrelson trumpet stand',
                    'AR Resonance Trumpet Top', 'Monette trumpet gig bag', 'Piccolo trumpet in A, Taylor',
-                   'Taylor mouthpiece fits Bb trumpet', 'Taylor Bb trumpet valve caps']
+                   'Taylor mouthpiece fits Bb trumpet', 'Taylor Bb trumpet valve caps',
+                   # Review regressions: "... only" and a title that starts with the accessory.
+                   'Taylor Chicago raw brass custom trumpet (case only)', 'Monette Raja one-off trumpet - case only',
+                   'Trumpet mouthpiece Monette B2 trumpet', 'Mouthpiece for Monette Raja trumpet', 'Bb trumpet leadpipe Taylor Chicago trumpet']
 
     def test_included_accessories_do_not_reject_the_horn(self):
         for title in self.HORNS:
