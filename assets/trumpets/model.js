@@ -3,7 +3,14 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.TrumpetModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  const statuses = ["active", "sold", "removed", "stale", "acquired"];
+  const statuses = [
+    "active",
+    "sold",
+    "removed",
+    "stale",
+    "unverifiable",
+    "acquired",
+  ];
   const interests = [
     "pass",
     "watch",
@@ -69,6 +76,35 @@
         .sort((a, b) => new Date(b) - new Date(a))[0] || null
     );
   }
+  // Freshness of the board as the daily job actually left it: the latest run
+  // (whatever its status) next to the last fully successful one.
+  function runFreshness(board) {
+    const run = board.latestRun || null;
+    const success = Object.values(board.lastSuccess || {})
+      .filter(Boolean)
+      .sort((a, b) => new Date(b) - new Date(a))[0] || null;
+    if (!run) return { at: null, status: "none", note: "", lastComplete: success, overdue: true };
+    const at = run.completedAt || run.startedAt || null;
+    const status = run.completedAt ? run.status : "running";
+    const now = new Date(board.serverTime || Date.now()).getTime();
+    // The job is daily; more than ~26 hours without a run means it missed one.
+    const overdue = !at || now - new Date(at).getTime() > 26 * 3600 * 1000;
+    const first = String(run.error || "").split(/;\s+/)[0].trim();
+    const note =
+      status === "succeeded"
+        ? "complete"
+        : first.length > 140
+          ? first.slice(0, 139) + "…"
+          : first || status;
+    return { at, status, note, lastComplete: success, overdue };
+  }
+  function checkNote(l) {
+    if (l.status === "unverifiable")
+      return `Unverifiable: ${l.checkFailures || 0} failed daily checks${l.lastCheckError ? " · " + l.lastCheckError : ""}. Last verified price shown; availability unknown.`;
+    if (l.checkFailures > 0 && l.verificationState !== "candidate")
+      return `Last check failed (${l.checkFailures} ${l.checkFailures === 1 ? "day" : "days"})${l.lastCheckError ? " · " + l.lastCheckError : ""}`;
+    return "";
+  }
   function shape(board) {
     return {
       ...board,
@@ -111,6 +147,7 @@
         (f.view === "candidates"
           ? l.verificationState === "candidate" &&
             !l.acquired &&
+            (l.status !== "removed" || f.status === "removed") &&
             (fb.interestState !== "pass" || f.interest === "pass")
           : l.verificationState !== "candidate" || l.acquired) &&
         (f.view !== "today" ||
@@ -201,6 +238,8 @@
     money,
     safeURL,
     lastSuccessFor,
+    runFreshness,
+    checkNote,
     shape,
     select,
     badges,

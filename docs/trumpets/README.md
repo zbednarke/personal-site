@@ -55,6 +55,17 @@ recorded **partial**, even if the client claimed success. Failed/ambiguous check
 preserve prior facts and leave instruments due. The board shows stale references
 and all last-check dates; the runner never treats a blocked/login page as “sold”.
 
+A check that was **attempted but failed** (HTTP 401/403/429 from a site that blocks
+automated checks, a timeout, or a page without one verifiable offer) is reported in
+the run's `checkFailures` with a short reason. The server records it on the listing
+(`checkFailures` = consecutive failed UTC days, `lastCheckAttempt`, `lastCheckError`)
+and counts the listing as checked for that day, so one unreachable listing no longer
+pins every run to partial. After **3** consecutive failed days a verified offer
+becomes **`unverifiable`**: its last verified price stays visible, it is never marked
+sold, it stays due and is retried daily, and a later successful check restores it
+(any verified observation clears the streak). `unverifiable` is server-assigned; a
+report cannot submit it. Lead attempts are recorded too, which rotates the lead queue.
+
 Acquisition is an instrument-level exclusion: it applies to all confirmed offers,
 removes old events from Today's alerts and survives subsequent ingestion or feedback
 reset. Acquired data remains available for comparisons, provenance, setup or resale.
@@ -155,7 +166,11 @@ filesystem and private temporary directory. The timer runs at **13:17 UTC** with
 persistent catch-up after downtime. Enable with
 `systemctl enable --now trumpets-research.timer`, and run the first search with
 `systemctl start trumpets-research.service`. A partial report exits 2 and is
-retained in the board, leaving unsupported active listings due for revalidation.
+retained in the board. Runs are partial only when coverage is really missing (a
+search provider failure or the 35-minute budget); failed listing checks are recorded
+per listing as described above, and reaching the 240-page discovery bound is a note.
+The board's telemetry shows the **latest run** (time, status and first note) next to
+the **last complete run**, and flags a run older than about a day as overdue.
 Use `journalctl -u trumpets-research.service` for run ID/status/counts only.
 Enable **one** scheduler; keep `TRUMPETS_DAILY_ENABLED` unset for VM scheduling.
 
@@ -308,7 +323,12 @@ an unambiguous offer. These are explicitly unverified: no invented price, stock,
 posted date, serial number or photo, and no market observations or Today alerts.
 Rating, notes and favorites work privately. Set interest to `pass` to dismiss a lead
 and exclude it from automated rediscovery/rechecks. Select the `pass` interest
-filter to revisit dismissed leads. Acquired leads remain accessible in All tracked. Leads are retried daily; an
+filter to revisit dismissed leads. Acquired leads remain accessible in All tracked. Leads are retried in
+rotation, up to 40 per run, least recently attempted first (never-attempted, newest
+first); leads on a domain that refused a check earlier in the same run are recorded
+as skipped without using a slot. A lead whose page returns 404/410 is retired as
+`removed` (hidden from Candidates unless you filter by that status) and not
+resurrected by later searches. An
 unambiguous verified offer promotes the same row, preserving first seen, feedback
 and URL identity. Search hints cannot downgrade verified price/status history.
 Acquired horns remain excluded from new-listing alerts.
@@ -317,8 +337,10 @@ Runs rotate 36 individual domains from the accumulated universe, with bounded sl
 Those extra queries exclude Reverb to encourage other sources; its dedicated source
 search remains enabled. Citation titles are accepted only for actual web-tool URLs.
 Parsers accept individual Product JSON-LD offers, dealer product metadata with
-explicit price/currency/stock, and Shopify product JSON with explicit variant stock
-and cart currency. Ambiguous variant prices and related products are rejected.
+explicit price/currency/stock, schema.org microdata with exactly one Product scope
+and one price, currency and availability, and Shopify product JSON with explicit
+variant stock and cart currency. Accessories sold under makers' names (cases, gig
+bags, backbores, valve tops, “first aid” kits) are not instruments. Ambiguous variant prices and related products are rejected.
 Shopify’s scaled prices are divided by 100 even for JPY; yen display uses whole units. Unverified leads have a lower triage threshold
 (45 versus 55 for verified active offers).
 
@@ -501,3 +523,14 @@ API (all behind `trumpetPrivacy` + `authenticate`): `GET /v1/trumpets/inspiratio
 
 [Inspiration board](screenshots/inspiration.png) · [Inspiration on a phone](screenshots/inspiration-mobile.png) ·
 [Inspiration detail](screenshots/inspiration-detail.png)
+
+## Failed-check tracking and honest freshness (migration 031)
+
+Replay-safe `031_trumpet_check_failures.sql` adds `check_failures`,
+`last_check_attempt` and `last_check_error` to `trumpet_listings` and widens the
+status check to allow the server-assigned `unverifiable`. The constraint is
+replaced only when it lacks that value, so replays on every jazz-api and workbench
+startup are no-ops. **Deploy the API before the runner**: an older API rejects the
+runner's `checkFailures` field as unknown JSON, and the runner relies on the API to
+record those failures. The VM timer, its schedule and `TRUMPETS_DAILY_ENABLED`
+(unset) are unchanged.

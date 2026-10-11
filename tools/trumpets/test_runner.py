@@ -240,3 +240,107 @@ class SerialEvidenceTests(unittest.TestCase):
         for placeholder in ['unknown','not provided','N/A','0']:
             p=copy.deepcopy(PRODUCT);p['description']='Professional Bb trumpet. Serial: '+placeholder
             self.assertEqual(runner.normalize_product(p,'https://shop.test/horn','Dealer',PROFILE)['serialNumber'],'')
+
+class DailyFreshnessTests(unittest.TestCase):
+    """A blocked page or the bounded discovery budget must not pin runs to partial."""
+    def client(self,due,baseline):
+        class Client:
+            report=None
+            def call(self,path,body=None):
+                if path=='/profile':return copy.deepcopy(PROFILE)
+                if path=='/due':return {'listings':copy.deepcopy(due)}
+                if path=='/listings':return {'listings':copy.deepcopy(baseline)}
+                if path=='/runs':self.report=body;return {'status':body['status'],'runId':'saved'}
+        return Client()
+    def lead(self,i,domain,attempt=None,first='2026-10-07T00:00:00Z'):
+        c=runner.candidate_hint({'url':f'https://{domain}/products/taylor-chicago-trumpet-{i}'},'Dealer',PROFILE)
+        return dict(c,id=f'lead-{domain}-{i}',firstSeen=first,lastCheckAttempt=attempt,feedback={'interestState':'watch'})
+    def watch(self,client,fetch,search=lambda *_:[]):
+        with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only'}),patch.object(runner,'fetch',side_effect=fetch),patch.object(runner,'search',side_effect=search),patch('builtins.print'):
+            return runner.daily(client)
+    def test_blocked_active_offer_is_recorded_not_partial_and_blocked_leads_are_free(self):
+        active=runner.normalize_product(PRODUCT,'https://ebay.com/itm/297326287591','eBay',PROFILE)
+        active.update(id='jericho',verificationState='verified',acquired=False,lastChecked='2026-10-07T01:23:47Z',feedback={'interestState':'watch'})
+        leads=[self.lead(i,'ebay.com') for i in range(5)]+[self.lead(i,'shop.test') for i in range(3)]
+        def fetch(url,*_):
+            if 'ebay.com' in url:raise urllib.error.HTTPError(url,403,'Forbidden',None,None)
+            return page(PRODUCT)
+        client=self.client([active]+leads,[active]+leads)
+        self.assertEqual(self.watch(client,fetch),0)
+        report=client.report
+        self.assertEqual(report['status'],'succeeded')
+        failed={f['id']:f['reason'] for f in report['checkFailures']}
+        self.assertIn('HTTP 403',failed['jericho'])
+        self.assertIn('Recheck failed, recorded for retry: ebay.com / HTTP 403',report['error'])
+        # Every eBay lead is recorded (so it rotates back), none consumes a check.
+        self.assertTrue(all('skipped' in failed[l['id']] for l in leads[:5]))
+        promoted={l['id'] for l in report['listings'] if l.get('verificationState')=='verified'}
+        self.assertEqual(promoted,{l['id'] for l in leads[5:]})
+        self.assertIn('3 queued leads checked (3 verified',report['error'])
+        self.assertNotIn('jericho',{l['id'] for l in report['listings']})
+    def test_unsupported_active_page_is_recorded(self):
+        active=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE)
+        active.update(id='known',verificationState='verified',acquired=False,feedback={'interestState':'watch'})
+        client=self.client([],[active])
+        self.assertEqual(self.watch(client,lambda *_:'<h1>Login required</h1>'),0)
+        self.assertEqual(client.report['checkFailures'][0]['id'],'known')
+        self.assertIn('single verifiable offer',client.report['checkFailures'][0]['reason'])
+    def test_page_budget_is_a_note_and_search_failure_still_partial(self):
+        counter=iter(range(100000))
+        def search(*_):return [{'url':f'https://d{next(counter)}.test/products/plain-page'} for _ in range(10)]
+        client=self.client([],[])
+        self.assertEqual(self.watch(client,lambda *_:'<html></html>',search),0)
+        self.assertEqual(client.report['status'],'succeeded')
+        self.assertIn('page budget (240) reached',client.report['error'])
+        client=self.client([],[])
+        def broken(*_):raise urllib.error.HTTPError('https://api.search.brave.com',500,'down',None,None)
+        self.assertEqual(self.watch(client,lambda *_:'',broken),2)
+        self.assertEqual(client.report['status'],'partial')
+    def test_leads_rotate_least_recently_attempted_first(self):
+        verified=dict(self.lead(0,'v.test'),verificationState='verified',id='v')
+        never_old=self.lead(1,'a.test',first='2026-10-07T00:00:00Z')
+        never_new=self.lead(2,'a.test',first='2026-10-10T00:00:00Z')
+        tried_long_ago=self.lead(3,'a.test',attempt='2026-10-08T13:20:00Z',first='2026-10-11T00:00:00Z')
+        tried_yesterday=self.lead(4,'a.test',attempt='2026-10-10T13:20:00Z',first='2026-10-11T00:00:00Z')
+        order=runner.recheck_order([tried_yesterday,never_old,verified,tried_long_ago,never_new])
+        self.assertEqual([l['id'] for l in order],['v',never_new['id'],never_old['id'],tried_long_ago['id'],tried_yesterday['id']])
+        # 41 never-tried leads: one waits, and is first the next day once the others record attempts.
+        due=[self.lead(i,'shop.test',first=f'2026-10-{7+i%4:02d}T{i%24:02d}:00:00Z') for i in range(41)]
+        client=self.client(due,due)
+        self.assertEqual(self.watch(client,lambda *_:'<html>no offer</html>'),0)
+        attempted={f['id'] for f in client.report['checkFailures']}
+        self.assertEqual(len(attempted),40)
+        waiting=[l for l in due if l['id'] not in attempted]
+        for l in due:
+            if l['id'] in attempted:l['lastCheckAttempt']='2026-10-11T13:20:00Z'
+        self.assertEqual(runner.recheck_order(due)[0]['id'],waiting[0]['id'])
+    def test_dead_lead_is_retired_without_market_facts(self):
+        lead=self.lead(0,'shop.test')
+        def gone(_):raise urllib.error.HTTPError(lead['url'],404,'gone',None,None)
+        result=runner.recheck(lead,gone,PROFILE)
+        self.assertEqual((result['status'],result['verificationState'],result['price']),('removed','candidate',None))
+    def test_failure_reasons_are_short_and_non_sensitive(self):
+        self.assertEqual(runner.failure_reason(urllib.error.HTTPError('https://x.test',403,'no',None,None)),'HTTP 403 (source blocks automated checks)')
+        self.assertEqual(runner.failure_reason(urllib.error.HTTPError('https://x.test',500,'no',None,None)),'HTTP 500')
+        self.assertEqual(runner.failure_reason(TimeoutError()),'timed out')
+        self.assertEqual(runner.failure_reason(urllib.error.URLError(ConnectionResetError())),'network error (ConnectionResetError)')
+
+class VerificationCoverageTests(unittest.TestCase):
+    def test_single_product_microdata_verifies_and_related_cards_do_not(self):
+        markup=('<title>Taylor Chicago II trumpet</title><div itemscope itemtype="https://schema.org/Product">'
+                '<h1 itemprop="name">Taylor Chicago II trumpet</h1><span itemprop="price" content="2400">$2,400</span>'
+                '<meta itemprop="priceCurrency" content="USD"><link itemprop="availability" href="https://schema.org/InStock"></div>')
+        c=runner.page_offers(markup,'https://shop.test/taylor','Dealer',PROFILE)[0]
+        self.assertEqual((c['price'],c['currency'],c['status']),(2400,'USD','active'))
+        self.assertIn('microdata',c['evidence'])
+        related=markup+'<div itemscope itemtype="https://schema.org/Product"><span itemprop="price" content="900"></span></div>'
+        self.assertEqual(runner.page_offers(related,'https://shop.test/taylor','Dealer',PROFILE),[])
+        self.assertEqual(runner.page_offers(markup.replace('<link itemprop="availability" href="https://schema.org/InStock">',''),'https://shop.test/taylor','Dealer',PROFILE),[])
+    def test_accessories_are_not_horns(self):
+        for title in ['Protec PB301CT Taylor Trumpet Case','AR Resonance First Aid','AR Resonance Backbores','AR Resonance Trumpet Top','Monette trumpet gig bag']:
+            p=copy.deepcopy(PRODUCT);p['name']=title
+            self.assertIsNone(runner.normalize_product(p,'https://shop.test/x','Shop',PROFILE),title)
+            self.assertIsNone(runner.candidate_hint({'url':'https://shop.test/products/x','title':title},'Shop',PROFILE),title)
+        for title in ['Taylor Chicago II Bb trumpet with hard case','Taylor Chicago II trumpet w/ gig bag','Taylor Chicago II trumpet and trumpet case']:
+            p=copy.deepcopy(PRODUCT);p['name']=title
+            self.assertIsNotNone(runner.normalize_product(p,'https://shop.test/x','Shop',PROFILE),title)

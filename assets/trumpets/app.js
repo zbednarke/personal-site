@@ -266,6 +266,8 @@
         `${l.seller || l.source}${l.seller ? " / " + l.source : ""}${l.location ? " · " + l.location : ""}`,
       ),
     );
+    const checkNote = M.checkNote(l);
+    if (checkNote) body.append(el("p", "check-note", checkNote));
     body.append(
       el("p", "rationale", l.searchRationale || "Research note pending."),
     );
@@ -374,10 +376,19 @@
         !l.acquired &&
         l.feedback.interestState !== "pass",
     ).length;
-    const search = M.lastSuccessFor(board, "search"),
-      recheck = M.lastSuccessFor(board, "recheck");
-    $("#last-search").textContent = search ? date(search) : "Not run yet";
-    $("#last-recheck").textContent = recheck ? date(recheck) : "Not run yet";
+    // Show when the job last ran and how it ended, not only the last full success.
+    const fresh = M.runFreshness(board);
+    const lastRun = $("#last-run");
+    lastRun.textContent = fresh.at
+      ? `${date(fresh.at)} · ${fresh.status.toUpperCase()}`
+      : "Not run yet";
+    lastRun.className = `run-${fresh.status}${fresh.overdue ? " overdue" : ""}`;
+    $("#last-run-note").textContent = fresh.at
+      ? (fresh.overdue ? "Overdue: no run in the last day. " : "") + fresh.note
+      : "";
+    $("#last-complete").textContent = fresh.lastComplete
+      ? date(fresh.lastComplete)
+      : "Never";
     const active = board.listings.filter(
       (l) => l.status === "active" && !l.acquired,
     );
@@ -388,8 +399,15 @@
     const due = active.filter(
       (l) => !l.lastChecked || l.lastChecked.slice(0, 10) < day,
     );
+    const failing = board.listings.filter(
+      (l) =>
+        !l.acquired &&
+        l.verificationState !== "candidate" &&
+        l.checkFailures > 0 &&
+        ["active", "unverifiable"].includes(l.status),
+    ).length;
     $("#active-count").textContent =
-      `${active.length} active / ${due.length} due`;
+      `${active.length} active / ${due.length} due${failing ? ` / ${failing} failing checks` : ""}`;
     const run = board.latestRun,
       sources = run?.sources || [];
     $("#source-count").textContent =
@@ -467,6 +485,7 @@
       "Notable features": (l.details.notableFeatures || []).join(", "),
       "First seen": date(l.firstSeen),
       "Last checked": date(l.lastChecked),
+      "Check problem": M.checkNote(l),
       "Posted date": l.postedAt ? date(l.postedAt) : "Unknown",
     })) {
       if (value) {

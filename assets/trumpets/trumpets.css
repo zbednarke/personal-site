@@ -411,6 +411,27 @@ input[type="checkbox"] {
 .status.removed {
   color: var(--red);
 }
+.status.unverifiable {
+  color: var(--brass);
+  border-style: dashed;
+}
+.check-note {
+  font: 11px/1.5 monospace;
+  color: var(--brass);
+  margin: 12px 0 0;
+}
+.telemetry small {
+  display: block;
+  margin-top: 6px;
+  font: 10px/1.45 monospace;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.telemetry strong.run-partial,
+.telemetry strong.run-failed,
+.telemetry strong.overdue {
+  color: var(--brass);
+}
 .model {
   font-family: Georgia, serif;
   font-weight: 400;

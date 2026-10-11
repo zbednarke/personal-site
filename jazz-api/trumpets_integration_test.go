@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -272,6 +273,143 @@ func TestTrumpetPersistence(t *testing.T) {
 	if ingest(run, 200)["status"] != "partial" {
 		t.Fatal("unchecked active horn accepted as successful recheck")
 	}
+	t.Run("failed rechecks are recorded and an unreachable offer becomes unverifiable", func(t *testing.T) {
+		var otherID string
+		var otherPrice float64
+		if err := isolated.QueryRow(ctx, `SELECT id::text,price FROM trumpet_listings WHERE source_listing_id='other'`).Scan(&otherID, &otherPrice); err != nil {
+			t.Fatal(err)
+		}
+		state := func() (status string, failures int, reason string) {
+			t.Helper()
+			if err := isolated.QueryRow(ctx, `SELECT status,check_failures,last_check_error FROM trumpet_listings WHERE id=$1`, otherID).Scan(&status, &failures, &reason); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		blocked := trumpetRunInput{Kind: "combined", Status: "succeeded", Sources: []trumpetSourceCheck{{Source: c.Source, Status: "checked"}},
+			CheckFailures: []trumpetCheckFailure{{ID: otherID, Reason: "dealer.test / HTTP 403 (blocks automated checks)"}}}
+		previousDay := func() {
+			t.Helper()
+			if _, err := isolated.Exec(ctx, `UPDATE trumpet_listings SET last_check_attempt=last_check_attempt-interval '1 day' WHERE id=$1`, otherID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Day 1: the recorded failure counts as checked; the run is not pinned to partial.
+		blocked.ExternalID = "blocked-day-1"
+		out := ingest(blocked, 200)
+		if out["status"] != "succeeded" || out["remainingActive"].(float64) != 0 || out["checkFailures"].(float64) != 1 {
+			t.Fatalf("recorded failure still forced partial: %v", out)
+		}
+		if status, failures, reason := state(); status != "active" || failures != 1 || !strings.Contains(reason, "HTTP 403") {
+			t.Fatalf("day 1 state %s %d %q", status, failures, reason)
+		}
+		// A same-day rerun does not add a day to the streak.
+		blocked.ExternalID = "blocked-day-1-rerun"
+		ingest(blocked, 200)
+		if _, failures, _ := state(); failures != 1 {
+			t.Fatalf("same-day rerun counted twice: %d", failures)
+		}
+		previousDay()
+		blocked.ExternalID = "blocked-day-2"
+		ingest(blocked, 200)
+		if status, failures, _ := state(); status != "active" || failures != 2 {
+			t.Fatalf("day 2 state %s %d", status, failures)
+		}
+		previousDay()
+		blocked.ExternalID = "blocked-day-3"
+		out = ingest(blocked, 200)
+		if out["status"] != "succeeded" || out["markedUnverifiable"].(float64) != 1 {
+			t.Fatalf("day 3 run %v", out)
+		}
+		status, failures, _ := state()
+		var price float64
+		isolated.QueryRow(ctx, `SELECT price FROM trumpet_listings WHERE id=$1`, otherID).Scan(&price)
+		if status != "unverifiable" || failures != 3 || price != otherPrice {
+			t.Fatalf("day 3 state %s %d %v", status, failures, price)
+		}
+		var detail string
+		var meaningful bool
+		if err := isolated.QueryRow(ctx, `SELECT detail,meaningful FROM trumpet_events WHERE listing_id=$1 AND new_status='unverifiable'`, otherID).Scan(&detail, &meaningful); err != nil || meaningful || !strings.Contains(detail, "not marked sold") {
+			t.Fatalf("unverifiable event %q %v %v", detail, meaningful, err)
+		}
+		// Unverifiable rows stay due for a daily retry and show the reason on the board.
+		dueRequest := httptest.NewRequest("GET", "/v1/trumpets/machine/due", nil)
+		dueRequest.Header.Set("Authorization", "Bearer "+token)
+		dueResponse := httptest.NewRecorder()
+		app.routes().ServeHTTP(dueResponse, dueRequest)
+		if !bytes.Contains(dueResponse.Body.Bytes(), []byte(otherID)) {
+			t.Fatal("unverifiable listing dropped from the due queue")
+		}
+		var board struct{ Listings []trumpetListing }
+		json.Unmarshal(call("GET", "/v1/trumpets/listings", nil, "owner", 200), &board)
+		found := false
+		for _, l := range board.Listings {
+			if l.ID == otherID {
+				found = l.Status == "unverifiable" && l.CheckFailures == 3 && l.LastCheckAttempt != nil && strings.Contains(l.LastCheckError, "403")
+			}
+		}
+		if !found {
+			t.Fatal("board does not expose the failed-check state")
+		}
+		// The runner cannot assert the server-only status itself.
+		forged := c
+		forged.ID = otherID
+		forged.Status = "unverifiable"
+		ingest(trumpetRunInput{ExternalID: "forged-unverifiable", Kind: "recheck", Status: "succeeded", Sources: blocked.Sources, Listings: []trumpetCandidate{forged}}, 400)
+		ingest(trumpetRunInput{ExternalID: "bad-failure-id", Kind: "recheck", Status: "succeeded", Sources: blocked.Sources, CheckFailures: []trumpetCheckFailure{{ID: "nope", Reason: "x"}}}, 400)
+		// A later successful check restores it and resets the streak.
+		previousDay()
+		isolated.Exec(ctx, `UPDATE trumpet_listings SET last_checked=now()-interval '4 days' WHERE id=$1`, otherID)
+		restored := c
+		restored.ID = otherID
+		ingest(trumpetRunInput{ExternalID: "blocked-recovered", Kind: "recheck", Status: "succeeded", Sources: blocked.Sources, Listings: []trumpetCandidate{restored}}, 200)
+		if status, failures, reason := state(); status != "active" || failures != 0 || reason != "" {
+			t.Fatalf("recovery state %s %d %q", status, failures, reason)
+		}
+		// A failure on a listing already verified today is ignored.
+		blocked.ExternalID = "blocked-after-success"
+		if ingest(blocked, 200)["checkFailures"].(float64) != 0 {
+			t.Fatal("failure overrode a successful check from the same day")
+		}
+		// Candidates record attempts (rotating the lead queue) but never become unverifiable;
+		// a dead lead page retires the lead out of the due queue.
+		lead := trumpetCandidate{Maker: "Lawler", Model: "URL hint", Title: "Lawler trumpet lead", URL: "https://leads.test/products/lawler", Source: "Leads", Status: "stale", VerificationState: "candidate", SearchScore: 70}
+		leadID := ingest(trumpetRunInput{ExternalID: "lead-new", Kind: "search", Status: "succeeded", Sources: blocked.Sources, Listings: []trumpetCandidate{lead}}, 200)["listingIds"].([]any)[0].(string)
+		for day := 1; day <= 4; day++ {
+			ingest(trumpetRunInput{ExternalID: fmt.Sprintf("lead-fail-%d", day), Kind: "search", Status: "succeeded", Sources: blocked.Sources, CheckFailures: []trumpetCheckFailure{{ID: leadID, Reason: "no single verifiable offer"}}}, 200)
+			isolated.Exec(ctx, `UPDATE trumpet_listings SET last_check_attempt=last_check_attempt-interval '1 day' WHERE id=$1`, leadID)
+		}
+		var leadStatus string
+		var leadFailures int
+		var attempted, checked bool
+		isolated.QueryRow(ctx, `SELECT status,check_failures,last_check_attempt IS NOT NULL,last_checked IS NOT NULL FROM trumpet_listings WHERE id=$1`, leadID).Scan(&leadStatus, &leadFailures, &attempted, &checked)
+		if leadStatus != "stale" || leadFailures != 4 || !attempted || checked {
+			t.Fatalf("candidate failure state %s %d %v %v", leadStatus, leadFailures, attempted, checked)
+		}
+		lead.ID = leadID
+		lead.Status = "removed"
+		lead.Evidence = "HTTP 404; search lead no longer exists"
+		ingest(trumpetRunInput{ExternalID: "lead-dead", Kind: "recheck", Status: "succeeded", Sources: blocked.Sources, Listings: []trumpetCandidate{lead}}, 200)
+		isolated.QueryRow(ctx, `SELECT status FROM trumpet_listings WHERE id=$1`, leadID).Scan(&leadStatus)
+		dueResponse = httptest.NewRecorder()
+		app.routes().ServeHTTP(dueResponse, dueRequest)
+		if leadStatus != "removed" || bytes.Contains(dueResponse.Body.Bytes(), []byte(leadID)) {
+			t.Fatal("dead lead not retired from the due queue", leadStatus)
+		}
+		lead.Status = "stale"
+		lead.Price = &price
+		if err := normalizeTrumpet(&lead); err == nil {
+			t.Fatal("candidate asserted a price")
+		}
+		if err := migrate(ctx, isolated); err != nil {
+			t.Fatal("check failure migration replay", err)
+		}
+		var checks int
+		isolated.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='trumpet_listings'::regclass AND conname='trumpet_listings_status_check'`).Scan(&checks)
+		if checks != 1 {
+			t.Fatal("status constraint duplicated on replay", checks)
+		}
+	})
 	t.Run("candidate queue promotes without losing feedback or inventing history", func(t *testing.T) {
 		hint := trumpetCandidate{Maker: "Taylor", Model: "URL hint", Title: "Taylor Chicago trumpet", URL: "https://dealer.test/products/taylor-hint", Source: "Dealer", Status: "stale", VerificationState: "candidate", SearchScore: 70}
 		r := trumpetRunInput{ExternalID: "hint", Kind: "search", Status: "succeeded", Sources: []trumpetSourceCheck{{Source: "Dealer", Status: "checked"}}, Listings: []trumpetCandidate{hint}}
