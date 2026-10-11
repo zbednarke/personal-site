@@ -1964,3 +1964,75 @@ button.milestone-chip { min-height: 30px; cursor: pointer; }
   .tune-events li a { grid-column: 2; }
   .plan-tune-pill { margin-left: 16px; }
 }
+
+/* ---------- The sidebar on short screens ----------
+ * The sidebar is fixed to the viewport's height. On a phone held sideways
+ * (844x390, 667x375) its links run past the bottom, so it scrolls on its own
+ * and keeps clear of the notch and home indicator. */
+.virtuoso-nav { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.virtuoso-nav > * { flex-shrink: 0; }
+@media (max-height: 560px) and (min-width: 721px) {
+  .virtuoso-nav { padding-top: max(18px, env(safe-area-inset-top)) !important; padding-bottom: max(14px, env(safe-area-inset-bottom)) !important; padding-left: max(18px, env(safe-area-inset-left)) !important; }
+  .virtuoso-nav-links { gap: 2px; margin-top: 18px; }
+  .virtuoso-nav-links a,
+  .virtuoso-nav-links > span { min-height: 40px; }
+  .virtuoso-nav-footer { padding-top: 14px; }
+}
+
+/* ---------- Phone navigation ----------
+ * Below the sidebar breakpoint (720px, 760px on Clip studio) the sidebar
+ * folds away. The sticky top bar gets a menu button that slides the same nav
+ * in as a drawer (assets/jazz/mobile-nav.js). The palette is set here so the
+ * bar and the drawer read the same on every view. */
+.virtuoso-menu-button { display: none; }
+.virtuoso-nav-scrim[hidden] { display: none; }
+@media (max-width: 760px) {
+  .virtuoso-mobile-header,
+  body.jazz-nav-open .virtuoso-nav {
+    --ink: #f3f3f2; --text: #d8d5cf; --muted: #9e9991; --faint: #77716a;
+    --line: rgba(181, 147, 91, 0.2); --line-strong: rgba(181, 147, 91, 0.42);
+    --brass: #b5935b; --brass-light: #d2b77f; --green: #a5c99f; --red: #d38b82;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --serif: "Playfair Display", Georgia, serif;
+  }
+  .virtuoso-mobile-header { gap: 8px; padding: 0 max(16px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left)) !important; }
+  .virtuoso-mobile-header strong { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); font: 600 15px var(--serif); text-overflow: ellipsis; white-space: nowrap; }
+  .virtuoso-mobile-header > span { flex: none; color: var(--brass); font: 8px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+  .virtuoso-menu-button { flex: none; display: grid; place-items: center; width: 44px; height: 44px; margin: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--ink); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .virtuoso-menu-button:focus-visible { outline: 2px solid var(--brass); outline-offset: -4px; }
+  .virtuoso-menu-button span,
+  .virtuoso-menu-button span::before,
+  .virtuoso-menu-button span::after { display: block; width: 18px; height: 1.5px; border-radius: 1px; background: currentColor; transition: transform 0.2s ease, background-color 0.2s ease; }
+  .virtuoso-menu-button span { position: relative; }
+  .virtuoso-menu-button span::before,
+  .virtuoso-menu-button span::after { content: ""; position: absolute; left: 0; }
+  .virtuoso-menu-button span::before { top: -6px; }
+  .virtuoso-menu-button span::after { top: 6px; }
+  .virtuoso-menu-button[aria-expanded="true"] span { background: transparent; }
+  .virtuoso-menu-button[aria-expanded="true"] span::before { background: var(--ink); transform: translateY(6px) rotate(45deg); }
+  .virtuoso-menu-button[aria-expanded="true"] span::after { background: var(--ink); transform: translateY(-6px) rotate(-45deg); }
+  body.jazz-nav-open .virtuoso-nav {
+    position: fixed; z-index: 60; inset: 0 auto 0 0;
+    width: min(300px, calc(100vw - 56px)); display: flex !important; flex-direction: column;
+    padding: max(24px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    border-right: 1px solid var(--line); background: #171617; box-shadow: 24px 0 60px rgba(0, 0, 0, 0.5);
+    animation: virtuoso-drawer-in 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  body.jazz-nav-open .virtuoso-nav-links { margin-top: 28px; }
+  body.jazz-nav-open .virtuoso-nav-footer { padding-top: 24px; }
+  .virtuoso-nav-scrim { position: fixed; inset: 0; z-index: 55; background: rgba(8, 7, 10, 0.62); -webkit-tap-highlight-color: transparent; }
+}
+@keyframes virtuoso-drawer-in { from { transform: translateX(-24px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  body.jazz-nav-open .virtuoso-nav { animation: none; }
+  .virtuoso-menu-button span, .virtuoso-menu-button span::before, .virtuoso-menu-button span::after { transition: none; }
+}
+
+/* iOS Safari zooms the whole page when a field whose text is under 16px takes
+ * focus, and the zoom outlives the keyboard: the top bar, Workbench's close
+ * button and Send end up past the right edge. Touch screens get 16px fields. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]),
+  select,
+  textarea { font-size: 16px !important; }
+}

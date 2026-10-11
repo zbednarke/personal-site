@@ -91,6 +91,156 @@ async function waitForServer() {
       const sw = await page.waitForFunction(() => navigator.serviceWorker.getRegistration().then((r) => r && r.scope), null, { timeout: 10000 });
       assert.equal(await sw.jsonValue(), base + L.page, "service worker scope");
       await page.screenshot({ path: path.join(out, `${L.name}-${L.mode}.png`) });
+      if (L.mode === "panel") {
+        // The desktop panel sits beside the page (text selected there is context), so an outside click leaves it open.
+        await page.click("#today-title");
+        assert.equal(await page.evaluate(() => __workbench.isOpen()), true, "desktop: an outside click leaves the panel open");
+      } else {
+        // Phone sheet and tablet split: a tap outside the sheet closes it, and the scrim then gets out of the way.
+        await page.touchscreen.tap(L.mode === "sheet" ? L.width / 2 : 40, 40);
+        await page.waitForSelector(".wb-sheet[hidden]", { state: "attached" });
+        assert.equal(await page.locator(".wb-scrim").isHidden(), true, `${L.name}: the scrim goes with the sheet`);
+        assert.equal(await page.evaluate(() => document.elementFromPoint(40, 300).closest(".wb")), null, `${L.name}: a closed sheet swallows no taps`);
+        if (L.mode === "split") assert.equal(await page.evaluate(() => parseFloat(getComputedStyle(document.body).marginRight)), 0, "tablet: the page moves back");
+      }
+      await page.ctx.close();
+    }
+
+    // ---------------- Phones: every view fits, nav and sheet are reachable ----------------
+    // iOS widens the layout viewport to fit anything wider than the screen, and
+    // fixed bars (the top bar, this sheet) then size to the wider page, so their
+    // right edge goes off-screen. Every view must fit at common iPhone widths.
+    const jazzViews = ["today", "repertoire", "guide-tones", "effects", "archive", "studio"];
+    const otherPages = ["/trumpets/", "/trumpets/#inspiration", "/commonplace/"];
+    const inside = (b, w, h, label) => assert.ok(b && b.x >= -0.5 && b.y >= -0.5 && b.x + b.width <= w + 0.5 && b.y + b.height <= h + 0.5, `${label} is fully on screen (${JSON.stringify(b)})`);
+    // Every nav item can be scrolled into view and tapped (the hit test lands on it, not on something covering it).
+    const navReachable = async (page, label) => {
+      const count = await page.locator(".virtuoso-nav-links > *").count();
+      assert.ok(count >= 9, `${label}: nav items present`);
+      for (let i = 0; i < count; i++) {
+        const item = page.locator(".virtuoso-nav-links > *").nth(i);
+        await item.scrollIntoViewIfNeeded();
+        const hit = await item.evaluate((n) => {
+          const b = n.getBoundingClientRect();
+          const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          return { b: { x: b.left, y: b.top, width: b.width, height: b.height }, hit: !!top && n.contains(top) };
+        });
+        inside(hit.b, await page.evaluate(() => innerWidth), await page.evaluate(() => innerHeight), `${label}: nav item ${i + 1}`);
+        assert.ok(hit.hit, `${label}: nav item ${i + 1} is tappable`);
+      }
+    };
+    for (const width of [375, 390, 401]) {
+      const page = await newPage(`phone-${width}`, width, 844, true);
+      for (const view of jazzViews) {
+        const label = `${width}px #${view}`;
+        await page.goto(`${base}/jazz/#${view}`);
+        await page.waitForSelector(".wb-pill");
+        await page.waitForFunction((v) => document.querySelector(`[data-jazz-view="${v}"]`).classList.contains("active"), view);
+        await page.waitForTimeout(300);
+        await noSideScroll(page, label);
+        // Issue #84: the top bar's menu button opens the nav in portrait.
+        const menu = page.locator("#jazz-menu-button");
+        assert.ok(await menu.isVisible(), `${label}: the menu button is visible`);
+        inside(await menu.boundingBox(), width, 844, `${label}: the menu button`);
+        inside(await page.locator("#mobile-view-label").boundingBox(), width, 844, `${label}: the view label`);
+        await menu.tap();
+        await page.waitForSelector("body.jazz-nav-open .virtuoso-nav");
+        await navReachable(page, `${label} drawer`);
+        await noSideScroll(page, `${label} drawer`);
+        if (view === "today" && width === 390) await page.screenshot({ path: path.join(out, "phone-jazz-nav.png") });
+        await page.touchscreen.tap(width - 20, 400); // the scrim
+        await page.waitForSelector("body:not(.jazz-nav-open)");
+        assert.ok(await page.locator(".virtuoso-nav").isHidden(), `${label}: the drawer closes on an outside tap`);
+
+        // The Workbench sheet: inside the screen, × and Send fully visible, closes on an outside tap.
+        await page.tap(".wb-pill");
+        await page.waitForSelector(".wb-sheet:not([hidden])");
+        for (const sel of [".wb-sheet", '.wb-head [aria-label="Close Workbench"]', ".wb-send", ".wb-input"]) inside(await page.locator(sel).boundingBox(), width, 844, `${label}: ${sel}`);
+        await noSideScroll(page, `${label} sheet`);
+        await page.touchscreen.tap(width / 2, 30);
+        await page.waitForSelector(".wb-sheet[hidden]", { state: "attached" });
+      }
+      // Navigating from the drawer goes to the view and closes the drawer.
+      await page.tap("#jazz-menu-button");
+      await page.tap('.virtuoso-nav [data-jazz-view="archive"]');
+      await page.waitForFunction(() => document.body.classList.contains("virtuoso-archive") && !document.body.classList.contains("jazz-nav-open"));
+      assert.equal(await page.locator("#mobile-view-label").innerText(), "ARCHIVE");
+      for (const url of otherPages) {
+        await page.goto(base + url);
+        await page.waitForSelector(".wb-pill");
+        await page.waitForTimeout(300);
+        await noSideScroll(page, `${width}px ${url}`);
+        await page.tap(".wb-pill");
+        await page.waitForSelector(".wb-sheet:not([hidden])");
+        for (const sel of ['.wb-head [aria-label="Close Workbench"]', ".wb-send"]) inside(await page.locator(sel).boundingBox(), width, 844, `${width}px ${url}: ${sel}`);
+        await noSideScroll(page, `${width}px ${url} sheet`);
+        await page.touchscreen.tap(width / 2, 30);
+        await page.waitForSelector(".wb-sheet[hidden]", { state: "attached" });
+      }
+      await page.ctx.close();
+    }
+
+    // Landscape phones: the sidebar scrolls on its own, so every item is reachable.
+    for (const [width, height] of [[844, 390], [667, 375]]) {
+      const page = await newPage(`landscape-${width}`, width, height, true);
+      for (const view of jazzViews) {
+        const label = `${width}x${height} #${view}`;
+        await page.goto(`${base}/jazz/#${view}`);
+        await page.waitForFunction((v) => document.querySelector(`[data-jazz-view="${v}"]`).classList.contains("active"), view);
+        await noSideScroll(page, label);
+        if (await page.locator("#jazz-menu-button").isVisible()) await page.tap("#jazz-menu-button");
+        await navReachable(page, label);
+        if (view === "today" && width === 844) await page.screenshot({ path: path.join(out, "landscape-jazz-nav.png") });
+      }
+      await page.ctx.close();
+    }
+
+    // The keyboard and pinch zoom shrink the visual viewport; the sheet follows
+    // it so the composer, × and Send stay on screen. Simulated by standing in
+    // for window.visualViewport (headless Chromium has no on-screen keyboard).
+    {
+      const page = await newPage("phone-keyboard", 390, 844, true);
+      await page.addInitScript(() => {
+        const fake = new EventTarget();
+        const v = { offsetLeft: 0, offsetTop: 0, scale: 1, pageLeft: 0, pageTop: 0 };
+        for (const k of ["width", "height", ...Object.keys(v)]) Object.defineProperty(fake, k, { get: () => (k in v ? v[k] : k === "width" ? innerWidth : innerHeight) });
+        Object.defineProperty(window, "visualViewport", { value: fake, configurable: true });
+        window.__setViewport = (next) => { Object.assign(v, next); fake.dispatchEvent(new Event("resize")); };
+      });
+      await page.goto(base + "/jazz/");
+      await page.waitForSelector(".wb-pill");
+      await page.tap(".wb-pill");
+      await page.waitForSelector(".wb-sheet:not([hidden])");
+      const visible = async (label, vv) => {
+        for (const sel of [".wb-sheet", '.wb-head [aria-label="Close Workbench"]', ".wb-send", ".wb-input"]) {
+          const b = await page.locator(sel).boundingBox();
+          assert.ok(b.x >= vv.offsetLeft - 0.5 && b.y >= vv.offsetTop - 0.5 && b.x + b.width <= vv.offsetLeft + vv.width + 0.5 && b.y + b.height <= vv.offsetTop + vv.height + 0.5,
+            `${label}: ${sel} sits inside the visual viewport (${JSON.stringify(b)} vs ${JSON.stringify(vv)})`);
+        }
+      };
+      await page.tap(".wb-input");
+      const keyboard = { width: 390, height: 844 - 336, offsetLeft: 0, offsetTop: 0, scale: 1 };
+      await page.evaluate((vv) => __setViewport(vv), keyboard);
+      await visible("keyboard open", keyboard);
+      assert.ok(await page.evaluate(() => document.querySelector(".wb").classList.contains("wb-kb-open")), "keyboard open: no home-indicator gap above the keyboard");
+      await page.screenshot({ path: path.join(out, "phone-keyboard.png") });
+      const zoomed = { width: 390 / 1.25, height: (844 - 336) / 1.25, offsetLeft: 40, offsetTop: 120, scale: 1.25 };
+      await page.evaluate((vv) => __setViewport(vv), zoomed);
+      await visible("zoomed with the keyboard open", zoomed);
+      await page.evaluate(() => __setViewport({ width: 390, height: 844, offsetLeft: 0, offsetTop: 0, scale: 1 }));
+      await visible("keyboard closed", { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 });
+      // Swipe the handle down to close.
+      const grab = await page.locator(".wb-grab").boundingBox();
+      await page.mouse.move(grab.x + grab.width / 2, grab.y + grab.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(grab.x + grab.width / 2, grab.y + 200, { steps: 8 });
+      await page.mouse.up();
+      await page.waitForSelector(".wb-sheet[hidden]", { state: "attached" });
+      // Touch screens get 16px fields so iOS never zooms the page on focus.
+      const small = await page.evaluate(() => [...document.querySelectorAll("input, select, textarea")]
+        .filter((n) => !["checkbox", "radio", "range", "file", "hidden", "color"].includes(n.type) && parseFloat(getComputedStyle(n).fontSize) < 16)
+        .map((n) => n.id || n.className));
+      assert.deepEqual(small, [], "no field under 16px on a touch screen");
       await page.ctx.close();
     }
 
@@ -197,7 +347,7 @@ async function waitForServer() {
     assert.ok(!(await laptop.title()).includes("PWNED"));
 
     assert.deepEqual(errors, []);
-    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, CSP in place, no runtime errors.");
+    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, CSP in place, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     try { await fetch(base + "/__preview_stop", { method: "POST" }); } catch { /* stopped */ }
