@@ -38,6 +38,8 @@
     background: var(--panel); color: var(--text);
     border: 1px solid var(--panel-edge); border-radius: 8px; padding: 8px; font-size: 14px;
   }
+  /* iOS zooms the whole page when a field under 16px takes focus. */
+  @media (pointer: coarse) { select { font-size: 16px; } }
   .status { font-size: 13px; color: var(--dim); }
   .warn {
     background: #3a2f1a; border: 1px solid #6b5522; border-radius: 8px;

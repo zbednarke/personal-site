@@ -137,7 +137,11 @@
   const threadSelect = el("select", { class: "wb-threads", "aria-label": "Thread", onchange: () => selectThread(threadSelect.value) });
   const menuBtn = el("button", { class: "wb-icon", type: "button", "aria-label": "More", "aria-expanded": "false", html: ICON.more, onclick: () => toggleMenu() });
   const closeBtn = el("button", { class: "wb-icon", type: "button", "aria-label": "Close Workbench", html: ICON.close, onclick: () => toggle(false) });
-  const grab = el("button", { class: "wb-grab", type: "button", "aria-label": "Close Workbench", onclick: () => toggle(false) });
+  const grab = el("button", { class: "wb-grab", type: "button", "aria-label": "Close Workbench", onclick: () => { if (dragged) dragged = false; else toggle(false); } });
+  // Tapping outside closes the phone sheet and the tablet split view. The
+  // desktop panel stays open on outside clicks: it sits beside the page so you
+  // can select text there to talk about (Esc, ` and × close it).
+  const scrim = el("div", { class: "wb-scrim", hidden: true, "aria-hidden": "true", onclick: () => toggle(false) });
   const deepChip = el("button", { class: "wb-chip", type: "button", "aria-pressed": "false", title: "Think harder on the next message (higher effort)", onclick: () => { deep = !deep; deepChip.setAttribute("aria-pressed", String(deep)); } }, "Deep work");
   const notifyChip = el("button", { class: "wb-chip", type: "button", onclick: () => enablePush() }, "Notifications");
   const nudgeBox = el("input", { type: "checkbox", onchange: () => enablePush(true) });
@@ -162,7 +166,7 @@
     el("div", { class: "wb-head" }, titleEl, threadSelect, menuBtn, closeBtn),
     menu, log,
     el("div", { class: "wb-foot" }, statusLine, attachRow, el("div", { class: "wb-compose" }, attachBtn, fileInput, input, micBtn, sendBtn)));
-  root.append(pill, sheet);
+  root.append(scrim, pill, sheet);
 
   function mount() {
     document.body.append(root);
@@ -186,16 +190,66 @@
     root.className = `wb wb-mode-${mode}${open ? " wb-open" : ""}${pageIsDark() ? " wb-dark" : ""}`;
     document.documentElement.classList.toggle("wb-split-open", open && mode === "split");
     sheet.setAttribute("aria-modal", mode === "sheet" ? "true" : "false");
+    scrim.hidden = !(open && mode !== "panel");
+    fitViewport();
   }
   addEventListener("resize", () => { applyMode(); liftPill(); });
+  // The phone sheet follows the visual viewport (the part of the page on
+  // screen): above the keyboard, and inside the screen even when the page is
+  // pinch-zoomed or wider than the screen, so × and Send stay reachable.
+  function fitViewport() {
+    const vv = window.visualViewport;
+    if (!vv || mode !== "sheet") {
+      for (const k of ["--wb-vv-left", "--wb-vv-width", "--wb-sheet-top", "--wb-sheet-bottom", "--wb-sheet-height"]) root.style.removeProperty(k);
+      root.classList.remove("wb-kb-open");
+      return;
+    }
+    const full = document.documentElement.clientHeight / (vv.scale || 1);
+    const keyboard = full - vv.height > 120;
+    const height = Math.max(160, Math.min(full * 0.88, vv.height - 24));
+    const px = (n) => `${Math.round(n * 100) / 100}px`;
+    root.style.setProperty("--wb-vv-left", px(vv.offsetLeft));
+    root.style.setProperty("--wb-vv-width", px(vv.width));
+    root.style.setProperty("--wb-sheet-top", px(vv.offsetTop + vv.height - height));
+    root.style.setProperty("--wb-sheet-bottom", "auto");
+    root.style.setProperty("--wb-sheet-height", px(height));
+    root.classList.toggle("wb-kb-open", keyboard);
+  }
   if (window.visualViewport) {
-    const kb = () => {
-      const vv = window.visualViewport;
-      const inset = Math.max(0, innerHeight - vv.height - vv.offsetTop);
-      root.style.setProperty("--wb-kb", `${Math.round(inset)}px`);
-    };
-    visualViewport.addEventListener("resize", kb);
-    visualViewport.addEventListener("scroll", kb);
+    visualViewport.addEventListener("resize", fitViewport);
+    visualViewport.addEventListener("scroll", fitViewport);
+  }
+
+  // Swipe the sheet down by its handle (or its title bar) to close it.
+  let drag = null, dragged = false;
+  function dragStart(e) {
+    if (mode !== "sheet" || !open || (e.pointerType === "mouse" && e.button !== 0)) return;
+    if (e.currentTarget !== grab && e.target.closest("button, select, a, input, textarea")) return;
+    drag = { y: e.clientY, t: performance.now(), dy: 0 };
+    dragged = false;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* synthetic event */ }
+    sheet.classList.add("wb-dragging");
+  }
+  function dragMove(e) {
+    if (!drag) return;
+    drag.dy = Math.max(0, e.clientY - drag.y);
+    if (drag.dy > 6) dragged = true;
+    sheet.style.transform = drag.dy ? `translateY(${drag.dy}px)` : "";
+  }
+  function dragEnd() {
+    if (!drag) return;
+    const { dy, t } = drag;
+    drag = null;
+    sheet.classList.remove("wb-dragging");
+    sheet.style.transform = "";
+    const speed = dy / Math.max(1, performance.now() - t);
+    if (dy > 90 || (dy > 30 && speed > 0.5)) toggle(false);
+  }
+  for (const target of [grab, sheet.querySelector(".wb-head")]) {
+    target.addEventListener("pointerdown", dragStart);
+    target.addEventListener("pointermove", dragMove);
+    target.addEventListener("pointerup", dragEnd);
+    target.addEventListener("pointercancel", dragEnd);
   }
 
   // Keep the pill clear of fixed bars the page puts in the same corner

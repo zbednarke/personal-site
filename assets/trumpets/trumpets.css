@@ -1174,3 +1174,11 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
 @media (prefers-reduced-motion: reduce) {
   .insp-media.skeleton::after, .insp-status.working::before { animation: none; }
 }
+
+/* iOS Safari zooms the page when a field under 16px takes focus, leaving the
+ * page wider than the screen. Touch screens get 16px fields. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]),
+  select,
+  textarea { font-size: 16px !important; }
+}

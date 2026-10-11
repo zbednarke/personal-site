@@ -27,7 +27,7 @@
 <body class="virtuoso-today">
   <a class="skip-link" href="#main">Skip to campaign</a>
 
-  <nav class="virtuoso-nav" aria-label="Jazz Project">
+  <nav class="virtuoso-nav" id="jazz-nav" aria-label="Jazz Project">
     <a class="virtuoso-brand" href="./" aria-label="Jazz Project today">
       <span class="virtuoso-monogram">JP</span>
       <span><strong>Jazz Project</strong><small>Private trumpet archive</small></span>
@@ -49,7 +49,10 @@
     </div>
   </nav>
 
+  <div class="virtuoso-nav-scrim" id="jazz-nav-scrim" hidden></div>
+
   <header class="virtuoso-mobile-header">
+    <button class="virtuoso-menu-button" id="jazz-menu-button" type="button" aria-controls="jazz-nav" aria-expanded="false" aria-label="Open menu"><span aria-hidden="true"></span></button>
     <strong>Jazz Project</strong>
     <span id="mobile-view-label">Today</span>
   </header>
@@ -646,6 +649,7 @@
   <script src="../assets/jazz/metronome.js"></script>
   <script src="../assets/jazz/archive-utils.js"></script>
   <script src="../assets/jazz/archive.js"></script>
+  <script src="../assets/jazz/mobile-nav.js"></script>
   <script src="../assets/jazz/clip-studio-model.js"></script>
   <script src="../assets/jazz/clip-studio.js"></script>
   <script src="../assets/jazz/clip-download.js"></script>
