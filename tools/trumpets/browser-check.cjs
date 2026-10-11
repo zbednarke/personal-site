@@ -221,6 +221,10 @@ function syntheticPng(width, height) {
     await page.waitForFunction(
       () => document.querySelectorAll(".card").length === 3,
     );
+    // Freshness shows the latest run and how it ended, beside the last complete run.
+    assert.match(await page.locator("#last-run").innerText(), /SUCCEEDED/);
+    assert.equal(await page.locator("#last-run-note").innerText(), "complete");
+    assert.notEqual(await page.locator("#last-complete").innerText(), "Never");
     await page.screenshot({ path: path.join(out, "today.png") });
     await page.locator(".coverage > summary").click();
     await page.locator(".source-universe > summary").click();

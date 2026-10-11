@@ -41,6 +41,20 @@ SOURCES = {
 USER_AGENT = 'TrumpetObservatory/1.0 (+private instrument research; daily checks)'
 ALLOWED_FIELDS = {'id','hornId','maker','model','serialNumber','details','title','description','url','source','sourceListingId','seller','location','price','currency','shipping','postedAt','status','discoveryType','images','searchScore','searchRationale','tags','evidence','verificationState'}
 MAKERS = ['AR Resonance','Del Quadro','Van Laar','Harrelson','Monette','Inderbinen','Blackburn','Calicchio','Schilke','Taylor','Adams','Lawler','LOTUS','Eclipse','Benge','GERDT','BAC','Olds','Selmer','Besson','Yamaha','Bach']
+# Accessories and parts sold under instrument makers' names are not horns.
+ACCESSORY = (r'cornets?|flugelhorns?|trombones?|mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only|piccolo'
+             r'|backbores?|first aid|lead ?pipes?|valve (?:caps?|tops?|buttons?|guides?)|finger buttons?|trumpet tops?')
+# A case or bag is the item only when nothing outside the case phrase names a horn:
+# "Taylor trumpet case" is a case, "trumpet with original hard case" is a horn.
+CASE_PHRASE = r'\b(?:trumpet\s+)?(?:(?:gig|hard|soft|double|single|flight|carrying)\s+)?(?:cases?|bags?)\b'
+
+
+def is_accessory(subject, extra=''):
+    if re.search(r'\b(?:'+ACCESSORY+(extra and '|'+extra)+r')\b',subject): return True
+    if not re.search(CASE_PHRASE,subject): return False
+    return not re.search(r'\btrumpet\b|\btrompette\b|\btrompet\b',re.sub(CASE_PHRASE,' ',subject))
+
+
 TRAITS = ['raw brass','raw nickel','aged brass','patina','engraving','gold plate','mixed metals','black hardware','upswept','one-off','artist','provenance','custom','handcraft','oiram','antique','engineering','rare','vintage','unusual bell','artist model','prototype','discontinued']
 
 
@@ -168,7 +182,7 @@ def normalize_product(product,url,source,profile):
     text=(title+' '+description).lower()
     if not re.search(r'\btrumpet\b|\btrompette\b|トランペット|\btrompet\b',text): return None
     subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()
-    if re.search(r'\b(cornets?|flugelhorns?|trombones?|mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only|piccolo)\b',subject): return None
+    if is_accessory(subject): return None
     if re.search(r'\b(c trumpet|eb trumpet|d trumpet|e-flat|c-trumpet)\b',title.lower()): return None
     maker=identify_maker(title) or identify_maker(description)
     brand=product.get('brand',{})
@@ -259,13 +273,18 @@ def normalize_product(product,url,source,profile):
 class DealerPage(HTMLParser):
     """Individual product metadata; no scraping prices from related cards."""
     def __init__(self):
-        super().__init__(); self.meta={}; self.title=[]; self.in_title=False
+        super().__init__(); self.meta={}; self.title=[]; self.in_title=False; self.micro={}; self.product_scopes=0
     def handle_starttag(self, tag, attrs):
         a=dict(attrs)
         if tag=='title': self.in_title=True
         if tag=='meta':
             key=a.get('property') or a.get('name') or a.get('itemprop')
             if key and a.get('content'): self.meta.setdefault(key.lower(),[]).append(a['content'])
+        if re.search(r'schema\.org/(?:Product|IndividualProduct)\b',a.get('itemtype') or ''): self.product_scopes+=1
+        # schema.org microdata, e.g. <span itemprop="price" content="2400"> or
+        # <link itemprop="availability" href="https://schema.org/InStock">.
+        value=a.get('content') or (a.get('href') if tag=='link' else None)
+        if a.get('itemprop') and value: self.micro.setdefault(a['itemprop'].lower(),[]).append(value)
     def handle_endtag(self, tag):
         if tag=='title': self.in_title=False
     def handle_data(self, data):
@@ -276,6 +295,12 @@ class DealerPage(HTMLParser):
             if len(values)==1: return next(iter(values))
         return ''
     def name(self): return self.one('og:title') or ''.join(self.title)
+    def microdata(self):
+        """One Product scope with exactly one price, currency and availability."""
+        if self.product_scopes!=1: return None
+        facts={k:self.micro.get(k,[]) for k in ('price','pricecurrency','availability')}
+        if any(len(v)!=1 for v in facts.values()): return None
+        return {k:v[0] for k,v in facts.items()}
 
 
 def page_offers(page, url, source, profile):
@@ -292,7 +317,13 @@ def page_offers(page, url, source, profile):
        'image':metadata.one('og:image'),'offers':{'price':metadata.one('product:price:amount','price'),
        'priceCurrency':metadata.one('product:price:currency','pricecurrency'),'availability':availability}}
     c=normalize_product(p,url,source,profile)
-    return [dict(c,evidence='Individual dealer product metadata / explicit availability')] if c else []
+    if c: return [dict(c,evidence='Individual dealer product metadata / explicit availability')]
+    micro=metadata.microdata()
+    if micro:
+        p['offers']={'price':micro['price'],'priceCurrency':micro['pricecurrency'],'availability':micro['availability']}
+        c=normalize_product(p,url,source,profile)
+        if c: return [dict(c,evidence='schema.org product microdata / explicit availability')]
+    return []
 
 
 def shopify_offer(url, source, profile, get_page=fetch):
@@ -335,7 +366,7 @@ def candidate_hint(result, source, profile, page=''):
     text=(title+' '+description+' '+path.replace('-',' ')).lower()
     maker=identify_maker(title) or identify_maker(text)
     subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()+' '+path.replace('-',' ')
-    if not maker or re.search(r'\b(mouthpieces?|flugelhorns?|cornets?|trombones?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|piccolo|case only|c trumpet|eb trumpet|d trumpet)\b',subject): return None
+    if not maker or is_accessory(subject,'c trumpet|eb trumpet|d trumpet'): return None
     # Reuse ranking without treating the temporary scoring offer as evidence.
     scoring=normalize_product({'name':title+' trumpet','description':text,'offers':{'priceCurrency':'USD','availability':'InStock'}},url,source,profile)
     if not scoring or scoring['searchScore']<45: return None
@@ -396,7 +427,9 @@ def recheck(listing, get_page, profile):
     try: page=get_page(c['url'])
     except urllib.error.HTTPError as error:
         if error.code not in (404,410): raise
-        if c.get('verificationState')=='candidate': return None
+        if c.get('verificationState')=='candidate':
+            c.update(status='removed',price=None,shipping=None,evidence=f'HTTP {error.code}; search lead page no longer exists')
+            return c
         c.update(status='removed',evidence=f'HTTP {error.code}; prior price retained as last known')
         return c
     state=LiveState();state.feed(page);authoritative=state.state(c['title'])
@@ -579,6 +612,33 @@ def market_context(candidate,baseline):
     return candidate
 
 
+BLOCKING_CODES = (401, 403, 429)
+LEAD_CHECKS_PER_RUN = 40
+
+
+def failure_reason(error):
+    """A short, non-sensitive reason for a failed page check."""
+    if isinstance(error,urllib.error.HTTPError):
+        return f'HTTP {error.code}'+(' (source blocks automated checks)' if error.code in BLOCKING_CODES else '')
+    if isinstance(error,(TimeoutError,socket.timeout)): return 'timed out'
+    if isinstance(error,urllib.error.URLError): return 'network error ('+type(error.reason).__name__+')'
+    return type(error).__name__
+
+
+def recheck_order(due):
+    """Verified offers first, then leads least-recently attempted first.
+
+    lastCheckAttempt is the latest recorded failed attempt; never-attempted leads
+    go first (newest first), so every lead is retried in rotation rather than
+    only the newest 40 forever.
+    """
+    verified=[l for l in due if l.get('verificationState')!='candidate']
+    leads=[l for l in due if l.get('verificationState')=='candidate']
+    leads.sort(key=lambda l:(l.get('firstSeen') or '',l.get('id') or ''),reverse=True)
+    leads.sort(key=lambda l:l.get('lastCheckAttempt') or '')
+    return verified+leads
+
+
 def daily(client):
     profile=client.call('/profile'); due=client.call('/due')['listings']; board=client.call('/listings')
     baseline=board.get('listings',[])
@@ -599,27 +659,46 @@ def daily(client):
     due=list(due_by_id.values())
     by_url={canonical_url(l['url']):l for l in baseline if l.get('url')}
     report={'externalId':'adaptive-watch-'+dt.datetime.now(dt.timezone.utc).isoformat(),'startedAt':dt.datetime.now(dt.timezone.utc).isoformat(),
-            'kind':'combined','status':'succeeded','sources':[],'listings':[],'error':''}
-    failures=[];submitted=set();started=time.monotonic();candidate_checks=0;pages=0;domain_pages=collections.Counter();domain_finds=collections.Counter()
+            'kind':'combined','status':'succeeded','sources':[],'listings':[],'checkFailures':[],'error':''}
+    # failures make the run partial (coverage really missing); notes explain
+    # bounded or recorded outcomes without hiding them.
+    failures=[];notes=[];submitted=set();started=time.monotonic();candidate_checks=0;pages=0;domain_pages=collections.Counter();domain_finds=collections.Counter()
     live=collections.defaultdict(lambda:dict(pagesOpened=0,verifiedOffers=0,staleResults=0))
     key=os.environ.get('BRAVE_SEARCH_API_KEY');openai=os.environ.get('OPENAI_API_KEY')
+    blocked=set();leads=collections.Counter()
+    def record_failure(listing,domain,reason):
+        report['checkFailures'].append({'id':listing['id'],'reason':(domain+' / '+reason)[:500]})
+        if listing.get('verificationState')!='candidate':
+            notes.append('Recheck failed, recorded for retry: '+domain+' / '+reason)
     # Direct revalidation of every active offer takes precedence over discovery.
-    for listing in sorted(due,key=lambda l:l.get('verificationState')=='candidate'):
+    # A failed check is recorded per listing (the server counts consecutive
+    # failed days and marks a persistently unreachable offer unverifiable)
+    # instead of pinning every run to partial.
+    for listing in recheck_order(due):
         if not listing['url']: continue
-        if listing.get('verificationState')=='candidate':
-            if candidate_checks>=40 or time.monotonic()-started>35*60: continue
-            candidate_checks+=1
         domain=urllib.parse.urlsplit(listing['url']).hostname.removeprefix('www.')
+        lead=listing.get('verificationState')=='candidate'
+        if lead:
+            if candidate_checks>=LEAD_CHECKS_PER_RUN or time.monotonic()-started>35*60: continue
+            if domain in blocked:
+                # Do not spend a lead slot on a domain that already refused this run.
+                record_failure(listing,domain,'skipped; source blocked automated checks earlier in this run');leads['skipped']+=1;continue
+            candidate_checks+=1
         try:
             checked=recheck(listing,fetch,profile)
             live[domain]['pagesOpened']+=1
             if checked:
                 link_physical_horn(checked,baseline);market_context(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
                 live[domain]['verifiedOffers']+=1
-                if checked['status']=='removed':live[domain]['staleResults']+=1
-            elif listing.get('verificationState')!='candidate':failures.append('Active recheck unsupported: '+domain)
+                if checked['status']=='removed':live[domain]['staleResults']+=1;leads['retired']+=lead
+                elif lead:leads['verified']+=1
+            else:
+                record_failure(listing,domain,'page did not expose a single verifiable offer (price, currency and stock)');leads['unverified']+=lead
         except Exception as error:
-            if listing.get('verificationState')!='candidate':failures.append('Active recheck failed: '+domain+' / '+type(error).__name__)
+            if isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES:blocked.add(domain)
+            record_failure(listing,domain,failure_reason(error));leads['failed']+=lead
+    if candidate_checks or leads['skipped']:
+        notes.append(f"Lead rotation: {candidate_checks} queued leads checked ({leads['verified']} verified, {leads['retired']} retired as gone, {leads['unverified']} still unverified, {leads['failed']} unreachable), {leads['skipped']} skipped on blocked domains")
     if not key and not openai: failures.append('No search provider key configured')
     else:
         for task in search_plan(profile):
@@ -633,7 +712,7 @@ def daily(client):
                     url=result.get('url','')
                     if not url.startswith('https://'):continue
                     canonical=canonical_url(url);old=by_url.get(canonical)
-                    if canonical in submitted or (old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status']=='active')):continue
+                    if canonical in submitted or (old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status'] in ('active','unverifiable'))):continue
                     domain=urllib.parse.urlsplit(url).hostname.removeprefix('www.')
                     if task['source'].startswith('New source discovery') and domain in known_domains:continue
                     if domain_finds[domain]>=6:continue
@@ -660,7 +739,8 @@ def daily(client):
                         live[domain]['verifiedOffers']+=1
                     else:
                         c=candidate_hint(result,source,profile,markup)
-                        if old and old.get('verificationState')!='candidate':c=None
+                        # Never downgrade a verified offer or resurrect a lead whose page is gone.
+                        if old and (old.get('verificationState')!='candidate' or old['status']=='removed'):c=None
                         if not c:continue
                     c['url']=canonical;report['listings'].append(c);submitted.add(canonical);domain_finds[domain]+=1;check['candidates']+=1
                     # The registry grows only from useful offer/lead evidence,
@@ -670,7 +750,8 @@ def daily(client):
             except Exception as error:
                 check.update(status='failed',note='Search provider failed: '+type(error).__name__);failures.append(check['source']+' search failed')
             report['sources'].append(check);print(json.dumps({'source':check['source'],'status':check['status'],'candidates':check['candidates']}),flush=True)
-    if pages>=240:failures.append('Discovery page budget exhausted; promising unverified leads retained')
+    # The 240-page bound is by design; reaching it is coverage information, not a failure.
+    if pages>=240:notes.append('Discovery page budget (240) reached; remaining promising results retained as unverified leads')
     # Attribute live evidence once per actual domain; query success is separate.
     by_domain={s['domain']:s for s in report['sources'] if s.get('domain')}
     for domain,counts in live.items():
@@ -679,7 +760,8 @@ def daily(client):
             check=dict(source='Live pages / '+domain,domain=domain,status='checked' if counts['pagesOpened'] else 'skipped',candidates=domain_finds[domain],note='Direct listing pages reviewed; stock evidence is stored per offer.' if counts['pagesOpened'] else 'Unverified search lead discovered; no live page accessed.',**counts)
             report['sources'].append(check)
         else:by_domain[domain].update(counts)
-    if failures:report.update(status='partial',error='; '.join(dict.fromkeys(failures)))
+    report['error']='; '.join(dict.fromkeys(failures+notes))[:10000]
+    if failures:report['status']='partial'
     result=client.call('/runs',report);print(json.dumps(result),flush=True)
     return 0 if result.get('status')=='succeeded' else 2
 

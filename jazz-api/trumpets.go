@@ -77,6 +77,12 @@ type trumpetListing struct {
 	PossibleRelists []string          `json:"possibleRelists"`
 	// Live horn-inspiration entries linked to this instrument.
 	InspirationCount int `json:"inspirationCount"`
+	// Consecutive UTC days on which a recheck failed, and the latest failed
+	// attempt and reason; all cleared by a successful check. Failures never
+	// change price or stock facts.
+	CheckFailures    int        `json:"checkFailures"`
+	LastCheckAttempt *time.Time `json:"lastCheckAttempt"`
+	LastCheckError   string     `json:"lastCheckError"`
 }
 type trumpetSourceCheck struct {
 	Source         string `json:"source"`
@@ -99,7 +105,22 @@ type trumpetRunInput struct {
 	Error      string               `json:"error"`
 	Sources    []trumpetSourceCheck `json:"sources"`
 	Listings   []trumpetCandidate   `json:"listings"`
+	// Rechecks that were attempted but could not establish the offer's state
+	// (blocked, timed out, ambiguous page). Recorded per listing; see
+	// recordTrumpetCheckFailures.
+	CheckFailures []trumpetCheckFailure `json:"checkFailures"`
 }
+type trumpetCheckFailure struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// A tracked offer whose recheck fails on this many consecutive UTC days is
+// marked 'unverifiable' instead of staying 'active' (and due) forever.
+const trumpetUnverifiableAfterDays = 3
+
+// Start of the current UTC day, the boundary for daily revalidation.
+const trumpetUTCDay = `date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
 
 func (app *application) trumpetRoutes(mux *http.ServeMux) {
 	browser := map[string]http.HandlerFunc{
@@ -263,7 +284,8 @@ func normalizeTrumpet(c *trumpetCandidate) error {
 		if c.URL == "" {
 			return errors.New("candidate URL required")
 		}
-		if c.Status != "stale" || c.Price != nil || c.Shipping != nil || c.PostedAt != nil || c.SerialNumber != "" {
+		// A lead is "stale" (unverified) or "removed" (its page returned 404/410).
+		if (c.Status != "stale" && c.Status != "removed") || c.Price != nil || c.Shipping != nil || c.PostedAt != nil || c.SerialNumber != "" {
 			return errors.New("unverified candidates cannot assert availability, money, dates or serials")
 		}
 	}
@@ -471,7 +493,9 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		if oldPrice != nil && c.Price != nil && oldCurrency == c.Currency && *c.Price < *oldPrice {
 			discovery = "price drop"
 		}
-		if oldStatus != c.Status {
+		// A blocked offer that verifies again is the same offer: not a rediscovery.
+		restored := oldStatus == "unverifiable" && c.Status == "active"
+		if oldStatus != c.Status && !restored {
 			discovery = "status change"
 			if oldStatus != "active" && c.Status == "active" {
 				discovery = "rediscovered"
@@ -498,13 +522,13 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		}
 		if oldStatus != c.Status {
 			kind := "status change"
-			if oldStatus != "active" && c.Status == "active" {
+			if oldStatus != "active" && c.Status == "active" && !restored {
 				kind = "rediscovered"
 				if oldVerification == "candidate" {
 					kind = "newly discovered"
 				}
 			}
-			meaningful := !acquired && c.VerificationState != "candidate"
+			meaningful := !acquired && c.VerificationState != "candidate" && !restored
 			if oldVerification == "candidate" && c.Status == "active" {
 				var crossposted bool
 				if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_listings WHERE horn_id=$1 AND id<>$2 AND verification_state='verified' AND status='active' AND (currency<>$3 OR price IS NULL OR $4::numeric IS NULL OR price<=$4::numeric*1.03))`, horn, id, c.Currency, c.Price).Scan(&crossposted); err != nil {
@@ -540,12 +564,21 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		}
 	}
 	if c.VerificationState == "candidate" {
-		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3,last_checked=NULL WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState)
+		// A search rediscovery is not a check; only a dead page counts as an attempt.
+		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3,last_checked=NULL,
+   last_check_attempt=CASE WHEN $4='removed' THEN now() ELSE last_check_attempt END WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState, c.Status)
 		return id, err
 	}
 	_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3 WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState)
 	if err != nil {
 		return uuid.Nil, err
+	}
+	if c.SeedKey == "" {
+		// Any verified observation is a successful check: clear the failure streak.
+		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET check_failures=0,last_check_error='',last_check_attempt=NULL WHERE id=$1 AND user_id=$2`, id, user)
+		if err != nil {
+			return uuid.Nil, err
+		}
 	}
 	if c.SeedKey == "" {
 		snapshot, _ := json.Marshal(map[string]any{"title": c.Title, "description": c.Description, "details": c.Details, "seller": c.Seller, "location": c.Location, "images": c.Images})
@@ -578,7 +611,8 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
  'favoredAttributes',f.favored_attributes,'dislikedAttributes',f.disliked_attributes) FROM trumpet_feedback f WHERE f.horn_id=h.id),'{}'),
  COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence,'snapshot',o.snapshot) ORDER BY o.checked_at) FROM trumpet_observations o WHERE o.listing_id=l.id),'[]'),
  COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',e.kind,'oldStatus',e.old_status,'newStatus',e.new_status,'oldPrice',e.old_price,'newPrice',e.new_price,'currency',e.currency,'occurredAt',e.occurred_at,'detail',e.detail) ORDER BY e.occurred_at) FROM trumpet_events e WHERE e.listing_id=l.id),'[]'),
- (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL)
+ (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL),
+ l.check_failures,l.last_check_attempt,l.last_check_error
  FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 ORDER BY l.first_seen DESC`, user)
 	if err != nil {
 		return nil, err
@@ -588,7 +622,7 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
 	for rows.Next() {
 		var l trumpetListing
 		var details, feedback, images, tags, prices, statuses []byte
-		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount); err != nil {
+		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount, &l.CheckFailures, &l.LastCheckAttempt, &l.LastCheckError); err != nil {
 			return nil, err
 		}
 		for _, pair := range []struct {
@@ -706,7 +740,7 @@ func (app *application) trumpetDue(w http.ResponseWriter, r *http.Request) {
 	due := []trumpetListing{}
 	boundary := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, l := range listings {
-		if !l.Acquired && !(l.VerificationState == "candidate" && l.Feedback.InterestState == "pass") && (l.Status == "active" || l.Status == "stale") && (l.LastChecked == nil || l.LastChecked.Before(boundary)) {
+		if !l.Acquired && !(l.VerificationState == "candidate" && l.Feedback.InterestState == "pass") && (l.Status == "active" || l.Status == "stale" || l.Status == "unverifiable") && (l.LastChecked == nil || l.LastChecked.Before(boundary)) {
 			due = append(due, l)
 		}
 	}
@@ -870,8 +904,17 @@ func validateTrumpetRun(input *trumpetRunInput) error {
 	if !containsString([]string{"search", "recheck", "combined"}, input.Kind) || !containsString([]string{"succeeded", "partial", "failed"}, input.Status) {
 		return errors.New("invalid run kind/status")
 	}
-	if len(input.Listings) > 1000 || len(input.Sources) > 200 {
+	if len(input.Listings) > 1000 || len(input.Sources) > 200 || len(input.CheckFailures) > 1000 {
 		return errors.New("run too large")
+	}
+	for i, f := range input.CheckFailures {
+		if _, err := uuid.Parse(f.ID); err != nil {
+			return fmt.Errorf("check failure %d: listing id required", i)
+		}
+		input.CheckFailures[i].Reason = strings.TrimSpace(f.Reason)
+		if input.CheckFailures[i].Reason == "" || len(input.CheckFailures[i].Reason) > 500 {
+			return fmt.Errorf("check failure %d: bounded reason required", i)
+		}
 	}
 	if input.Status == "succeeded" && len(input.Sources) == 0 {
 		return errors.New("successful run requires source coverage")
@@ -960,9 +1003,20 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
+	recorded, unverifiable, err := recordTrumpetCheckFailures(r.Context(), tx, user, input.CheckFailures)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if unverifiable > 0 {
+		input.Error = strings.TrimSpace(fmt.Sprintf("%d listing(s) marked unverifiable after %d consecutive failed daily checks. %s", unverifiable, trumpetUnverifiableAfterDays, input.Error))
+	}
+	// An attempted check whose failure was recorded counts as checked for the
+	// day; only listings nobody tried today keep the run partial.
 	remaining := 0
 	if input.Kind != "search" {
-		err = tx.QueryRow(r.Context(), `SELECT count(*) FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 AND NOT h.acquired AND l.status='active' AND (l.last_checked IS NULL OR l.last_checked < date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`, user).Scan(&remaining)
+		err = tx.QueryRow(r.Context(), `SELECT count(*) FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 AND NOT h.acquired AND l.status='active'
+ AND (l.last_checked IS NULL OR l.last_checked < `+trumpetUTCDay+`) AND (l.last_check_attempt IS NULL OR l.last_check_attempt < `+trumpetUTCDay+`)`, user).Scan(&remaining)
 		if err != nil {
 			app.serverError(w, err)
 			return
@@ -981,7 +1035,52 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"runId": run, "listingIds": ids, "status": input.Status, "remainingActive": remaining})
+	writeJSON(w, 200, map[string]any{"runId": run, "listingIds": ids, "status": input.Status, "remainingActive": remaining, "checkFailures": recorded, "markedUnverifiable": unverifiable})
+}
+
+// recordTrumpetCheckFailures stores failed rechecks without touching price or
+// stock facts. The streak counts UTC days (a same-day rerun does not add one)
+// and resets on any verified observation. After trumpetUnverifiableAfterDays a
+// verified offer becomes 'unverifiable': still due daily, restored to active by
+// a later successful check, never treated as sold. Candidates only record the
+// attempt, which rotates them to the back of the lead queue.
+func recordTrumpetCheckFailures(ctx context.Context, tx pgx.Tx, user uuid.UUID, failures []trumpetCheckFailure) (int, int, error) {
+	recorded, transitioned := 0, 0
+	for _, f := range failures {
+		var streak int
+		var status, verification, currency string
+		var lastChecked *time.Time
+		err := tx.QueryRow(ctx, `UPDATE trumpet_listings l SET
+  check_failures=CASE WHEN l.last_check_attempt >= `+trumpetUTCDay+` AND l.check_failures>0 THEN l.check_failures ELSE l.check_failures+1 END,
+  last_check_attempt=now(),last_check_error=$3
+ FROM trumpet_horns h WHERE h.id=l.horn_id AND l.id=$1 AND l.user_id=$2 AND NOT h.acquired
+  AND l.verification_state IN ('verified','candidate') AND l.status IN ('active','stale','unverifiable')
+  AND (l.last_checked IS NULL OR l.last_checked < `+trumpetUTCDay+`)
+ RETURNING l.check_failures,l.status,l.verification_state,l.last_checked,l.currency`, f.ID, user, f.Reason).Scan(&streak, &status, &verification, &lastChecked, &currency)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // not owned, acquired, retired or already verified today
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		recorded++
+		if verification != "verified" || streak < trumpetUnverifiableAfterDays || (status != "active" && status != "stale") {
+			continue
+		}
+		last := "never"
+		if lastChecked != nil {
+			last = lastChecked.UTC().Format("2006-01-02")
+		}
+		detail := fmt.Sprintf("Unverifiable after %d consecutive failed daily checks (%s). Last verified %s; last known price retained; not marked sold.", streak, f.Reason, last)
+		if _, err = tx.Exec(ctx, `UPDATE trumpet_listings SET status='unverifiable',discovery_type='status change',changed_at=now() WHERE id=$1 AND user_id=$2`, f.ID, user); err != nil {
+			return 0, 0, err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO trumpet_events(listing_id,user_id,kind,currency,old_status,new_status,meaningful,detail) VALUES($1,$2,'status change',$3,$4,'unverifiable',false,$5)`, f.ID, user, currency, status, detail); err != nil {
+			return 0, 0, err
+		}
+		transitioned++
+	}
+	return recorded, transitioned, nil
 }
 
 func isAcquiredTaylor(c trumpetCandidate) bool {

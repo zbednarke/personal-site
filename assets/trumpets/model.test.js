@@ -183,3 +183,42 @@ test("source telemetry counts actual searched domains separately from live pages
   ] } });
   assert.deepEqual(metrics, { searched: 1, live: 1, universe: 2 });
 });
+test("freshness shows the latest run even when it was partial", () => {
+  const board = {
+    serverTime: "2026-10-11T15:00:00Z",
+    latestRun: {
+      status: "partial",
+      kind: "combined",
+      startedAt: "2026-10-11T13:17:00Z",
+      completedAt: "2026-10-11T13:24:38Z",
+      error: "Active recheck failed: ebay.com / HTTPError; Discovery page budget exhausted",
+    },
+    lastSuccess: { combined: "2026-10-07T02:15:02Z", search: "2026-10-06T13:20:00Z" },
+  };
+  const f = M.runFreshness(board);
+  assert.equal(f.at, "2026-10-11T13:24:38Z");
+  assert.equal(f.status, "partial");
+  assert.equal(f.note, "Active recheck failed: ebay.com / HTTPError");
+  assert.equal(f.lastComplete, "2026-10-07T02:15:02Z");
+  assert.equal(f.overdue, false);
+  assert.equal(M.runFreshness({ ...board, serverTime: "2026-10-13T15:00:00Z" }).overdue, true);
+  const ok = M.runFreshness({ ...board, latestRun: { ...board.latestRun, status: "succeeded", error: "Lead rotation: 40 checked" } });
+  assert.equal(ok.note, "complete");
+  assert.equal(M.runFreshness({ ...board, latestRun: { ...board.latestRun, completedAt: null } }).status, "running");
+  assert.deepEqual(M.runFreshness({}), { at: null, status: "none", note: "", lastComplete: null, overdue: true });
+});
+test("failed checks and unverifiable offers explain themselves; dead leads leave the queue", () => {
+  assert.match(M.checkNote(listing("u", { status: "unverifiable", checkFailures: 3, lastCheckError: "ebay.com / HTTP 403" })), /Unverifiable: 3 failed daily checks · ebay\.com \/ HTTP 403/);
+  assert.match(M.checkNote(listing("a", { checkFailures: 1, lastCheckError: "shop.test / timed out" })), /Last check failed \(1 day\)/);
+  assert.equal(M.checkNote(listing("ok")), "");
+  assert.equal(M.checkNote(listing("lead", { verificationState: "candidate", checkFailures: 2 })), "");
+  assert.ok(M.statuses.includes("unverifiable"));
+  const b = M.shape({
+    listings: [
+      listing("lead", { verificationState: "candidate", status: "stale" }),
+      listing("gone", { verificationState: "candidate", status: "removed" }),
+    ],
+  });
+  assert.deepEqual(M.select(b, { view: "candidates" }).map((l) => l.id), ["lead"]);
+  assert.deepEqual(M.select(b, { view: "candidates", status: "removed" }).map((l) => l.id), ["gone"]);
+});
