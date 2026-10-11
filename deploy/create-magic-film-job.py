@@ -76,7 +76,7 @@ def main():
              "--member", f"serviceAccount:{account}", "--role", "roles/secretmanager.secretAccessor", "--quiet"],
             deploy,
             ["gcloud", "run", "jobs", "add-iam-policy-binding", args.job, "--project", args.project,
-             "--region", args.region, "--member", f"serviceAccount:{account}", "--role", "roles/run.invoker", "--quiet"],
+             "--region", args.region, "--member", f"serviceAccount:{account}", "--role", "roles/run.jobsExecutorWithOverrides", "--quiet"],
             ["gcloud", "run", "services", "update", "jazz-api", "--project", args.project, "--region", args.region,
              "--update-env-vars", f"MAGIC_FILM_PROJECT={args.project},MAGIC_FILM_REGION={args.region},MAGIC_FILM_JOB={args.job}", "--quiet"],
         ]
