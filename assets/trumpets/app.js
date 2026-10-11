@@ -89,6 +89,7 @@
       populate("status", M.statuses);
       populate("interest", M.interests);
       render();
+      window.TasteBoard?.boardLoaded();
     } catch (e) {
       report(e.message, true);
       $("#result-count").textContent = "Could not load private board";
@@ -97,7 +98,7 @@
       $("#refresh").disabled = false;
     }
   }
-  // Market sections hide while the Inspiration board is shown.
+  // Market sections hide while the Inspiration or Taste board is shown.
   const marketSections = [".telemetry", "details.coverage", "#filters", ".results-line", "#cards", "#empty"];
   function setView(v, { fromRoute = false } = {}) {
     view = v;
@@ -106,32 +107,41 @@
       ["all", "all"],
       ["candidates", "candidates"],
       ["inspiration", "inspiration"],
+      ["taste", "taste"],
     ]) {
       const button = $("#" + id);
       button.classList.toggle("selected", v === val);
       button.setAttribute("aria-pressed", String(v === val));
     }
-    const inspiring = v === "inspiration";
+    const inspiring = v === "inspiration",
+      tasting = v === "taste";
     for (const selector of marketSections) {
       const node = document.querySelector("main > " + selector);
-      if (node) node.hidden = inspiring;
+      if (node) node.hidden = inspiring || tasting;
     }
     $("#inspiration-board").hidden = !inspiring;
+    $("#taste-board").hidden = !tasting;
     // The fragment never reaches the server; it only makes the board linkable.
     if (!fromRoute) {
-      const target = inspiring ? "#inspiration" : "";
+      const target = inspiring ? "#inspiration" : tasting ? "#taste" : "";
       if (location.hash !== target && !(inspiring && location.hash.startsWith("#inspiration")))
         history.replaceState(null, "", location.pathname + location.search + target);
     }
     window.InspirationBoard?.setActive(inspiring);
-    if (inspiring) return;
+    window.TasteBoard?.setActive(tasting);
+    if (inspiring || tasting) return;
     render();
   }
   // Hash routes: #inspiration, #inspiration/<id>, #inspiration/add?url=…&note=…
   function route() {
     const hash = location.hash || "";
+    if (hash === "#taste") {
+      if ($("#detail").open) $("#detail").close();
+      if (view !== "taste") setView("taste", { fromRoute: true });
+      return;
+    }
     if (!hash.startsWith("#inspiration")) {
-      if (view === "inspiration") setView("today", { fromRoute: true });
+      if (view === "inspiration" || view === "taste") setView("today", { fromRoute: true });
       return;
     }
     if ($("#detail").open) $("#detail").close();
@@ -144,6 +154,9 @@
   window.TrumpetApp = {
     setView,
     view: () => view,
+    // Listings for taste training (rendered as cards; never stored locally).
+    listing: (id) => board.listings.find((l) => l.id === id) || null,
+    loaded: () => board.listings.length > 0,
     // Observatory instruments for inspiration suggestions (no URLs or notes).
     horns() {
       const seen = new Map();
@@ -311,14 +324,18 @@
     body.append(actions);
     const foot = el("div", "card-foot");
     foot.append(
-      el("span", "", `SCORE ${Math.round(l.searchScore)} / 100`),
+      el(
+        "span",
+        "",
+        `SCORE ${Math.round(l.searchScore)} / 100${l.tasteScore && Math.round(l.tasteScore.blended) !== Math.round(l.searchScore) ? ` · LEARNED ${Math.round(l.tasteScore.blended)}` : ""}`,
+      ),
       el(
         "span",
         "",
         l.verificationState === "candidate"
           ? "Price / availability unverified"
           : l.lastChecked
-            ? `Checked ${date(l.lastChecked)}`
+            ? `Checked ${date(l.lastChecked)}${M.verifiedViaLabel(l.verifiedVia) ? " · " + M.verifiedViaLabel(l.verifiedVia) : ""}`
             : "Needs verification",
       ),
     );
@@ -485,6 +502,7 @@
       "Notable features": (l.details.notableFeatures || []).join(", "),
       "First seen": date(l.firstSeen),
       "Last checked": date(l.lastChecked),
+      "Verified via": { api: "Official marketplace API", "search-provider": "Search provider (source-matched web search)" }[l.verifiedVia],
       "Check problem": M.checkNote(l),
       "Posted date": l.postedAt ? date(l.postedAt) : "Unknown",
     })) {
@@ -522,7 +540,7 @@
           el(
             "p",
             "",
-            `${date(o.checkedAt)} · ${M.money(o.price, o.currency)} · ${o.status}${o.evidence ? " · " + o.evidence : ""}`,
+            `${date(o.checkedAt)} · ${M.money(o.price, o.currency)} · ${o.status}${M.verifiedViaLabel(o.verifiedVia) ? " · " + M.verifiedViaLabel(o.verifiedVia) : ""}${o.evidence ? " · " + o.evidence : ""}`,
           ),
         );
       history.append(observations);
@@ -603,6 +621,7 @@
   $("#all").addEventListener("click", () => setView("all"));
   $("#candidates").addEventListener("click", () => setView("candidates"));
   $("#inspiration").addEventListener("click", () => setView("inspiration"));
+  $("#taste").addEventListener("click", () => setView("taste"));
   $("#browse-all").addEventListener("click", () => {
     if (view === "today") setView("all");
     else {

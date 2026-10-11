@@ -16,6 +16,8 @@
     <script defer src="/assets/trumpets/app.js"></script>
     <script defer src="/assets/trumpets/inspiration-model.js"></script>
     <script defer src="/assets/trumpets/inspiration.js"></script>
+    <script defer src="/assets/trumpets/taste-model.js"></script>
+    <script defer src="/assets/trumpets/taste.js"></script>
     <script defer src="/assets/workbench/model.js"></script>
     <script defer src="/assets/workbench/workbench.js"></script>
   </head>
@@ -70,6 +72,8 @@
           Candidates <span id="candidate-count">0</span></button
         ><button id="inspiration" aria-pressed="false">
           Inspiration <span id="inspiration-count">0</span></button
+        ><button id="taste" aria-pressed="false">
+          Taste <span id="taste-count">0</span></button
         ><span class="day-note">SELECTIVE SIGNAL / UTC</span>
       </nav>
       <details class="coverage">
@@ -129,6 +133,7 @@
               <option value="newest">Newest</option>
               <option value="rating">My rating</option>
               <option value="score">Search score</option>
+              <option value="learned">Learned score</option>
               <option value="drop">Biggest drop (%)</option>
               <option value="changed">Recently changed</option>
               <option value="unchecked">Oldest unchecked</option>
@@ -270,6 +275,79 @@
         </div>
         <div id="drop-overlay" class="drop-overlay" hidden aria-hidden="true">
           <span>Drop to add</span>
+        </div>
+      </section>
+      <section id="taste-board" class="taste-board" aria-label="Taste training" hidden>
+        <div class="taste-head">
+          <div class="taste-modes" role="group" aria-label="Training mode">
+            <button type="button" id="taste-mode-swipe" aria-pressed="true">Swipe</button
+            ><button type="button" id="taste-mode-pair" aria-pressed="false">Head to head</button>
+          </div>
+          <p id="taste-keys" class="taste-keys">← not for me · → cool · ↑ must see · Z undo</p>
+        </div>
+        <div class="taste-layout">
+          <div class="taste-stage">
+            <div id="swipe-stage" class="swipe-stage">
+              <div id="swipe-deck" class="swipe-deck" aria-live="polite"></div>
+              <div class="taste-actions" role="group" aria-label="React to this horn">
+                <button type="button" id="swipe-left" class="react left" aria-label="Not for me (left arrow)"><b>✕</b><span>Not for me</span></button
+                ><button type="button" id="taste-undo" class="react undo" aria-label="Undo (Z)" disabled><b>↶</b><span>Undo</span></button
+                ><button type="button" id="swipe-up" class="react up" aria-label="Must see (up arrow)"><b>★</b><span>Must see</span></button
+                ><button type="button" id="swipe-right" class="react right" aria-label="Cool (right arrow)"><b>♥</b><span>Cool</span></button>
+              </div>
+            </div>
+            <div id="pair-stage" class="pair-stage" hidden>
+              <p class="pair-question">Which would you rather own?</p>
+              <div id="pair-cards" class="pair-cards"></div>
+              <div class="taste-actions pair-actions" role="group" aria-label="Choose between the two horns">
+                <button type="button" id="pair-a" class="react" aria-label="Left horn (left arrow)"><b>←</b><span>This one</span></button
+                ><button type="button" id="pair-both" class="react" aria-label="Both (up arrow)"><b>＋</b><span>Both</span></button
+                ><button type="button" id="pair-neither" class="react" aria-label="Neither (down arrow)"><b>∅</b><span>Neither</span></button
+                ><button type="button" id="pair-b" class="react" aria-label="Right horn (right arrow)"><b>→</b><span>This one</span></button
+                ><button type="button" id="pair-undo" class="react undo" aria-label="Undo (Z)" disabled><b>↶</b><span>Undo</span></button>
+              </div>
+            </div>
+            <div class="taste-extras">
+              <div id="taste-chips" class="taste-chips" role="group" aria-label="Tag this horn"></div>
+              <details id="taste-note-box" class="taste-note-box">
+                <summary>＋ Note (optional)</summary>
+                <label class="visually-hidden" for="taste-note">Note</label>
+                <textarea id="taste-note" rows="2" maxlength="4000" placeholder="Love the raw brass, hate the price…"></textarea>
+                <div class="taste-note-actions">
+                  <button type="button" id="taste-note-save" class="primary">Save note</button
+                  ><button type="button" id="taste-voice" class="voice" aria-label="Hold to record a voice note" hidden>🎙 Hold to talk</button>
+                </div>
+              </details>
+              <p id="taste-status" class="taste-status" role="status" aria-live="polite"></p>
+            </div>
+          </div>
+          <aside class="taste-learned" aria-labelledby="taste-learned-title">
+            <h2 id="taste-learned-title">What I’ve learned</h2>
+            <div class="taste-confidence">
+              <span id="taste-confidence-text">Just starting</span>
+              <div class="taste-meter" aria-hidden="true"><i id="taste-confidence-bar"></i></div>
+            </div>
+            <div class="taste-columns">
+              <section><h3>Liked</h3><ul id="taste-liked" class="taste-list"></ul></section>
+              <section><h3>Not for me</h3><ul id="taste-disliked" class="taste-list"></ul></section>
+            </div>
+            <section><h3>Recent changes</h3><ul id="taste-changes" class="taste-list"></ul></section>
+            <section><h3>From your notes</h3><ul id="taste-notes" class="taste-list"></ul></section>
+            <details id="taste-prefs-box" class="taste-prefs-box">
+              <summary>Your stated preferences <span id="taste-prefs-count"></span></summary>
+              <form id="taste-prefs" class="taste-prefs" novalidate>
+                <label>Statements (one per line)<textarea name="statements" rows="3" maxlength="6000" placeholder="Cool horn, not dark horn"></textarea></label>
+                <label>Makers I like<input name="likedMakers" maxlength="2000" placeholder="Separate with commas" /></label>
+                <label>Makers I avoid<input name="dislikedMakers" maxlength="2000" /></label>
+                <label>Traits I like<input name="likedTraits" maxlength="2000" placeholder="Raw brass, upswept bell…" /></label>
+                <label>Traits I avoid<input name="dislikedTraits" maxlength="2000" /></label>
+                <label>Price guidance<input name="priceGuidance" maxlength="500" /></label>
+                <p class="field-help">These start the model off; your swipes and choices can still move it. Search clients read them as written.</p>
+                <button type="submit" class="primary" id="taste-prefs-save">Save preferences</button>
+                <span id="taste-prefs-status" class="save-state" role="status" aria-live="polite"></span>
+              </form>
+            </details>
+          </aside>
         </div>
       </section>
       <footer>

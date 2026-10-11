@@ -90,7 +90,8 @@ function syntheticPng(width, height) {
         ? { executablePath: process.env.CHROMIUM_PATH }
         : {}),
       headless: true,
-      args: ["--no-sandbox"],
+      // A fake microphone for the hold-to-talk voice note check.
+      args: ["--no-sandbox", "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
     });
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1450 },
@@ -189,6 +190,7 @@ function syntheticPng(width, height) {
           details: { finish: "raw nickel" },
           tags: ["raw nickel", "mixed metals", "TEST FIXTURE"],
           images: ["https://fixtures.invalid/horn.svg"],
+          verifiedVia: "search-provider",
         },
       ],
     };
@@ -224,6 +226,8 @@ function syntheticPng(width, height) {
     // Freshness shows the latest run and how it ended, beside the last complete run.
     assert.match(await page.locator("#last-run").innerText(), /SUCCEEDED/);
     assert.equal(await page.locator("#last-run-note").innerText(), "complete");
+    // Verification provenance shows subtly; direct page checks carry no label.
+    assert.equal(await page.locator(".card-foot").filter({ hasText: "via search provider" }).count(), 1);
     assert.notEqual(await page.locator("#last-complete").innerText(), "Never");
     await page.screenshot({ path: path.join(out, "today.png") });
     await page.locator(".coverage > summary").click();
@@ -509,6 +513,140 @@ function syntheticPng(width, height) {
     await page.waitForFunction(() => document.querySelector("#inspiration-detail").open && /1st Harrelson Muse/.test(document.querySelector("#inspiration-detail-title").textContent));
     assert.equal(await page.locator("#detail").evaluate((n) => n.open), false);
     await page.getByRole("button", { name: "Close inspiration" }).click();
+    // ---- Taste training: Swipe and Head to head (synthetic fixtures only) ----
+    const tastePosts = () => page.waitForResponse((r) => r.url().includes("/taste/events") && r.request().method() === "POST" && r.status() < 300);
+    const swipeId = () => page.locator(".swipe-card").getAttribute("data-id");
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.getByRole("button", { name: /^Taste/ }).click();
+    assert.equal(await page.evaluate(() => location.hash), "#taste");
+    assert.equal(await page.locator("#cards").isVisible(), false);
+    assert.equal(await page.locator("#inspiration-board").isVisible(), false);
+    await page.waitForSelector(".swipe-card");
+    assert.match(await page.locator("#taste-confidence-text").innerText(), /Just starting · 0 reactions/);
+    const firstCard = await swipeId();
+    // Keyboard: → is "cool"; the next card is a different horn.
+    await Promise.all([tastePosts(), page.keyboard.press("ArrowRight")]);
+    await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, firstCard);
+    assert.match(await page.locator("#taste-confidence-text").innerText(), /1 reaction\b/);
+    // Undo brings the same card back and removes the reaction.
+    await Promise.all([tastePosts(), page.getByRole("button", { name: "Undo (Z)" }).first().click()]);
+    await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, firstCard);
+    assert.match(await page.locator("#taste-confidence-text").innerText(), /0 reactions/);
+    // A one-tap chip on the card persists as a tag event.
+    await Promise.all([tastePosts(), page.locator("#taste-chips").getByRole("button", { name: "raw brass" }).click()]);
+    assert.equal(await page.locator("#taste-chips").getByRole("button", { name: "raw brass" }).getAttribute("aria-pressed"), "true");
+    // Optional text note on the current card.
+    await page.locator("#taste-note-box > summary").click();
+    await page.locator("#taste-note").fill("Fixture note: love the raw brass, but too expensive");
+    await Promise.all([tastePosts(), page.getByRole("button", { name: "Save note" }).click()]);
+    await page.waitForFunction(() => /Note saved privately/.test(document.querySelector("#taste-status").textContent));
+    assert.match(await page.locator("#taste-notes").innerText(), /Likes raw brass/);
+    // Hold-to-talk: a fake microphone records while the button is held.
+    await page.locator("#taste-voice").hover();
+    await page.mouse.down();
+    await page.waitForFunction(() => document.querySelector("#taste-voice").classList.contains("recording"));
+    await page.waitForTimeout(700);
+    await Promise.all([page.waitForResponse((r) => r.url().includes("/taste/voice?") && r.status() === 201), page.mouse.up()]);
+    await page.waitForFunction(() => document.querySelector("#taste-notes audio"));
+    // Pointer drag: a long drag to the right is a swipe; a short one springs back.
+    const box = await page.locator(".swipe-card").boundingBox();
+    const cx = box.x + box.width / 2,
+      cy = box.y + 120;
+    const beforeDrag = await swipeId();
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 40, cy, { steps: 4 });
+    await page.mouse.up();
+    assert.equal(await swipeId(), beforeDrag, "short drag springs back");
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + 260, cy + 10, { steps: 10 });
+    await Promise.all([tastePosts(), page.mouse.up()]);
+    await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, beforeDrag);
+    // Buttons: must see, not for me.
+    await Promise.all([tastePosts(), page.getByRole("button", { name: "Must see (up arrow)" }).click()]);
+    await Promise.all([tastePosts(), page.getByRole("button", { name: "Not for me (left arrow)" }).click()]);
+    await page.waitForFunction(() => /3 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
+    // A few more "not for me" so a disliked feature is seen on two horns (features
+    // unique to one horn keep their prior).
+    for (let i = 0; i < 3; i++) await Promise.all([tastePosts(), page.keyboard.press("ArrowLeft")]);
+    await page.waitForFunction(() => /6 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
+    assert.ok((await page.locator("#taste-liked li:not(.none)").count()) > 0, "liked traits listed");
+    assert.ok((await page.locator("#taste-disliked li:not(.none)").count()) > 0, "disliked traits listed");
+    // Head to head: tap a side, then answer by keyboard; undo the last choice.
+    await page.getByRole("button", { name: "Head to head" }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".pair-card").length === 2);
+    assert.equal(await page.locator("#swipe-stage").isVisible(), false);
+    const pairBefore = await page.locator(".pair-card").evaluateAll((n) => n.map((c) => c.getAttribute("aria-label")).join("|"));
+    await Promise.all([tastePosts(), page.locator(".pair-card").first().click()]);
+    await page.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.getAttribute("aria-label")).join("|") !== p, pairBefore);
+    await Promise.all([tastePosts(), page.keyboard.press("ArrowDown")]);
+    await Promise.all([tastePosts(), page.keyboard.press("z")]);
+    await page.waitForFunction(() => /7 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
+    await page.getByRole("button", { name: "Swipe", exact: true }).click();
+    await page.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 20));
+    await page.screenshot({ path: path.join(out, "taste-desktop.png") });
+    await page.getByRole("button", { name: "Head to head" }).click();
+    // Owner-stated preferences save as a new version and survive a reload.
+    await page.locator("#taste-prefs-box > summary").click();
+    await page.locator("#taste-prefs [name=statements]").fill("Fixture: cool horn, not dark horn");
+    await page.locator("#taste-prefs [name=likedTraits]").fill("raw brass, upswept bell");
+    await page.locator("#taste-prefs [name=dislikedMakers]").fill("Fixture Avoided Maker");
+    await page.getByRole("button", { name: "Save preferences" }).click();
+    await page.waitForFunction(() => document.querySelector("#taste-prefs-status").textContent === "Saved");
+    await page.reload();
+    await page.waitForSelector(".pair-card, .swipe-card");
+    assert.equal(await page.locator("#taste-board").isVisible(), true, "#taste reopens the taste view");
+    await page.locator("#taste-prefs-box > summary").click();
+    assert.equal(await page.locator("#taste-prefs [name=statements]").inputValue(), "Fixture: cool horn, not dark horn");
+    assert.equal(await page.locator("#taste-prefs [name=likedTraits]").inputValue(), "raw brass, upswept bell");
+    // The learned score now ranks Today (and is visible on cards).
+    await page.getByRole("button", { name: /All tracked/ }).click();
+    assert.ok(await page.locator(".card-foot").filter({ hasText: "LEARNED" }).count() > 0, "learned score shown on cards");
+    assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
+    // Phones: touch screen, 16px fields, 44px targets, no overflow at 375/390/401.
+    const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const mobile = await phone.newPage();
+    mobile.on("pageerror", (e) => errors.push(e.message));
+    await mobile.route("https://fixtures.invalid/horn.svg", (r) => r.fulfill({ contentType: "image/svg+xml", body: fs.readFileSync(path.join(root, "assets/trumpets/horn.svg")) }));
+    await mobile.goto(base + "/trumpets/#taste");
+    await mobile.waitForSelector(".swipe-card");
+    for (const width of [375, 390, 401]) {
+      await mobile.setViewportSize({ width, height: 844 });
+      for (const m of ["Swipe", "Head to head"]) {
+        await mobile.getByRole("button", { name: m, exact: true }).click();
+        await mobile.locator("#taste-note-box").evaluate((d) => (d.open = true));
+        await mobile.locator("#taste-prefs-box").evaluate((d) => (d.open = true));
+        assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `taste ${m} overflow at ${width}px`);
+        const small = await mobile.locator("#taste-board textarea, #taste-board input").evaluateAll((n) => n.filter((x) => x.offsetParent && parseFloat(getComputedStyle(x).fontSize) < 16).length);
+        assert.equal(small, 0, `taste fields under 16px at ${width}px`);
+        const targets = await mobile.locator("#taste-board .react:not([hidden]), #taste-board .chip, .taste-modes button").evaluateAll((n) => n.filter((x) => x.offsetParent).map((x) => x.getBoundingClientRect().height));
+        assert.ok(targets.every((h) => h >= 44), `small taste target at ${width}px: ${targets}`);
+      }
+    }
+    await mobile.setViewportSize({ width: 390, height: 844 });
+    await mobile.getByRole("button", { name: "Swipe", exact: true }).click();
+    await mobile.locator("#taste-note-box").evaluate((d) => (d.open = false));
+    await mobile.locator("#taste-prefs-box").evaluate((d) => (d.open = false));
+    await Promise.all([
+      mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300),
+      mobile.getByRole("button", { name: "Cool (right arrow)" }).tap(),
+    ]);
+    await mobile.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 8));
+    await mobile.screenshot({ path: path.join(out, "taste-swipe-mobile.png") });
+    await mobile.getByRole("button", { name: "Head to head", exact: true }).tap();
+    await mobile.waitForSelector(".pair-card");
+    await mobile.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 8));
+    await mobile.screenshot({ path: path.join(out, "taste-pair-mobile.png") });
+    // Other views stay overflow-free at these widths with the extra tab.
+    await mobile.goto(base + "/trumpets/");
+    await mobile.waitForFunction(() => document.querySelector("#all-count").textContent !== "0");
+    for (const width of [375, 390, 401]) {
+      await mobile.setViewportSize({ width, height: 844 });
+      assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `board overflow at ${width}px`);
+    }
+    await phone.close();
+    await page.setViewportSize({ width: 1440, height: 1100 });
     // An ended session answers API calls with 401 signin_required: the page
     // shows one calm banner that signs in and returns here (no Basic dialog).
     await page.route("**/trumpets/api/v1/trumpets/__signed_out_probe", (r) =>
@@ -571,7 +709,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, undo, chips, text and voice notes, head to head, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

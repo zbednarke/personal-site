@@ -224,12 +224,18 @@ func selectTrumpetAlerts(listings []trumpetListing, raw []json.RawMessage) []jso
 		if !ok || l.Acquired || l.Status == "acquired" || l.VerificationState == "candidate" || l.Feedback.InterestState == "pass" {
 			continue
 		}
-		score := l.SearchScore
+		// The learned (blended) score already counts ratings and favorites as
+		// taste data, so their separate bonuses fade out as the blend phases in
+		// (learnedShare 0 before any reaction: alerts are unchanged).
+		score, bonusShare := l.SearchScore, 1.0
+		if l.TasteScore != nil {
+			score, bonusShare = l.TasteScore.Blended, 1-l.TasteScore.LearnedShare
+		}
 		if l.Feedback.Favorite {
-			score += 15
+			score += 15 * bonusShare
 		}
 		if l.Feedback.Rating != nil {
-			score += float64(*l.Feedback.Rating-3) * 5
+			score += float64(*l.Feedback.Rating-3) * 5 * bonusShare
 		}
 		if e.Kind == "price drop" {
 			score += 12

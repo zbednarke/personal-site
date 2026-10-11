@@ -534,3 +534,193 @@ startup are no-ops. **Deploy the API before the runner**: an older API rejects t
 runner's `checkFailures` field as unknown JSON, and the runner relies on the API to
 record those failures. The VM timer, its schedule and `TRUMPETS_DAILY_ENABLED`
 (unset) are unchanged.
+
+## Taste training (migration 032)
+
+`/trumpets/#taste` turns quick reactions into a taste model that ranks listings
+and steers the daily search. It is phone-first and works by touch, mouse, buttons
+or keyboard.
+
+- **Swipe:** one horn at a time. Right (or →) is "cool", left (←) "not for me",
+  up (↑) "must see"; **Undo** (Z) takes the last reaction back. Short drags spring
+  back. The queue shows unseen horns first (active offers, newest first), then
+  horns not swiped in two weeks, least certain first. Acquired and passed horns
+  are left out.
+- **Head to head:** two horns; tap the one you'd rather own, or **Both** (↑) /
+  **Neither** (↓). Pairs are the ones whose outcome the model is least sure of
+  (largest predictive sd of the difference × p(1−p)); pairs compared in the last
+  two weeks are skipped, and each horn appears at most twice per batch.
+- **Chips** on a card (raw brass, gold plate, patina, engraving, odd bell, vintage,
+  one-off, great value, too pricey, wrong vibe) tag the physical horn. Trait chips
+  add that feature to the horn; "wrong vibe" is recorded for analysis only.
+- **Notes** are optional: type one, or hold **🎙 Hold to talk** (Space/Enter also
+  hold) to record a voice note. Audio is stored in the private bucket under
+  `trumpet-taste/<user>/…` like Commonplace audio and served by an owner-checked
+  ten-minute signed redirect. No transcription. Explicit phrases in typed notes
+  ("love the raw brass, but too expensive") appear as statements in the panel.
+- **What I've learned** lists the strongest liked and disliked makers, model
+  families and traits with weight ± sd, an overall confidence, and the features
+  that moved most against a fit without the last week of reactions. **Your stated
+  preferences** holds owner-editable lines ("cool horn, not dark horn"), liked and
+  avoided makers and traits, and a price note.
+
+**Storage.** `trumpet_taste_events` is append-only (an update trigger refuses
+changes): swipes, pairs, tags (`add`/`remove`, latest wins), notes and undos, which
+reference the event they cancel (once). A `clientId` makes each write idempotent.
+Events reference offers through composite owner foreign keys; the model groups them
+by physical horn. `trumpet_taste_preferences` keeps every saved version; the latest
+is current. Both tables are created by replay-safe `032_trumpet_taste.sql`.
+
+**Model** (`jazz-api/trumpets_taste.go`). Features per offer:
+maker, model family, era (year or "vintage"), finish/metal, bell and leadpipe traits,
+engraving, one-off/custom, provenance, price relative to the median of ≥3 distinct
+same-currency verified horns (same maker first), source domain (eBay sites are one
+source), plus the owner's chips. A Bradley-Terry (pairs) / logistic (swipes; "must
+see" counts double, both/neither half each) model with a Gaussian prior (sd 1) is
+fitted by Newton's method (at most 10 iterations, warm-started from the previous fit);
+the Laplace covariance gives each weight's sd. Features seen on fewer than two
+distinct horns stay at their prior (a feature unique to one horn cannot be told
+apart from it), which keeps the matrix small. Existing ratings (4–5 liked, 1–2
+disliked), favorites and passes count half as data. Reactions decay with a one-year
+half-life. Stated likes/dislikes are prior means of ±0.5. The fit is cached in
+memory per owner, keyed by the latest reaction, the preferences' revision, the
+listings' model inputs and the UTC day, so board loads reuse it; "Recent changes"
+compares it with a separately cached fit on reactions older than a week.
+
+The **learned score** is `rule score + 40 × confidence × share × (2σ(affinity) − 1)`,
+where confidence = n / (n + 8) over the data behind the fit (plus up to eight stated
+preferences) and **share** phases the blend in over the owner's first 10 taste
+reactions (swipes and head-to-head picks): with none it is exactly the rule score, so
+deploying with only existing ratings changes no alert and Today's **65 threshold keeps
+its meaning**. Today's alerts and the "Learned score" sort use it, and cards show
+`LEARNED n` when it differs. Because ratings and favorites are already in the learned
+score, the alert ranking's separate favorite (+15) and rating (±5 per star) bonuses
+are scaled by `1 − share`.
+
+**API.** Browser (gateway auth, owner-scoped, `private, no-store`; writes need
+`Content-Type: application/json` and pass the same-site/Origin checks):
+`GET taste` (model, weights, changes, scores, queue, pairs, tags, recent events,
+preferences), `POST taste/events` (`{clientId, kind: swipe|pair|tag|note|undo, …}`;
+201, or 200 on replay; 409 for a second undo), `POST taste/voice?clientId=&listingId=
+[&otherListingId=][&mode=][&durationMs=]` with a raw audio body (≤ 10 MB; the audio
+content type is not CORS-safelisted, so cross-site requests still preflight),
+`GET taste/voice/{eventId}` (404 once the note is undone; undoing a voice note also
+deletes its audio, best-effort), `GET|PUT taste/preferences` (full replacement; optional
+`expectedRevision` → 409 when stale). Machine (bearer token): `GET machine/taste`
+(weights with sd and counts, confidence, number of stated preferences; no listing
+ids, notes or audio), `GET|PUT machine/preferences` (to seed the owner's summary),
+and `GET machine/profile` now includes `taste` and `preferences`.
+
+**Search steering** (`tools/trumpets/runner.py`, class `Taste`). Each maker, trait and
+source gets an explore/exploit value `weight + 0.5 × sd` (an upper confidence bound:
+liked and still-uncertain options both earn budget); stated likes add 0.5, stated
+dislikes subtract 1. Something is **consistently rejected** when the owner said so,
+or after ≥ 2 reactions its weight + sd is still below zero. Within the unchanged
+budgets (36 domains, 240 pages, 35 minutes): up to six favored sources are scheduled
+first and searched first, rejected sources only fill otherwise-empty slots, and the
+per-domain page cap is 16 for favored, 6 for rejected and 12 otherwise. Maker phrases
+are ranked by value (the top three appear twice in the site-query rotation; rejected
+ones drop out). The six maker searches become the three best, two rotating and, when
+the owner likes particular traits, one trait search ("raw brass upswept bell …").
+Exploration queries, the 25% exploration share and new-source discovery are
+unchanged. With no reactions or preferences the plan is identical to before. The run
+notes give only counts ("Taste steering: n favored and m demoted").
+
+**Marketplaces and blocked sites.** The owner's most valuable sources, Reverb and
+eBay, refuse the VM's HTML requests (403), so each listing is checked in this order:
+official API first, then the page itself, then a source-matched search-provider check.
+Every result carries its provenance (`verifiedVia`: `direct`, `api` or
+`search-provider`), stored per observation (`trumpet_observations.verified_via`) and
+shown subtly on cards ("via official API" / "via search provider") and in the detail's
+observations; direct page checks have no label.
+
+- **Reverb (public API, no key).** `https://api.reverb.com/api/listings/<id>` with
+  `Accept: application/hal+json` and `Accept-Version: 3.0` gives state (`live` →
+  active, `sold`/`ordered` → sold, `ended`/`suspended` → removed, anything else stays
+  unverified), price and currency (refetched with `X-Display-Currency` set to the
+  listing's own currency, so a converted display price is never stored), US shipping
+  in the same currency, published date, photos, shop and location. Ids come from any
+  `reverb.com/item/<id>-slug` link, including `applink.reverb.com`, `m.reverb.com` and
+  links wrapped in a query parameter. Discovery runs every day: newest first in the
+  Trumpets category (`category_uuid` `d1c7768e-…`), price ≥ 800, one search per term
+  from the taste model's plan (its three best makers, two rotating makers, liked
+  traits, and one search for everything newest). API 404/410 → removed. Rate limits
+  and 5xx get at most three attempts with backoff (`Retry-After` honoured, ≤ 30 s).
+- **eBay (search provider, no developer key).** eBay pages always refuse the VM, and
+  there are no eBay developer keys, so OpenAI web search is the primary path: every
+  run sends the same terms as `site:ebay.com … Bb trumpet` queries through the
+  Responses `web_search` tool (eBay results from the general plan join them) and
+  screens each `ebay.com/itm/<12-digit id>` result with the check below. A new eBay
+  item found this way becomes an unverified **lead** (Candidates), never a
+  verified-active offer: no price, stock or date is asserted. Tracked verified eBay
+  offers skip the doomed page fetch and go straight to that check; eBay leads wait
+  for review without using the daily lead-check slots (a run note counts them).
+  Only eBay's own domains (ebay.com, .co.uk, .de, .fr, .it, .es, .ca, .com.au, .ie,
+  .at, .ch, .nl, .be, .pl and their subdomains) and reverb.com count; lookalike hosts
+  never match.
+  *Optional:* the runner also contains a Browse API client (application token from
+  `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET`, cached in memory until shortly before expiry
+  and never logged; `item_summary/search` in category 16214 "Trumpets", newly
+  listed, fixed-price/auction/best-offer, USD price filter; `get_item_by_legacy_id` for
+  checks). It is used only if those variables are ever set; nothing else changes.
+- **Search-provider check** (`verify_via_search`). When a page answers 401/403/429 or
+  a bot challenge (and for eBay, as above), one Responses call with `web_search`
+  (`search_context_size: medium`, `include: web_search_call.action.sources`) asks for
+  that exact URL's state (available, sold, ended, unknown), title, price, currency and
+  shipping as strict JSON (structured output schema). The answer is accepted **only**
+  when a `search` action's results include the same listing (same canonical URL, or
+  the same eBay / Reverb item id), the answer carries a `url_citation` of that same
+  listing, **and** the JSON matches the schema. The model opening the given URL itself
+  (`open_page` / `find_in_page`) is not evidence. Otherwise the check is recorded as
+  failed, as before; generated prose is never evidence. "Available" confirms an
+  already verified offer (and a stated price with its currency). A **single** "sold"
+  or "ended" never retires an offer: it is recorded as a failed check ("search
+  provider reports ended (unconfirmed)"), and only the same report on a later UTC day
+  marks it sold/removed. Model: `TRUMPETS_VERIFY_MODEL`
+  (default: `TRUMPETS_SEARCH_MODEL`, itself `gpt-4.1-mini`). At most
+  `TRUMPETS_VERIFY_LIMIT` calls per run (default 60), spent on active, high-score
+  tracked offers first, then on new eBay results. Logs and run notes hold counts only.
+- **Coverage.** "Reverb API" and "eBay via web search" (or "eBay Browse API") appear in
+  source coverage with their searches, records inspected and verified offers, under
+  the `reverb.com` and `ebay.com` domains. A failed Reverb/eBay search makes the run
+  partial like any search-provider failure; eBay discovery without `OPENAI_API_KEY`
+  is recorded as skipped.
+
+If the API predates the new `verifiedVia` report field (it answers 400 "invalid run
+JSON" / unknown field), the runner resubmits the run once without it, so deploying
+the runner first only loses the provenance labels.
+
+Tests use a fake Responses endpoint and fictional recorded fixtures in
+`tools/trumpets/fixtures/` (a source match and a mismatch; Reverb and eBay shapes).
+
+**Runner environment** (`/etc/trumpets/runner.env`, root-owned, mode 0600; unchanged
+path): `TRUMPETS_API_URL`, `TRUMPETS_MACHINE_TOKEN`, `OPENAI_API_KEY` (already there)
+and/or `BRAVE_SEARCH_API_KEY`. Optional: `TRUMPETS_SEARCH_MODEL`,
+`TRUMPETS_VERIFY_MODEL`, `TRUMPETS_VERIFY_LIMIT`. Reverb needs no key. Only if eBay
+developer keys are ever created: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET` (an eBay
+developer *production* keyset; the application token uses the public
+`https://api.ebay.com/oauth/api_scope`) and optionally `EBAY_TRUMPET_CATEGORY_ID`
+(default 16214).
+
+**Accessories.** The accessory filter now rejects only items that *are* accessories
+(no horn word left once accessory phrases are removed, or an accessory is the head
+noun before "with", ",", "+", "includes", "for"…). "Bb trumpet, mod kit, 5mm
+mouthpiece" and "trumpet with extra leadpipe" are horns; "trumpet mouthpiece",
+"leadpipe for trumpet" and "piccolo trumpet" are not.
+
+**Deploy.** API first: the deploy workflow's Cloud SQL backup, then startup applies
+`032_trumpet_taste.sql` (two new tables, indexes, an update trigger, and the
+`verified_via` column on `trumpet_observations`, defaulting existing rows to
+`direct`). No new Cloud Run environment variables, secrets or Caddy routes:
+everything sits under the existing `/trumpets/api/*` proxy and private bucket.
+**Deploy the API before the runner** (the new runner sends `verifiedVia`; against an
+older API it resubmits without it, losing only provenance). An older runner keeps
+working against the new API.
+Then reinstall the runner on the VM (`/opt/trumpets/runner.py`; the service, timer
+and env file path are unchanged; it now also reaches `api.reverb.com`, and
+`api.openai.com` as before). Optionally seed preferences with
+`PUT /v1/trumpets/machine/preferences`.
+
+[Taste on desktop](screenshots/taste-desktop.png) ·
+[Swipe on a phone](screenshots/taste-swipe-mobile.png) ·
+[Head to head on a phone](screenshots/taste-pair-mobile.png) (synthetic fixtures)

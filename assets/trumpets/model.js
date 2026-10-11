@@ -98,6 +98,10 @@
           : first || status;
     return { at, status, note, lastComplete: success, overdue };
   }
+  // Provenance of the latest verified observation; the page itself is the default.
+  function verifiedViaLabel(v) {
+    return v === "api" ? "via official API" : v === "search-provider" ? "via search provider" : "";
+  }
   function checkNote(l) {
     if (l.status === "unverifiable")
       return `Unverifiable: ${l.checkFailures || 0} failed daily checks${l.lastCheckError ? " · " + l.lastCheckError : ""}. Last verified price shown; availability unknown.`;
@@ -166,6 +170,9 @@
       newest: (a, b) => time(b.firstSeen) - time(a.firstSeen),
       rating: (a, b) => (b.feedback.rating || 0) - (a.feedback.rating || 0),
       score: (a, b) => b.searchScore - a.searchScore,
+      // Rule score blended with the learned taste (what Today's alerts use).
+      learned: (a, b) =>
+        (b.tasteScore?.blended ?? b.searchScore) - (a.tasteScore?.blended ?? a.searchScore),
       drop: (a, b) => biggestDrop(b) - biggestDrop(a),
       changed: (a, b) => time(b.changedAt) - time(a.changedAt),
       unchecked: (a, b) => time(a.lastChecked) - time(b.lastChecked),
@@ -240,6 +247,7 @@
     lastSuccessFor,
     runFreshness,
     checkNote,
+    verifiedViaLabel,
     shape,
     select,
     badges,

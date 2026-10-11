@@ -1,0 +1,25 @@
+{
+  "_fixture": "FICTIONAL. Shape recorded from Reverb's public listings API for a sold item priced in EUR; the API returned it in the caller's display currency unless X-Display-Currency was sent. Every value is invented.",
+  "id": 900000002,
+  "make": "AR Resonance",
+  "model": "Fixture Feroce",
+  "finish": "Raw Nickel",
+  "year": "",
+  "title": "AR Resonance Feroce Bb trumpet raw nickel · FICTIONAL FIXTURE",
+  "description": "Fictional fixture: boutique Bb trumpet, raw nickel, mixed metals.",
+  "condition": { "display_name": "Very Good", "slug": "very-good" },
+  "price": { "amount": "4100.00", "amount_cents": 410000, "currency": "EUR", "display": "€4,100" },
+  "listing_currency": "EUR",
+  "state": { "slug": "sold", "description": "Sold" },
+  "published_at": "2026-09-02T10:00:00+02:00",
+  "shop_name": "Fixture Euro Brass",
+  "location": { "locality": "Fixtureburg", "country_code": "DE", "display_location": "Fixtureburg, DE" },
+  "shipping": {
+    "rates": [
+      { "region_code": "US", "rate": { "amount": "80.00", "currency": "EUR" } },
+      { "region_code": "DE", "rate": { "amount": "15.00", "currency": "EUR" } }
+    ]
+  },
+  "photos": [],
+  "_links": { "web": { "href": "https://reverb.com/item/900000002-fictional-fixture" } }
+}
