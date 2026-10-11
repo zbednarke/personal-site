@@ -1,0 +1,36 @@
+{
+  "_fixture": "FICTIONAL. Shape recorded from Reverb's public GET https://api.reverb.com/api/listings/{id} (Accept-Version 3.0); every value is invented. No real listing, shop or person.",
+  "id": 900000001,
+  "make": "Taylor",
+  "model": "Chicago II Fixture",
+  "finish": "Raw Brass",
+  "year": "2019",
+  "title": "Taylor Chicago II Bb Trumpet raw brass upswept · FICTIONAL FIXTURE",
+  "description": "<p>Fictional fixture: professional Bb trumpet, raw brass, upswept bell, with original hard case.</p>",
+  "condition": { "uuid": "00000000-0000-4000-8000-000000000001", "display_name": "Excellent", "slug": "excellent" },
+  "price": { "tax_included": false, "amount": "3100.00", "amount_cents": 310000, "currency": "USD", "symbol": "$", "display": "$3,100" },
+  "buyer_price": { "tax_included": false, "amount": "3100.00", "amount_cents": 310000, "currency": "USD", "symbol": "$", "display": "$3,100" },
+  "listing_currency": "USD",
+  "inventory": 1,
+  "has_inventory": false,
+  "live": true,
+  "offers_enabled": true,
+  "state": { "slug": "live", "description": "Live" },
+  "published_at": "2026-10-10T08:06:18-04:00",
+  "created_at": "2026-10-10T07:57:34-04:00",
+  "shop_name": "Fixture Brass Shop",
+  "shop_id": 1,
+  "location": { "locality": "Fixture City", "country_code": "US", "display_location": "Fixture City, US" },
+  "shipping": {
+    "free_expedited_shipping": false,
+    "local": false,
+    "rates": [
+      { "region_code": "US", "rate": { "amount": "45.00", "amount_cents": 4500, "currency": "USD", "symbol": "$", "display": "$45" }, "carrier_calculated": false, "regional": false },
+      { "region_code": "XX", "rate": { "amount": "120.00", "amount_cents": 12000, "currency": "USD", "symbol": "$", "display": "$120" }, "carrier_calculated": false, "regional": false }
+    ]
+  },
+  "photos": [
+    { "_links": { "full": { "href": "https://fixtures.invalid/reverb/photo-1.jpg" }, "large_crop": { "href": "https://fixtures.invalid/reverb/photo-1-crop.jpg" } } }
+  ],
+  "_links": { "web": { "href": "https://reverb.com/item/900000001-fictional-fixture" }, "self": { "href": "https://api.reverb.com/api/listings/900000001" } }
+}

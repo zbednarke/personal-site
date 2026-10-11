@@ -222,3 +222,16 @@ test("failed checks and unverifiable offers explain themselves; dead leads leave
   assert.deepEqual(M.select(b, { view: "candidates" }).map((l) => l.id), ["lead"]);
   assert.deepEqual(M.select(b, { view: "candidates", status: "removed" }).map((l) => l.id), ["gone"]);
 });
+test("learned score sort and verification provenance labels", () => {
+  const b = M.shape({
+    listings: [
+      listing("rule-high", { searchScore: 90, tasteScore: { blended: 70 } }),
+      listing("learned-high", { searchScore: 60, tasteScore: { blended: 85 } }),
+      listing("untrained", { searchScore: 75 }),
+    ],
+  });
+  assert.deepEqual(M.select(b, { view: "all", sort: "learned" }).map((l) => l.id), ["learned-high", "untrained", "rule-high"]);
+  assert.equal(M.verifiedViaLabel("search-provider"), "via search provider");
+  assert.equal(M.verifiedViaLabel("api"), "via official API");
+  assert.equal(M.verifiedViaLabel("direct"), "");
+});

@@ -3,6 +3,7 @@
 Secrets are environment variables; feedback is never logged or cached.
 """
 import argparse
+import base64
 import copy
 import datetime as dt
 import html
@@ -41,18 +42,34 @@ SOURCES = {
 USER_AGENT = 'TrumpetObservatory/1.0 (+private instrument research; daily checks)'
 ALLOWED_FIELDS = {'id','hornId','maker','model','serialNumber','details','title','description','url','source','sourceListingId','seller','location','price','currency','shipping','postedAt','status','discoveryType','images','searchScore','searchRationale','tags','evidence','verificationState'}
 MAKERS = ['AR Resonance','Del Quadro','Van Laar','Harrelson','Monette','Inderbinen','Blackburn','Calicchio','Schilke','Taylor','Adams','Lawler','LOTUS','Eclipse','Benge','GERDT','BAC','Olds','Selmer','Besson','Yamaha','Bach']
-# Accessories and parts sold under instrument makers' names are not horns.
-ACCESSORY = (r'cornets?|flugelhorns?|trombones?|mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only|piccolo'
+# Accessories and parts sold under instrument makers' names are not horns, but a
+# horn whose title lists what comes with it ("Bb trumpet, mod kit, 5mm
+# mouthpiece", "trumpet with extra leadpipe") is still a horn.
+ACCESSORY = (r'mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only'
              r'|backbores?|first aid|lead ?pipes?|valve (?:caps?|tops?|buttons?|guides?)|finger buttons?|trumpet tops?')
-# A case or bag is the item only when nothing outside the case phrase names a horn:
+# Other instruments named in the item's own phrase are never a Bb trumpet.
+OTHER_INSTRUMENTS = r'cornets?|flugelhorns?|trombones?|piccolo'
 # "Taylor trumpet case" is a case, "trumpet with original hard case" is a horn.
 CASE_PHRASE = r'\b(?:trumpet\s+)?(?:(?:gig|hard|soft|double|single|flight|carrying)\s+)?(?:cases?|bags?)\b'
+HORN_WORD = r'\btrumpets?\b|\btrompette\b|\btrompete\b|\btrompet\b|トランペット'
+# What follows these introduces included extras, not the item itself.
+INCLUDED = r'\s*(?:,|;|\(|\+|&|\bw/|\bwith\b|\bplus\b|\band\b|\bin\b|\bfor\b|\bfits\b|\bincl(?:udes?|uding|\.)?|\s[-–—|]\s)\s*'
 
 
 def is_accessory(subject, extra=''):
-    if re.search(r'\b(?:'+ACCESSORY+(extra and '|'+extra)+r')\b',subject): return True
-    if not re.search(CASE_PHRASE,subject): return False
-    return not re.search(r'\btrumpet\b|\btrompette\b|\btrompet\b',re.sub(CASE_PHRASE,' ',subject))
+    """True only when the item itself is the accessory: no horn word is left once
+    accessory phrases are removed, or an accessory is the head noun of the
+    item's own phrase (the part before "with", ",", "+", "includes"...)."""
+    subject=subject.lower()
+    head=re.split(INCLUDED,subject,maxsplit=1)[0]
+    if re.search(r'\b(?:'+OTHER_INSTRUMENTS+(extra and '|'+extra)+r')\b',head): return True
+    accessory=r'\b(?:'+ACCESSORY+r')\b|'+CASE_PHRASE
+    if not re.search(accessory,subject): return False
+    if not re.search(HORN_WORD,re.sub(accessory,' ',subject)): return True
+    horns=[m.end() for m in re.finditer(HORN_WORD,head)]
+    parts=[m.start() for m in re.finditer(accessory,head)]
+    # "Taylor trumpet mouthpiece": the accessory follows the horn word.
+    return bool(parts) and (not horns or max(parts)>=max(horns))
 
 
 TRAITS = ['raw brass','raw nickel','aged brass','patina','engraving','gold plate','mixed metals','black hardware','upswept','one-off','artist','provenance','custom','handcraft','oiram','antique','engineering','rare','vintage','unusual bell','artist model','prototype','discontinued']
@@ -129,12 +146,10 @@ def canonical_url(url):
 
 def listing_id(url):
     p=urllib.parse.urlsplit(url)
-    if 'ebay.' in p.hostname:
-        match=re.search(r'/itm/(?:[^/]+/)?([0-9]{9,})',p.path)
-        return match[1] if match else ''
-    if p.hostname.removeprefix('www.')=='reverb.com':
-        match=re.search(r'/item/([0-9]+)',p.path)
-        return match[1] if match else ''
+    if 'ebay.' in (p.hostname or ''):
+        return ebay_id(url)
+    if (p.hostname or '').endswith('reverb.com'):
+        return reverb_id(url)
     return ''
 
 
@@ -350,6 +365,234 @@ def shopify_offer(url, source, profile, get_page=fetch):
     return dict(c,evidence='Shopify product JSON / explicit variant stock and cart currency') if c else None
 
 
+RETRY_CODES=(429,500,502,503,504)
+
+
+def api_json(url, headers=None, data=None, get=None, attempts=3, sleep=None):
+    """GET/POST a JSON API with bounded backoff on rate limits and server errors.
+    Retry-After is honoured up to 30 seconds. Other HTTP errors are raised."""
+    get=get or fetch;sleep=sleep or time.sleep
+    for attempt in range(attempts):
+        try:
+            body=get(url,dict(headers or {}),data) if data is not None else get(url,dict(headers or {}))
+            return json.loads(body)
+        except urllib.error.HTTPError as error:
+            if error.code not in RETRY_CODES or attempt==attempts-1: raise
+            retry=(error.headers or {}).get('Retry-After') if error.headers else None
+            sleep(min(30,int(retry)) if retry and str(retry).isdigit() else 2*(attempt+1))
+
+
+# ---- Reverb: public listings API (item pages block the VM; the API does not) ----
+REVERB_API='https://api.reverb.com/api/listings/'
+REVERB_SEARCH='https://api.reverb.com/api/listings'
+REVERB_HEADERS={'Accept':'application/hal+json','Accept-Version':'3.0'}
+# Band and Orchestra / Brass / Trumpets.
+REVERB_TRUMPETS='d1c7768e-068d-4b0f-8e3d-b4e7be71a751'
+# Reverb listing states: live is for sale; sold/ordered went to a buyer;
+# ended/suspended were withdrawn. Anything else (draft, unknown) stays unverified.
+REVERB_STATES={'live':'active','sold':'sold','ordered':'sold','ended':'removed','suspended':'removed'}
+
+
+def reverb_id(url):
+    """The item id of any reverb.com/item/<id>-slug URL, including app links
+    (applink.reverb.com, m.reverb.com) and links wrapped in a query parameter."""
+    p=urllib.parse.urlsplit(url or '')
+    host=(p.hostname or '').lower()
+    if host!='reverb.com' and not host.endswith('.reverb.com'): return ''
+    match=re.search(r'/item/([0-9]+)',p.path)
+    if match: return match[1]
+    for values in urllib.parse.parse_qs(p.query).values():
+        for value in values:
+            if 'reverb.com/item/' in value and value!=url:
+                found=reverb_id(value)
+                if found: return found
+    return ''
+
+
+def is_reverb(url):
+    return bool(reverb_id(url))
+
+
+def reverb_item(item, get_api=None, sleep=None):
+    """GET /api/listings/{id} in the listing's own currency (the API converts to
+    a display currency guessed from the caller; a mismatch is refetched with
+    X-Display-Currency)."""
+    data=api_json(REVERB_API+item,REVERB_HEADERS,get=get_api,sleep=sleep)
+    native=str(data.get('listing_currency') or '').upper()
+    shown=str((data.get('price') or {}).get('currency') or '').upper()
+    if re.fullmatch('[A-Z]{3}',native) and shown and shown!=native:
+        data=api_json(REVERB_API+item,dict(REVERB_HEADERS,**{'X-Display-Currency':native}),get=get_api,sleep=sleep)
+    return data
+
+
+def reverb_listing(url, get_api=None, sleep=None):
+    item=reverb_id(url)
+    return reverb_item(item,get_api,sleep) if item else None
+
+
+def reverb_search(term, get_api=None, price_min=800, per_page=24, sleep=None):
+    """Newest trumpets matching a maker/trait term (empty term = all newest)."""
+    params={'category_uuid':REVERB_TRUMPETS,'price_min':price_min,'sort':'published_at|desc','per_page':per_page}
+    if term: params['query']=term
+    return api_json(REVERB_SEARCH+'?'+urllib.parse.urlencode(params),REVERB_HEADERS,get=get_api,sleep=sleep).get('listings') or []
+
+
+def reverb_facts(data):
+    """State, price, currency, shipping and post date from Reverb's API JSON."""
+    state=str((data.get('state') or {}).get('slug') or '').lower()
+    status=REVERB_STATES.get(state)
+    if status is None: return None
+    price_info=data.get('price') or {}
+    currency=str(price_info.get('currency') or '').upper()
+    if not re.fullmatch('[A-Z]{3}',currency): return None
+    native=str(data.get('listing_currency') or currency).upper()
+    if native!=currency: return None  # never store a converted display price
+    price=amount(price_info.get('amount'))
+    shipping=None
+    for rate in (data.get('shipping') or {}).get('rates') or []:
+        value=(rate or {}).get('rate') or {}
+        if rate.get('region_code')=='US' and str(value.get('currency','')).upper()==currency:
+            shipping=amount(value.get('amount'))
+    posted=None
+    if isinstance(data.get('published_at'),str):
+        try:posted=dt.datetime.fromisoformat(data['published_at'].replace('Z','+00:00')).astimezone(dt.timezone.utc).isoformat()
+        except ValueError:pass
+    images=[]
+    for photo in data.get('photos') or []:
+        href=((photo or {}).get('_links') or {}).get('full',{}).get('href','')
+        if isinstance(href,str) and href.startswith('https://'):images.append(href)
+    location=(data.get('location') or {}).get('display_location','') if isinstance(data.get('location'),dict) else ''
+    return dict(state=state,status=status,price=price,currency=currency,shipping=shipping,postedAt=posted,images=images[:20],
+                seller=str(data.get('shop_name') or ''),location=str(location or ''),sourceListingId=str(data.get('id') or ''))
+
+
+def reverb_web_url(data, fallback=''):
+    href=((data.get('_links') or {}).get('web') or {}).get('href','')
+    return canonical_url(href) if reverb_id(href) else fallback
+
+
+def reverb_offer_from(data, url, source, profile):
+    facts=reverb_facts(data)
+    if not facts or facts['status'] not in ('active','sold'): return None
+    p={'name':str(data.get('title') or ''),'description':str(data.get('description') or ''),'brand':{'name':str(data.get('make') or '')},
+       'model':str(data.get('model') or '') or None,'productID':facts['sourceListingId'],'image':facts['images'],'datePublished':data.get('published_at'),
+       'offers':{'price':facts['price'],'priceCurrency':facts['currency'],'availability':'InStock' if facts['status']=='active' else 'SoldOut','seller':{'name':facts['seller']}}}
+    c=normalize_product(p,url,source,profile)
+    if not c: return None
+    c.update(shipping=facts['shipping'],location=facts['location'],postedAt=facts['postedAt'],evidence='Reverb public listings API / state '+facts['state'])
+    return c
+
+
+def reverb_offer(url, source, profile, get_api=None):
+    """A verified offer from Reverb's public listings API, or None."""
+    data=reverb_listing(url,get_api)
+    if data is None: return None
+    # App links resolve to the item's web URL; reverb.com URLs keep their identity.
+    host=(urllib.parse.urlsplit(url).hostname or '').lower().removeprefix('www.')
+    return reverb_offer_from(data,url if host=='reverb.com' else reverb_web_url(data,url),source,profile)
+
+
+# ---- eBay: official Browse API with an application (client-credentials) token ----
+EBAY_TOKEN_URL='https://api.ebay.com/identity/v1/oauth2/token'
+EBAY_BROWSE='https://api.ebay.com/buy/browse/v1'
+EBAY_SCOPE='https://api.ebay.com/oauth/api_scope'
+# Musical Instruments & Gear / Brass / Trumpets (override with EBAY_TRUMPET_CATEGORY_ID).
+EBAY_TRUMPETS='16214'
+
+
+def ebay_id(url):
+    p=urllib.parse.urlsplit(url or '')
+    host=(p.hostname or '').lower().removeprefix('www.')
+    if not (host.startswith('ebay.') or '.ebay.' in host): return ''
+    match=re.search(r'/itm/(?:[^/]+/)?([0-9]{9,15})(?:[/?]|$)',p.path+'/')
+    return match[1] if match else ''
+
+
+class EbayAPI:
+    """Browse API client. The token is cached in memory until shortly before it
+    expires and is never logged or written anywhere."""
+    def __init__(self, client_id, client_secret, get=None, clock=None, sleep=None, marketplace='EBAY_US'):
+        self._credentials=base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode()
+        self.get=get;self.clock=clock or time.monotonic;self.sleep=sleep;self.marketplace=marketplace
+        self._token=None;self._expires=0;self.category=os.environ.get('EBAY_TRUMPET_CATEGORY_ID',EBAY_TRUMPETS)
+    @classmethod
+    def from_env(cls, **kw):
+        client_id=os.environ.get('EBAY_CLIENT_ID','').strip();secret=os.environ.get('EBAY_CLIENT_SECRET','').strip()
+        return cls(client_id,secret,**kw) if client_id and secret else None
+    def __repr__(self): return 'EbayAPI(<credentials hidden>)'
+    def token(self):
+        if self._token and self.clock()<self._expires: return self._token
+        body=urllib.parse.urlencode({'grant_type':'client_credentials','scope':EBAY_SCOPE}).encode()
+        payload=api_json(EBAY_TOKEN_URL,{'Authorization':'Basic '+self._credentials,'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body,self.get,sleep=self.sleep)
+        self._token=payload['access_token']
+        self._expires=self.clock()+max(60,int(payload.get('expires_in') or 7200)-120)
+        return self._token
+    def call(self, path):
+        for attempt in range(2):
+            headers={'Authorization':'Bearer '+self.token(),'X-EBAY-C-MARKETPLACE-ID':self.marketplace,'Accept':'application/json'}
+            try: return api_json(EBAY_BROWSE+path,headers,get=self.get,sleep=self.sleep)
+            except urllib.error.HTTPError as error:
+                if error.code!=401 or attempt: raise
+                self._token=None  # expired early: fetch one new token, once
+    def item(self, legacy_id):
+        return self.call('/item/get_item_by_legacy_id?'+urllib.parse.urlencode({'legacy_item_id':legacy_id}))
+    def search(self, term, price_min=800, price_max=30000, limit=25):
+        params={'q':(term+' trumpet').strip(),'category_ids':self.category,'sort':'newlyListed','limit':limit,
+                'filter':f'buyingOptions:{{FIXED_PRICE|AUCTION|BEST_OFFER}},price:[{price_min}..{price_max}],priceCurrency:USD'}
+        return self.call('/item_summary/search?'+urllib.parse.urlencode(params)).get('itemSummaries') or []
+
+
+def ebay_money(value):
+    if not isinstance(value,dict): return None,''
+    return amount(value.get('value')),str(value.get('currency') or '').upper()
+
+
+def ebay_facts(item, now=None):
+    """Price, availability, end date, condition, location, seller and images."""
+    now=now or dt.datetime.now(dt.timezone.utc)
+    options=item.get('buyingOptions') or []
+    price,currency=ebay_money(item.get('price'))
+    if 'AUCTION' in options and item.get('currentBidPrice'): price,currency=ebay_money(item['currentBidPrice'])
+    if not re.fullmatch('[A-Z]{3}',currency): return None
+    ends=None
+    if isinstance(item.get('itemEndDate'),str):
+        try:ends=dt.datetime.fromisoformat(item['itemEndDate'].replace('Z','+00:00')).astimezone(dt.timezone.utc)
+        except ValueError:pass
+    availability={str(a.get('estimatedAvailabilityStatus','')).upper() for a in item.get('estimatedAvailabilities') or [] if isinstance(a,dict)}
+    status='active'
+    if availability and availability<={'OUT_OF_STOCK'}: status='sold'
+    if ends and ends<now and status=='active': status='removed'
+    shipping=None
+    for option in item.get('shippingOptions') or []:
+        cost,cost_currency=ebay_money((option or {}).get('shippingCost'))
+        if cost is not None and cost_currency==currency: shipping=cost;break
+    posted=None
+    if isinstance(item.get('itemCreationDate'),str):
+        try:posted=dt.datetime.fromisoformat(item['itemCreationDate'].replace('Z','+00:00')).astimezone(dt.timezone.utc).isoformat()
+        except ValueError:pass
+    images=[i.get('imageUrl','') for i in [item.get('image') or {}]+list(item.get('additionalImages') or []) if isinstance(i,dict)]
+    location=item.get('itemLocation') or {}
+    place=', '.join(str(location[k]) for k in ('city','stateOrProvince','country') if isinstance(location.get(k),str) and location.get(k))
+    return dict(status=status,price=price,currency=currency,shipping=shipping,postedAt=posted,endsAt=ends.isoformat() if ends else None,
+                condition=str(item.get('condition') or ''),location=place,seller=str((item.get('seller') or {}).get('username') or ''),
+                images=[i for i in images if i.startswith('https://')][:20],sourceListingId=str(item.get('legacyItemId') or ''),auction='AUCTION' in options)
+
+
+def ebay_offer_from(item, url, source, profile):
+    facts=ebay_facts(item)
+    if not facts or facts['status'] not in ('active','sold'): return None
+    p={'name':str(item.get('title') or ''),'description':str(item.get('shortDescription') or item.get('description') or ''),'brand':{'name':str(item.get('brand') or '')},
+       'productID':facts['sourceListingId'],'image':facts['images'],'datePublished':item.get('itemCreationDate'),'itemCondition':facts['condition'],
+       'offers':{'price':facts['price'],'priceCurrency':facts['currency'],'availability':'InStock' if facts['status']=='active' else 'SoldOut','seller':{'name':facts['seller']}}}
+    c=normalize_product(p,url,source,profile)
+    if not c: return None
+    evidence='eBay Browse API'+(' / auction, current bid' if facts['auction'] else '')+(' / ends '+facts['endsAt'][:10] if facts['endsAt'] else '')
+    c.update(shipping=facts['shipping'],location=facts['location'],postedAt=facts['postedAt'],evidence=evidence)
+    if facts['condition']:c['details']={**c.get('details',{}),'condition':facts['condition']}
+    if facts['auction']:c['tags']=list(dict.fromkeys(c.get('tags',[])+['auction']))
+    return c
+
+
 def candidate_hint(result, source, profile, page=''):
     url=result.get('url',''); parts=urllib.parse.urlsplit(url)
     if parts.scheme!='https' or not parts.hostname or parts.username or parts.password: return None
@@ -420,10 +663,91 @@ class LiveState(HTMLParser):
         return None
 
 
-def recheck(listing, get_page, profile):
+def apply_api_facts(c, facts, offer, evidence):
+    """Update a tracked offer from official-API facts (Reverb, eBay)."""
+    c['verifiedVia']='api'
+    if c.get('verificationState')=='candidate':
+        if facts['status']=='removed':
+            c.update(status='removed',evidence=evidence)
+            return c
+        return dict(offer,id=c.get('id'),verificationState='verified',verifiedVia='api') if offer else None
+    c.update(status=facts['status'],evidence=evidence)
+    if facts['price'] is not None:
+        if facts['currency']!=c.get('currency'):c['shipping']=None
+        c.update(price=facts['price'],currency=facts['currency'])
+    if facts['shipping'] is not None and facts['currency']==c.get('currency'):c['shipping']=facts['shipping']
+    for key in ('postedAt','seller','location'):
+        if facts[key]:c[key]=facts[key]
+    if facts['sourceListingId']:c['sourceListingId']=facts['sourceListingId']
+    if facts['images']:c['images']=facts['images']
+    if offer:
+        c.update(searchScore=offer['searchScore'],searchRationale=offer['searchRationale'],tags=offer['tags'])
+        c['details']={**c.get('details',{}),**{k:v for k,v in offer.get('details',{}).items() if v}}
+        if offer.get('description'):c['description']=offer['description']
+    return c
+
+
+def api_gone(c, label, code):
+    c['verifiedVia']='api'
+    if c.get('verificationState')=='candidate':
+        c.update(status='removed',price=None,shipping=None,evidence=f'{label} HTTP {code}; search lead no longer exists')
+    else:
+        c.update(status='removed',evidence=f'{label} HTTP {code}; prior price retained as last known')
+    return c
+
+
+def recheck_reverb(c, profile, get_api=None):
+    """Recheck a Reverb item through the public API: state, price, currency,
+    shipping and post date. HTTP 404/410 from the API means the item is gone."""
+    try: data=reverb_listing(c['url'],get_api)
+    except urllib.error.HTTPError as error:
+        if error.code not in (404,410): raise
+        return api_gone(c,'Reverb API',error.code)
+    facts=reverb_facts(data) if data else None
+    if not facts: return None
+    return apply_api_facts(c,facts,reverb_offer_from(data,c['url'],c['source'],profile),'Reverb public listings API / state '+facts['state'])
+
+
+def recheck_ebay(c, profile, ebay):
+    """Recheck an eBay item through the Browse API (getItemByLegacyId). The API
+    only returns live items: 404 means the listing ended or sold."""
+    try: item=ebay.item(ebay_id(c['url']))
+    except urllib.error.HTTPError as error:
+        if error.code not in (404,410): raise
+        return api_gone(c,'eBay Browse API',error.code)
+    facts=ebay_facts(item)
+    if not facts: return None
+    offer=ebay_offer_from(item,c['url'],c['source'],profile)
+    return apply_api_facts(c,facts,offer,offer['evidence'] if offer else 'eBay Browse API')
+
+
+class ChallengePage(Exception):
+    """A bot-challenge / interstitial page instead of the listing."""
+
+
+CHALLENGE_TITLE=re.compile(r'just a moment|attention required|access denied|pardon our interruption|are you a robot|security check|verify you are (?:a )?human|captcha',re.I)
+CHALLENGE_MARKUP=re.compile(r'cf-chl-|px-captcha|_Incapsula_Resource|captcha-delivery\.com|/sttc/px/',re.I)
+
+
+def is_challenge(page):
+    if products(page): return False
+    title=re.search(r'<title[^>]*>(.*?)</title>',page[:200000],re.I|re.S)
+    return bool((title and CHALLENGE_TITLE.search(title[1])) or CHALLENGE_MARKUP.search(page[:200000]))
+
+
+def recheck(listing, get_page, profile, get_api=None, ebay=None):
+    """Official API first (Reverb; eBay with keys), then the page itself."""
     c={k:copy.deepcopy(v) for k,v in listing.items() if k in ALLOWED_FIELDS}
     c['discoveryType']='rediscovered'
     if not c.get('url'): return None
+    if reverb_id(c['url']): return recheck_reverb(c,profile,get_api)
+    if ebay is not None and ebay_id(c['url']): return recheck_ebay(c,profile,ebay)
+    result=recheck_page(c,get_page,profile)
+    if result is not None: result.setdefault('verifiedVia','direct')
+    return result
+
+
+def recheck_page(c, get_page, profile):
     try: page=get_page(c['url'])
     except urllib.error.HTTPError as error:
         if error.code not in (404,410): raise
@@ -432,6 +756,7 @@ def recheck(listing, get_page, profile):
             return c
         c.update(status='removed',evidence=f'HTTP {error.code}; prior price retained as last known')
         return c
+    if is_challenge(page): raise ChallengePage('bot challenge page')
     state=LiveState();state.feed(page);authoritative=state.state(c['title'])
     candidates=page_offers(page,c['url'],c['source'],profile)
     if not candidates and '/products/' in c['url']:
@@ -555,16 +880,97 @@ NEW_SOURCE_QUERIES = [
 ]
 
 
+# Explore/exploit: an option's value is its learned weight plus TASTE_KAPPA
+# posterior sds (an upper confidence bound), so liked and still-uncertain
+# options both earn budget; an option whose weight+sd stays below zero after a
+# few reactions has been consistently rejected and is demoted.
+TASTE_KAPPA=0.5
+TRAIT_PHRASES={'finish:raw brass':'raw brass','finish:raw nickel':'raw nickel','finish:gold plate':'gold plated','finish:silver plate':'silver plated',
+    'finish:patina':'patina aged brass','finish:mixed metals':'mixed metals','finish:black':'black finish','finish:copper':'copper bell',
+    'bell:upswept':'upswept bell','bell:unusual':'unusual bell','leadpipe:reverse':'reverse leadpipe','leadpipe:interchangeable':'interchangeable leadpipes',
+    'trait:engraving':'engraved','trait:one-off':'one-off custom prototype','trait:provenance':'artist owned provenance','trait:heavy':'heavyweight',
+    'trait:engineering':'unusual engineering','era:vintage':'vintage','era:classic':'1970s 1980s'}
+
+
+def norm(text):
+    return ' '.join(str(text).lower().split())
+
+
+class Taste:
+    """The server's learned weights and uncertainties (profile['taste']), plus
+    the owner's explicit preferences. No notes or listing ids are involved."""
+    def __init__(self,profile):
+        taste=profile.get('taste') or {}
+        self.prior=float(taste.get('priorSd') or 1)
+        self.weights={w['feature']:w for w in taste.get('weights') or [] if isinstance(w,dict) and w.get('feature')}
+        prefs=profile.get('preferences') or {}
+        # Owner-stated preferences; traits arrive resolved to model feature keys.
+        self.liked={'maker:'+norm(m) for m in prefs.get('likedMakers') or []}|set(prefs.get('likedTraitKeys') or [])
+        self.disliked={'maker:'+norm(m) for m in prefs.get('dislikedMakers') or []}|set(prefs.get('dislikedTraitKeys') or [])
+        self.active=bool(self.weights or self.liked or self.disliked)
+    def stats(self,key):
+        w=self.weights.get(key)
+        return (float(w.get('weight') or 0),float(w.get('sd') if w.get('sd') is not None else self.prior),float(w.get('n') or 0)) if w else (0.0,self.prior,0.0)
+    def value(self,key):
+        weight,sd,_=self.stats(key)
+        return weight+TASTE_KAPPA*sd+(0.5 if key in self.liked else 0)-(1.0 if key in self.disliked else 0)
+    def rejected(self,key):
+        weight,sd,n=self.stats(key)
+        return key in self.disliked or (n>=2 and weight+sd<0)
+    def favored(self,key):
+        weight,_,_=self.stats(key)
+        return key in self.liked or weight>0.25
+    def makers_in(self,query):
+        q=norm(query)
+        keys={'maker:'+norm(m) for m in MAKERS if re.search(r'\b'+re.escape(norm(m))+r'\b',q)}
+        keys|={k for k,w in self.weights.items() if w.get('kind')=='maker' and norm(w.get('label',''))
+               and re.search(r'\b'+re.escape(norm(w['label']))+r'\b',q)}
+        return keys
+    def query_value(self,query):
+        keys=self.makers_in(query)
+        return max((self.value(k) for k in keys),default=TASTE_KAPPA*self.prior)
+    def query_rejected(self,query):
+        keys=self.makers_in(query)
+        return bool(keys) and all(self.rejected(k) for k in keys)
+    def ranked_queries(self,queries):
+        kept=[q for q in queries if not self.query_rejected(q)] or list(queries)
+        return sorted(kept,key=lambda q:-self.query_value(q))
+    def trait_terms(self):
+        traits=sorted((k for k in set(self.weights)|self.liked if k in TRAIT_PHRASES and not self.rejected(k) and self.stats(k)[0]+(0.5 if k in self.liked else 0)>0),
+                      key=lambda k:-self.value(k))
+        return [TRAIT_PHRASES[k] for k in traits]
+    def trait_query(self):
+        traits=self.trait_terms()
+        if not traits:return None
+        return ' '.join(traits[:2])+' professional Bb trumpet used sale'
+    def source_key(self,domain):
+        domain=domain.lower().removeprefix('www.')
+        return 'source:'+('ebay' if domain.startswith('ebay.') else domain)
+    def page_cap(self,domain):
+        key=self.source_key(domain)
+        if not self.active:return 12
+        return 6 if self.rejected(key) else 16 if self.favored(key) else 12
+
+
 def search_plan(profile,day=None):
     day=day or dt.datetime.now(dt.timezone.utc).date()
+    taste=Taste(profile)
     universe=profile.get('sourceUniverse') or [dict(domain=d,name=n,specialty='specialist dealer',geography='International') for n,ds in SOURCES.items() for d in ds]
     # Sort never/oldest searched sources first; date-dependent ties avoid repeating
     # the same seed subset. Useful sources get a bounded portion of the run.
     rank=lambda s:hashlib.sha256((day.isoformat()+s['domain']).encode()).hexdigest()
     oldest=sorted(universe,key=lambda s:(s.get('lastSearched') or '',rank(s)))
     useful=sorted((s for s in universe if s.get('verifiedOffers',0)>0),key=rank)[:8]
+    favored=[]
+    if taste.active:
+        # Learned taste: up to six liked/uncertain-but-promising sources first;
+        # consistently rejected sources only fill slots nothing else needs.
+        key=lambda s:taste.source_key(s['domain'])
+        favored=sorted((s for s in universe if taste.favored(key(s)) and not taste.rejected(key(s))),key=lambda s:(-taste.value(key(s)),rank(s)))[:6]
+        useful=[s for s in useful if not taste.rejected(key(s))]
+        oldest=[s for s in oldest if not taste.rejected(key(s))]+[s for s in oldest if taste.rejected(key(s))]
     selected=[];families=collections.Counter()
-    for source in useful+oldest:
+    for source in favored+useful+oldest:
         domain=source['domain']
         if any(s['domain']==domain for s in selected): continue
         family='ebay' if domain.startswith('ebay.') else domain
@@ -572,11 +978,19 @@ def search_plan(profile,day=None):
         families[family]+=1;selected.append(source)
         if len(selected)==36: break
     offset=day.toordinal()
+    # Learned taste reweights the maker phrases: the best options appear twice in
+    # the rotation, consistently rejected ones drop out. No taste = old rotation.
+    ranked=taste.ranked_queries(MAKER_QUERIES) if taste.active else MAKER_QUERIES
+    phrases=ranked+ranked[:3] if taste.active else MAKER_QUERIES
     plan=[]
     for i,source in enumerate(selected):
         explore=i%4==0
-        phrase=EXPLORATION_QUERIES[(offset+i)%len(EXPLORATION_QUERIES)] if explore else MAKER_QUERIES[(offset+i)%len(MAKER_QUERIES)]
-        plan.append({**source,'source':source['name']+' / '+source['domain'],'query':'site:'+source['domain']+' '+phrase,'exploration':explore})
+        phrase=EXPLORATION_QUERIES[(offset+i)%len(EXPLORATION_QUERIES)] if explore else phrases[(offset+i)%len(phrases)]
+        task={**source,'source':source['name']+' / '+source['domain'],'query':'site:'+source['domain']+' '+phrase,'exploration':explore}
+        if taste.active:task['priority']=(round(taste.value(taste.source_key(source['domain'])),3),round(0 if explore else taste.query_value(phrase),3))
+        plan.append(task)
+    # Higher-value searches run first, so they get the page and time budgets.
+    if taste.active:plan.sort(key=lambda t:(-t['priority'][0],-t['priority'][1]))
     # All known domains are excluded from deliberate source-expansion queries.
     exclusions=''
     for source in universe:
@@ -585,8 +999,19 @@ def search_plan(profile,day=None):
         exclusions+=term
     for i in range(4):
         plan.append(dict(source='New source discovery '+str(i+1),domain='',query=NEW_SOURCE_QUERIES[(offset*4+i)%len(NEW_SOURCE_QUERIES)]+' '+exclusions,exploration=True))
-    for i in range(6):
-        plan.append(dict(source='Maker search '+str(i+1),domain='',query=MAKER_QUERIES[(offset+i)%len(MAKER_QUERIES)]+' -site:reverb.com',exploration=False))
+    if taste.active:
+        # Three best-value maker searches, two rotating (still exploring) and,
+        # when the owner likes particular traits, one trait search.
+        rest=ranked[3:] or ranked
+        makers=ranked[:3]+[rest[(offset+i)%len(rest)] for i in range(3)]
+        makers=list(dict.fromkeys(makers))
+        trait=taste.trait_query()
+        if trait:makers=makers[:5]+[trait]
+        for i in range(len(makers),6):makers.append(MAKER_QUERIES[(offset+i)%len(MAKER_QUERIES)])
+    else:
+        makers=[MAKER_QUERIES[(offset+i)%len(MAKER_QUERIES)] for i in range(6)]
+    for i,query in enumerate(makers[:6]):
+        plan.append(dict(source='Maker search '+str(i+1),domain='',query=query+' -site:reverb.com',exploration=False))
     for i in range(4):
         plan.append(dict(source='Exploration '+str(i+1),domain='',query=EXPLORATION_QUERIES[(offset+i)%len(EXPLORATION_QUERIES)]+' -site:reverb.com',exploration=True))
     return plan
@@ -612,6 +1037,103 @@ def market_context(candidate,baseline):
     return candidate
 
 
+# ---- Search-provider fallback verification ------------------------------------
+# When a page blocks direct checks (401/403/429 or a bot challenge) and there is
+# no usable official API, one OpenAI Responses call with the web_search tool is
+# asked about that exact URL. Its JSON is accepted only when the web-search
+# sources include the same listing (canonical URL, or the same eBay/Reverb item
+# id) and it matches the schema; generated prose alone is never evidence.
+OPENAI_RESPONSES='https://api.openai.com/v1/responses'
+VERIFY_LIMIT=60
+VERIFY_SCHEMA={'type':'object','additionalProperties':False,'required':['url','title','state','price','currency','shipping','evidence'],
+    'properties':{'url':{'type':'string'},'title':{'type':['string','null']},'state':{'type':'string','enum':['available','sold','ended','unknown']},
+                  'price':{'type':['number','null']},'currency':{'type':['string','null']},'shipping':{'type':['number','null']},
+                  'evidence':{'type':'string'}}}
+
+
+def same_listing(a, b):
+    if not a or not b: return False
+    for item in (ebay_id, reverb_id):
+        x,y=item(a),item(b)
+        if x or y: return bool(x) and x==y
+    try: return canonical_url(a)==canonical_url(b)
+    except ValueError: return False
+
+
+def valid_verification(data):
+    if not isinstance(data,dict) or set(data)!=set(VERIFY_SCHEMA['required']): return False
+    if data['state'] not in ('available','sold','ended','unknown') or not isinstance(data['url'],str) or not isinstance(data['evidence'],str): return False
+    if data['title'] is not None and (not isinstance(data['title'],str) or len(data['title'])>500): return False
+    for key in ('price','shipping'):
+        v=data[key]
+        if v is not None and (isinstance(v,bool) or not isinstance(v,(int,float)) or not 0<=v<=999999999999.99): return False
+    return data['currency'] is None or (isinstance(data['currency'],str) and bool(re.fullmatch('[A-Z]{3}',data['currency'].upper())))
+
+
+def verify_via_search(url, key, get=None, sleep=None):
+    """Ask the search provider about one listing URL. Returns the parsed JSON
+    when a web-search source is the same listing, else None."""
+    get=get or (lambda u,h,d=None:fetch(u,h,d,timeout=120))
+    model=os.environ.get('TRUMPETS_VERIFY_MODEL') or os.environ.get('TRUMPETS_SEARCH_MODEL','gpt-4.1-mini')
+    request={'model':model,'tools':[{'type':'web_search','search_context_size':'medium'}],'tool_choice':'required',
+             'include':['web_search_call.action.sources'],'max_output_tokens':800,
+             'text':{'format':{'type':'json_schema','name':'listing_state','strict':True,'schema':VERIFY_SCHEMA}},
+             'input':'Look up this exact used-instrument listing page and report its current state as JSON. '
+                     'state is "available" only if the page offers it for sale now, "sold" if it says sold, "ended" if the listing ended or was removed, '
+                     'otherwise "unknown". Give the listing title, asking price, ISO currency and shipping exactly as the page shows them, or null. '
+                     'Do not guess or use other listings. URL: '+url}
+    payload=api_json(OPENAI_RESPONSES,{'Authorization':'Bearer '+key,'Content-Type':'application/json'},json.dumps(request).encode(),get,sleep=sleep)
+    if payload.get('status')!='completed': return None
+    sources=[];text=''
+    for item in payload.get('output',[]):
+        if item.get('type')=='web_search_call' and item.get('status')=='completed':
+            action=item.get('action') or {}
+            sources+=[s.get('url','') for s in action.get('sources') or [] if isinstance(s,dict)]
+            if action.get('url'):sources.append(action['url'])
+        if item.get('type')=='message':
+            text+=''.join(c.get('text','') for c in item.get('content',[]) if c.get('type')=='output_text')
+    if not any(same_listing(s,url) for s in sources): return None
+    try: data=json.loads(text)
+    except ValueError: return None
+    return data if valid_verification(data) else None
+
+
+def apply_search_verification(listing, data):
+    """Conservative: sold/ended only when the source says so; prices only when
+    the page states them with a currency."""
+    if not data or data['state']=='unknown': return None
+    c={k:copy.deepcopy(v) for k,v in listing.items() if k in ALLOWED_FIELDS}
+    c.update(discoveryType='rediscovered',verifiedVia='search-provider',
+             status={'available':'active','sold':'sold','ended':'removed'}[data['state']],
+             evidence='Search-provider verification (web search source matched this listing) / '+data['state'])
+    currency=(data['currency'] or '').upper()
+    if data['state']=='available' and data['price'] is not None and currency:
+        if currency!=c.get('currency'):c['shipping']=None
+        c.update(price=round(float(data['price']),2),currency=currency)
+        if data['shipping'] is not None:c['shipping']=round(float(data['shipping']),2)
+    return c
+
+
+# ---- Marketplace discovery through official APIs -------------------------------
+MARKET_MAKERS=['Taylor','Harrelson','AR Resonance','Monette','Adams','Blackburn','Van Laar','Schilke','Inderbinen','Lawler','LOTUS','BAC','Eclipse','Del Quadro','Calicchio','Benge','GERDT','Olds']
+
+
+def marketplace_terms(taste, day):
+    """Maker/trait terms for Reverb and eBay searches: the taste model's best
+    (and most uncertain) makers, two rotating makers, liked traits, and one
+    query for everything newest."""
+    n=len(MARKET_MAKERS);offset=day.toordinal()%n
+    rotation=MARKET_MAKERS[offset:]+MARKET_MAKERS[:offset]
+    if taste.active:
+        kept=[m for m in rotation if not taste.rejected('maker:'+norm(m))] or rotation
+        best=sorted(kept,key=lambda m:-taste.value('maker:'+norm(m)))[:3]
+        makers=best+[m for m in kept if m not in best][:2]
+    else:
+        makers=rotation[:5]
+    traits=taste.trait_terms()
+    return makers+([' '.join(traits[:2])] if traits else [])+['']
+
+
 BLOCKING_CODES = (401, 403, 429)
 LEAD_CHECKS_PER_RUN = 40
 
@@ -633,6 +1155,8 @@ def recheck_order(due):
     only the newest 40 forever.
     """
     verified=[l for l in due if l.get('verificationState')!='candidate']
+    # Active, high-score offers first: they get capped fallback checks first.
+    verified.sort(key=lambda l:(l.get('status')!='active',-(l.get('searchScore') or 0)))
     leads=[l for l in due if l.get('verificationState')=='candidate']
     leads.sort(key=lambda l:(l.get('firstSeen') or '',l.get('id') or ''),reverse=True)
     leads.sort(key=lambda l:l.get('lastCheckAttempt') or '')
@@ -651,6 +1175,7 @@ def daily(client):
         universe.setdefault(domain,dict(domain=domain,name=listing['source'],geography='International / unknown',specialty='Previously tracked source'))
     profile['sourceUniverse']=list(universe.values())
     known_domains=set(universe)
+    taste=Taste(profile)
     # Daily due is also useful to external clients; each actual watch invocation
     # revalidates all active offers, including manual reruns on the same UTC day.
     due_by_id={l['id']:l for l in due}
@@ -665,7 +1190,21 @@ def daily(client):
     failures=[];notes=[];submitted=set();started=time.monotonic();candidate_checks=0;pages=0;domain_pages=collections.Counter();domain_finds=collections.Counter()
     live=collections.defaultdict(lambda:dict(pagesOpened=0,verifiedOffers=0,staleResults=0))
     key=os.environ.get('BRAVE_SEARCH_API_KEY');openai=os.environ.get('OPENAI_API_KEY')
-    blocked=set();leads=collections.Counter()
+    blocked=set();leads=collections.Counter();ebay_results=[]
+    ebay=EbayAPI.from_env()
+    verify_limit=int(os.environ.get('TRUMPETS_VERIFY_LIMIT') or VERIFY_LIMIT);verifier=collections.Counter()
+    def search_provider_check(listing,domain):
+        """Fallback after a blocked direct check; True when verified."""
+        if not openai or listing.get('verificationState')=='candidate' or verifier['calls']>=verify_limit or time.monotonic()-started>35*60: return False
+        verifier['calls']+=1
+        try: checked=apply_search_verification(listing,verify_via_search(listing['url'],openai))
+        except Exception: checked=None
+        if not checked:
+            verifier['rejected']+=1;return False
+        verifier['accepted']+=1;live[domain]['pagesOpened']+=1;live[domain]['verifiedOffers']+=1
+        if checked['status']=='removed':live[domain]['staleResults']+=1
+        link_physical_horn(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
+        return True
     def record_failure(listing,domain,reason):
         report['checkFailures'].append({'id':listing['id'],'reason':(domain+' / '+reason)[:500]})
         if listing.get('verificationState')!='candidate':
@@ -684,8 +1223,15 @@ def daily(client):
                 # Do not spend a lead slot on a domain that already refused this run.
                 record_failure(listing,domain,'skipped; source blocked automated checks earlier in this run');leads['skipped']+=1;continue
             candidate_checks+=1
+        if ebay is None and ebay_id(listing['url']) and openai:
+            # No eBay developer keys: eBay pages always refuse the VM, so the
+            # source-matched search-provider check is the primary path.
+            live[domain]
+            if search_provider_check(listing,domain):continue
+            record_failure(listing,domain,'eBay: search-provider check found no matching source' if verifier['calls']<verify_limit else 'eBay: search-provider check budget reached');leads['failed']+=lead
+            continue
         try:
-            checked=recheck(listing,fetch,profile)
+            checked=recheck(listing,fetch,profile,ebay=ebay)
             live[domain]['pagesOpened']+=1
             if checked:
                 link_physical_horn(checked,baseline);market_context(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
@@ -695,7 +1241,10 @@ def daily(client):
             else:
                 record_failure(listing,domain,'page did not expose a single verifiable offer (price, currency and stock)');leads['unverified']+=lead
         except Exception as error:
-            if isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES:blocked.add(domain)
+            refused=isinstance(error,ChallengePage) or (isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES)
+            if refused:blocked.add(domain)
+            # Official API, then direct page, then the search-provider fallback.
+            if refused and search_provider_check(listing,domain):continue
             record_failure(listing,domain,failure_reason(error));leads['failed']+=lead
     if candidate_checks or leads['skipped']:
         notes.append(f"Lead rotation: {candidate_checks} queued leads checked ({leads['verified']} verified, {leads['retired']} retired as gone, {leads['unverified']} still unverified, {leads['failed']} unreachable), {leads['skipped']} skipped on blocked domains")
@@ -715,19 +1264,31 @@ def daily(client):
                     if canonical in submitted or (old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status'] in ('active','unverifiable'))):continue
                     domain=urllib.parse.urlsplit(url).hostname.removeprefix('www.')
                     if task['source'].startswith('New source discovery') and domain in known_domains:continue
+                    if ebay is None and openai and ebay_id(url):
+                        # Without eBay keys, eBay results go to the source-matched
+                        # eBay verification below instead of a blocked page fetch.
+                        ebay_results.append(dict(result,url=url));continue
                     if domain_finds[domain]>=6:continue
                     source=task.get('name') if task.get('domain')==domain else domain
                     markup='';offers=[]
-                    if pages<240 and domain_pages[domain]<12 and time.monotonic()-started<35*60:
+                    if pages<240 and domain_pages[domain]<taste.page_cap(domain) and time.monotonic()-started<35*60:
                         pages+=1;domain_pages[domain]+=1
                         try:
-                            markup=fetch(url);live[domain]['pagesOpened']+=1
-                            offers=page_offers(markup,url,source,profile)
-                            if not offers and '/products/' in url:
-                                try:
-                                    offer=shopify_offer(url,source,profile,fetch)
-                                    if offer: offers=[offer]
-                                except Exception: pass
+                            if reverb_id(url):
+                                # Reverb blocks item pages from the VM; its public API does not.
+                                offer=reverb_offer(url,source,profile);live[domain]['pagesOpened']+=1
+                                offers=[dict(offer,verifiedVia='api')] if offer else []
+                            elif ebay is not None and ebay_id(url):
+                                offer=ebay_offer_from(ebay.item(ebay_id(url)),url,source,profile);live[domain]['pagesOpened']+=1
+                                offers=[dict(offer,verifiedVia='api')] if offer else []
+                            else:
+                                markup=fetch(url);live[domain]['pagesOpened']+=1
+                                offers=[dict(o,verifiedVia='direct') for o in page_offers(markup,url,source,profile)]
+                                if not offers and '/products/' in url:
+                                    try:
+                                        offer=shopify_offer(url,source,profile,fetch)
+                                        if offer: offers=[dict(offer,verifiedVia='direct')]
+                                    except Exception: pass
                         except urllib.error.HTTPError as error:
                             if error.code in (404,410):
                                 live[domain]['pagesOpened']+=1;live[domain]['staleResults']+=1;continue
@@ -750,7 +1311,109 @@ def daily(client):
             except Exception as error:
                 check.update(status='failed',note='Search provider failed: '+type(error).__name__);failures.append(check['source']+' search failed')
             report['sources'].append(check);print(json.dumps({'source':check['source'],'status':check['status'],'candidates':check['candidates']}),flush=True)
+    # Reverb and eBay through their official APIs: newest trumpets for the taste
+    # model's makers and traits. They count as source coverage like any domain.
+    by_item={}
+    for listing in baseline:
+        item=reverb_id(listing.get('url','')) or ebay_id(listing.get('url',''))
+        if item:by_item.setdefault(item,listing)
+    terms=marketplace_terms(taste,dt.datetime.now(dt.timezone.utc).date())
+    def keep_market(c,item,domain,check,via='api'):
+        old=by_item.get(item) or by_url.get(canonical_url(c['url']))
+        if old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status'] in ('active','unverifiable')):return
+        if canonical_url(c['url']) in submitted or c['searchScore']<55 or domain_finds[domain]>=taste.page_cap(domain):return
+        c.update(verificationState='verified',verifiedVia=via)
+        if old:c.update(id=old['id'],url=old['url'])
+        link_physical_horn(c,baseline);market_context(c,baseline)
+        report['listings'].append(c);submitted.add(canonical_url(c['url']));domain_finds[domain]+=1;check['candidates']+=1;live[domain]['verifiedOffers']+=1
+    def market_check(name,domain,specialty):
+        return dict(source=name,domain=domain,query='; '.join(t or 'newest trumpets' for t in terms)[:10000],status='checked',candidates=0,note='',
+                    pagesOpened=0,verifiedOffers=0,staleResults=0,geography='International',specialty=specialty)
+    check=market_check('Reverb API','reverb.com','Marketplace (public listings API)')
+    try:
+        for term in terms:
+            if pages>=240 or time.monotonic()-started>35*60:check['note']='Budget reached before every term was searched. ';break
+            pages+=1
+            for data in reverb_search(term):
+                url=reverb_web_url(data)
+                if not url:continue
+                live['reverb.com']['pagesOpened']+=1
+                native=str(data.get('listing_currency') or '').upper()
+                if native and native!=str((data.get('price') or {}).get('currency') or '').upper():
+                    if pages>=240:continue
+                    pages+=1;data=reverb_item(str(data.get('id')))
+                c=reverb_offer_from(data,url,'Reverb',profile)
+                if c:keep_market(c,reverb_id(url),'reverb.com',check)
+        check['note']+=f"{len(terms)} searches (newest first, trumpet category); {check['candidates']} verified offers retained."
+    except Exception as error:
+        check.update(status='failed',note='Reverb API failed: '+failure_reason(error));failures.append('Reverb API search failed')
+    report['sources'].append(check)
+    if ebay is None:
+        # eBay without developer keys: discovery through the Responses web_search
+        # tool, every candidate verified by a source-matched check (within the cap).
+        check=market_check('eBay via web search','ebay.com','Marketplace (search-provider verified)')
+        if not openai:
+            check.update(status='skipped',query='',note='OPENAI_API_KEY not configured; eBay discovery needs the search provider.')
+        else:
+            try:
+                def ebay_leads():
+                    yield from ebay_results  # eBay results of the general search plan first
+                    for term in terms:
+                        if time.monotonic()-started>35*60 or verifier['calls']>=verify_limit:
+                            check['note']='Budget reached before every term was searched. ';return
+                        yield from search_openai('site:ebay.com '+(term or 'professional')+' Bb trumpet',openai)
+                seen_items={ebay_id(u) for u in submitted}
+                for result in ebay_leads():
+                    item=ebay_id(result.get('url',''))
+                    old=by_item.get(item)
+                    if time.monotonic()-started>35*60:check['note']='Run time budget reached. ';break
+                    if not item or item in seen_items or (old and old['status'] in ('active','unverifiable')) or verifier['calls']>=verify_limit:continue
+                    seen_items.add(item)
+                    url='https://ebay.com/itm/'+item
+                    if canonical_url(url) in submitted or not candidate_hint(dict(result,url=url),'eBay',profile):continue
+                    verifier['calls']+=1;live['ebay.com']['pagesOpened']+=1
+                    try:data=verify_via_search(url,openai)
+                    except Exception:data=None
+                    if not data or data['state']!='available' or data['price'] is None or not data['currency']:
+                        verifier['rejected']+=1;continue
+                    verifier['accepted']+=1
+                    p={'name':data['title'] or result.get('title',''),'productID':item,
+                       'offers':{'price':data['price'],'priceCurrency':data['currency'].upper(),'availability':'InStock'}}
+                    c=normalize_product(p,url,'eBay',profile)
+                    if c:
+                        if data['shipping'] is not None:c['shipping']=round(float(data['shipping']),2)
+                        c['evidence']='Search-provider verification (web search source matched this eBay item) / available'
+                        keep_market(c,item,'ebay.com',check,'search-provider')
+                check['note']+=f"{len(terms)} web searches; {check['candidates']} offers verified from a matching eBay source."
+            except Exception as error:
+                check.update(status='failed',note='eBay web search failed: '+failure_reason(error));failures.append('eBay web search failed')
+    else:
+        check=market_check('eBay Browse API','ebay.com','Marketplace (official Browse API)')
+        try:
+            for term in terms:
+                if pages>=240 or time.monotonic()-started>35*60:check['note']='Budget reached before every term was searched. ';break
+                pages+=1
+                for summary in ebay.search(term):
+                    item=str(summary.get('legacyItemId') or ebay_id(summary.get('itemWebUrl','')))
+                    if not item or pages>=240:continue
+                    url='https://ebay.com/itm/'+item
+                    # Screen the summary first; only promising items cost a getItem call.
+                    screened=ebay_offer_from(summary,url,'eBay',profile)
+                    if not screened or screened['searchScore']<55 or (by_item.get(item) or {}).get('status')=='active':continue
+                    pages+=1;live['ebay.com']['pagesOpened']+=1
+                    c=ebay_offer_from(ebay.item(item),url,'eBay',profile)
+                    if c:keep_market(c,item,'ebay.com',check)
+            check['note']+=f"{len(terms)} searches (newly listed, trumpet category); {check['candidates']} verified offers retained."
+        except Exception as error:
+            check.update(status='failed',note='eBay Browse API failed: '+failure_reason(error));failures.append('eBay Browse API search failed')
+    report['sources'].append(check)
+    print(json.dumps({'source':'marketplace APIs','reverb':domain_finds['reverb.com'],'ebay':domain_finds['ebay.com']}),flush=True)
+    if verifier['calls']:
+        notes.append(f"Search-provider verification: {verifier['calls']} blocked listings tried, {verifier['accepted']} verified from a matching source, {verifier['rejected']} left as failed checks")
     # The 240-page bound is by design; reaching it is coverage information, not a failure.
+    if taste.active:
+        plan_keys={taste.source_key(d) for d in known_domains}|{k for q in MAKER_QUERIES for k in taste.makers_in(q)}
+        notes.append(f"Taste steering: {sum(taste.favored(k) for k in plan_keys)} favored and {sum(taste.rejected(k) for k in plan_keys)} demoted makers/sources")
     if pages>=240:notes.append('Discovery page budget (240) reached; remaining promising results retained as unverified leads')
     # Attribute live evidence once per actual domain; query success is separate.
     by_domain={s['domain']:s for s in report['sources'] if s.get('domain')}

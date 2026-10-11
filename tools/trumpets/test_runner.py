@@ -214,7 +214,7 @@ class DailyPersistenceTests(unittest.TestCase):
                 if path=='/listings':return {'listings':[candidate]}
                 if path=='/runs':self.report=body;return {'status':body['status'],'runId':'saved'}
         client=Client()
-        with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only'}),patch.object(runner,'fetch',return_value=page(PRODUCT)),patch.object(runner,'search',return_value=[]),patch('builtins.print'):
+        with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only','OPENAI_API_KEY':'','EBAY_CLIENT_ID':''}),patch.object(runner,'reverb_search',return_value=[]),patch.object(runner,'fetch',return_value=page(PRODUCT)),patch.object(runner,'search',return_value=[]),patch('builtins.print'):
             self.assertEqual(runner.daily(client),0)
         self.assertEqual(client.report['listings'][0]['id'],'known')
         evidence=[s for s in client.report['sources'] if s.get('domain')=='shop.test']
@@ -256,7 +256,7 @@ class DailyFreshnessTests(unittest.TestCase):
         c=runner.candidate_hint({'url':f'https://{domain}/products/taylor-chicago-trumpet-{i}'},'Dealer',PROFILE)
         return dict(c,id=f'lead-{domain}-{i}',firstSeen=first,lastCheckAttempt=attempt,feedback={'interestState':'watch'})
     def watch(self,client,fetch,search=lambda *_:[]):
-        with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only'}),patch.object(runner,'fetch',side_effect=fetch),patch.object(runner,'search',side_effect=search),patch('builtins.print'):
+        with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only','OPENAI_API_KEY':'','EBAY_CLIENT_ID':''}),patch.object(runner,'reverb_search',return_value=[]),patch.object(runner,'fetch',side_effect=fetch),patch.object(runner,'search',side_effect=search),patch('builtins.print'):
             return runner.daily(client)
     def test_blocked_active_offer_is_recorded_not_partial_and_blocked_leads_are_free(self):
         active=runner.normalize_product(PRODUCT,'https://ebay.com/itm/1000000001','eBay',PROFILE)

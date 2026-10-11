@@ -1,0 +1,20 @@
+{
+  "_fixture": "FICTIONAL. Shape of eBay Browse API getItemByLegacyId; every value is invented. No real item, seller or person.",
+  "itemId": "v1|900000000003|0",
+  "legacyItemId": "900000000003",
+  "title": "Monette Raja Bb trumpet raw brass · FICTIONAL FIXTURE",
+  "shortDescription": "Fictional fixture: professional Bb trumpet, raw brass, with case.",
+  "brand": "Monette",
+  "price": { "value": "5200.00", "currency": "USD" },
+  "buyingOptions": ["FIXED_PRICE", "BEST_OFFER"],
+  "condition": "Used",
+  "itemCreationDate": "2026-10-10T15:00:00.000Z",
+  "itemEndDate": "2099-11-09T15:00:00.000Z",
+  "itemWebUrl": "https://www.ebay.com/itm/900000000003",
+  "itemLocation": { "city": "Fixtureville", "stateOrProvince": "Oregon", "country": "US" },
+  "seller": { "username": "fixture_seller", "feedbackPercentage": "100.0" },
+  "image": { "imageUrl": "https://fixtures.invalid/ebay/main.jpg" },
+  "additionalImages": [{ "imageUrl": "https://fixtures.invalid/ebay/side.jpg" }],
+  "shippingOptions": [{ "shippingCostType": "FIXED", "shippingCost": { "value": "60.00", "currency": "USD" } }],
+  "estimatedAvailabilities": [{ "estimatedAvailabilityStatus": "IN_STOCK", "estimatedAvailableQuantity": 1 }]
+}

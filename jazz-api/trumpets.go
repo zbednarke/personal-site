@@ -55,7 +55,10 @@ type trumpetCandidate struct {
 	SearchRationale   string      `json:"searchRationale"`
 	Tags              []string    `json:"tags"`
 	Evidence          string      `json:"evidence"`
-	SeedKey           string      `json:"-"`
+	// How the offer was verified: direct (the page), api (Reverb/eBay
+	// official API) or search-provider (a source-matched web search).
+	VerifiedVia string `json:"verifiedVia,omitempty"`
+	SeedKey     string `json:"-"`
 }
 type trumpetFeedback struct {
 	Rating             *int     `json:"rating"`
@@ -83,6 +86,9 @@ type trumpetListing struct {
 	CheckFailures    int        `json:"checkFailures"`
 	LastCheckAttempt *time.Time `json:"lastCheckAttempt"`
 	LastCheckError   string     `json:"lastCheckError"`
+	// Learned taste (see trumpets_taste.go): the blended score ranks Today's
+	// alerts with the same 65 threshold as the rule score.
+	TasteScore *tasteScore `json:"tasteScore,omitempty"`
 }
 type trumpetSourceCheck struct {
 	Source         string `json:"source"`
@@ -139,6 +145,13 @@ func (app *application) trumpetRoutes(mux *http.ServeMux) {
 		"POST /v1/trumpets/inspiration/{id}/images":             app.uploadInspirationImage,
 		"DELETE /v1/trumpets/inspiration/{id}/images/{imageId}": app.deleteInspirationImage,
 		"GET /v1/trumpets/inspiration/images/{imageId}":         app.inspirationImageRedirect,
+		// Taste training (Swipe / Head to head); append-only events.
+		"GET /v1/trumpets/taste":             app.getTrumpetTaste,
+		"POST /v1/trumpets/taste/events":     app.postTasteEvent,
+		"POST /v1/trumpets/taste/voice":      app.postTasteVoice,
+		"GET /v1/trumpets/taste/voice/{id}":  app.tasteVoice,
+		"GET /v1/trumpets/taste/preferences": app.getTastePreferences,
+		"PUT /v1/trumpets/taste/preferences": app.putTastePreferences,
 	}
 	for path, h := range browser {
 		mux.Handle(path, app.trumpetPrivacy(app.authenticate(h)))
@@ -148,6 +161,11 @@ func (app *application) trumpetRoutes(mux *http.ServeMux) {
 		"GET /v1/trumpets/machine/listings": app.trumpetBoard,
 		"GET /v1/trumpets/machine/due":      app.trumpetDue,
 		"POST /v1/trumpets/machine/runs":    app.ingestTrumpetRun,
+		"GET /v1/trumpets/machine/taste":    app.machineTrumpetTaste,
+		// The machine owner is fixed server-side; this lets an operator seed
+		// the owner's stated preferences after deploy.
+		"GET /v1/trumpets/machine/preferences": app.getTastePreferences,
+		"PUT /v1/trumpets/machine/preferences": app.putTastePreferences,
 	}
 	for path, h := range machine {
 		mux.Handle(path, app.trumpetPrivacy(app.trumpetMachineAuth(h)))
@@ -173,8 +191,9 @@ func (app *application) trumpetPrivacy(next http.Handler) http.Handler {
 	})
 }
 
-// Mutations must be JSON, except raw inspiration image uploads, whose image
-// content types (like JSON) are not CORS-safelisted and so still need preflight.
+// Mutations must be JSON, except raw inspiration image uploads and taste voice
+// notes, whose image/audio content types (like JSON) are not CORS-safelisted
+// and so still need preflight.
 func trumpetBodyTypeAllowed(r *http.Request) bool {
 	contentType := strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])
 	if contentType == "application/json" {
@@ -183,6 +202,9 @@ func trumpetBodyTypeAllowed(r *http.Request) bool {
 	if r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1/trumpets/inspiration/") && strings.HasSuffix(r.URL.Path, "/images") {
 		_, ok := inspirationImageTypes[strings.ToLower(contentType)]
 		return ok
+	}
+	if r.Method == "POST" && r.URL.Path == "/v1/trumpets/taste/voice" {
+		return tasteVoiceTypeAllowed(contentType)
 	}
 	return false
 }
@@ -279,6 +301,12 @@ func normalizeTrumpet(c *trumpetCandidate) error {
 	}
 	if !containsString([]string{"verified", "candidate", "historical"}, c.VerificationState) {
 		return errors.New("invalid verification state")
+	}
+	if c.VerifiedVia == "" {
+		c.VerifiedVia = "direct"
+	}
+	if !containsString([]string{"direct", "api", "search-provider"}, c.VerifiedVia) {
+		return errors.New("verifiedVia must be direct, api or search-provider")
 	}
 	if c.VerificationState == "candidate" {
 		if c.URL == "" {
@@ -591,7 +619,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 				}
 			}
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO trumpet_observations(listing_id,user_id,run_id,price,currency,shipping,status,evidence,snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(listing_id,run_id) DO NOTHING`, id, user, run, c.Price, c.Currency, c.Shipping, c.Status, c.Evidence, snapshot)
+		_, err = tx.Exec(ctx, `INSERT INTO trumpet_observations(listing_id,user_id,run_id,price,currency,shipping,status,evidence,snapshot,verified_via) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(listing_id,run_id) DO NOTHING`, id, user, run, c.Price, c.Currency, c.Shipping, c.Status, c.Evidence, snapshot, c.VerifiedVia)
 	}
 	return id, err
 }
@@ -609,10 +637,11 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
  l.status,l.discovery_type,l.search_score,l.search_rationale,l.images,l.tags,l.first_seen,l.last_checked,l.changed_at,h.acquired,l.verification_state,
  COALESCE((SELECT jsonb_build_object('rating',f.rating,'interestState',f.interest_state,'notes',f.notes,'favorite',f.favorite,
  'favoredAttributes',f.favored_attributes,'dislikedAttributes',f.disliked_attributes) FROM trumpet_feedback f WHERE f.horn_id=h.id),'{}'),
- COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence,'snapshot',o.snapshot) ORDER BY o.checked_at) FROM trumpet_observations o WHERE o.listing_id=l.id),'[]'),
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence,'snapshot',o.snapshot,'verifiedVia',o.verified_via) ORDER BY o.checked_at) FROM trumpet_observations o WHERE o.listing_id=l.id),'[]'),
  COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',e.kind,'oldStatus',e.old_status,'newStatus',e.new_status,'oldPrice',e.old_price,'newPrice',e.new_price,'currency',e.currency,'occurredAt',e.occurred_at,'detail',e.detail) ORDER BY e.occurred_at) FROM trumpet_events e WHERE e.listing_id=l.id),'[]'),
  (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL),
- l.check_failures,l.last_check_attempt,l.last_check_error
+ l.check_failures,l.last_check_attempt,l.last_check_error,
+ COALESCE((SELECT o.verified_via FROM trumpet_observations o WHERE o.listing_id=l.id ORDER BY o.checked_at DESC,o.id DESC LIMIT 1),'')
  FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 ORDER BY l.first_seen DESC`, user)
 	if err != nil {
 		return nil, err
@@ -622,7 +651,7 @@ func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]tru
 	for rows.Next() {
 		var l trumpetListing
 		var details, feedback, images, tags, prices, statuses []byte
-		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount, &l.CheckFailures, &l.LastCheckAttempt, &l.LastCheckError); err != nil {
+		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount, &l.CheckFailures, &l.LastCheckAttempt, &l.LastCheckError, &l.VerifiedVia); err != nil {
 			return nil, err
 		}
 		for _, pair := range []struct {
@@ -681,6 +710,10 @@ func (app *application) trumpetBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	listings, err := app.loadTrumpets(r.Context(), user)
 	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if _, _, _, err = app.trumpetTaste(r.Context(), user, listings); err != nil {
 		app.serverError(w, err)
 		return
 	}
@@ -888,6 +921,13 @@ func (app *application) trumpetProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile := trumpetSearchProfile(listings, inspirations)
+	model, _, _, err := app.trumpetTaste(r.Context(), user, listings)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	profile["taste"] = tasteMachineSummary(model)
+	profile["preferences"] = model.preferences
 	universe, e := app.trumpetSourceUniverse(r.Context(), user)
 	if e != nil {
 		app.serverError(w, e)

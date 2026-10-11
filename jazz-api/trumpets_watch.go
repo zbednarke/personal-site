@@ -225,6 +225,9 @@ func selectTrumpetAlerts(listings []trumpetListing, raw []json.RawMessage) []jso
 			continue
 		}
 		score := l.SearchScore
+		if l.TasteScore != nil {
+			score = l.TasteScore.Blended
+		}
 		if l.Feedback.Favorite {
 			score += 15
 		}

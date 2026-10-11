@@ -1,0 +1,29 @@
+{
+  "_fixture": "FICTIONAL Responses API reply (web_search + json_schema output). The cited source is the same eBay item id as the requested URL.",
+  "id": "resp_fixture_match",
+  "status": "completed",
+  "output": [
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "ebay.com/itm/900000000003",
+        "sources": [
+          { "type": "url", "url": "https://www.ebay.com/itm/monette-raja-fixture/900000000003?hash=item0" },
+          { "type": "url", "url": "https://fixtures.invalid/unrelated" }
+        ]
+      }
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"url\":\"https://www.ebay.com/itm/900000000003\",\"title\":\"Monette Raja Bb trumpet raw brass FICTIONAL FIXTURE\",\"state\":\"available\",\"price\":4950,\"currency\":\"USD\",\"shipping\":55,\"evidence\":\"Buy It Now $4,950 shown on the item page\"}"
+        }
+      ]
+    }
+  ]
+}

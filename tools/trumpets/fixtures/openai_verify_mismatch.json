@@ -1,0 +1,29 @@
+{
+  "_fixture": "FICTIONAL Responses API reply whose sources are a different listing: the JSON must be rejected even though it parses.",
+  "id": "resp_fixture_mismatch",
+  "status": "completed",
+  "output": [
+    {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "type": "search",
+        "query": "ebay.com/itm/900000000003",
+        "sources": [
+          { "type": "url", "url": "https://www.ebay.com/itm/another-horn/900000000999" },
+          { "type": "url", "url": "https://fixtures.invalid/search?q=monette" }
+        ]
+      }
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\"url\":\"https://www.ebay.com/itm/900000000003\",\"title\":\"Monette Raja\",\"state\":\"sold\",\"price\":3000,\"currency\":\"USD\",\"shipping\":null,\"evidence\":\"A similar listing sold\"}"
+        }
+      ]
+    }
+  ]
+}
