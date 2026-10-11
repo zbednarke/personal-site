@@ -43,8 +43,18 @@ ALLOWED_FIELDS = {'id','hornId','maker','model','serialNumber','details','title'
 MAKERS = ['AR Resonance','Del Quadro','Van Laar','Harrelson','Monette','Inderbinen','Blackburn','Calicchio','Schilke','Taylor','Adams','Lawler','LOTUS','Eclipse','Benge','GERDT','BAC','Olds','Selmer','Besson','Yamaha','Bach']
 # Accessories and parts sold under instrument makers' names are not horns.
 ACCESSORY = (r'cornets?|flugelhorns?|trombones?|mouthpieces?|mutes?|stands?|valve oil|cleaning kit|trim kit|t-shirts?|case only|piccolo'
-             r'|backbores?|first aid|lead ?pipes?|valve (?:caps?|tops?|buttons?|guides?)|finger buttons?|trumpet tops?'
-             r'|(?<!with )(?<!w/ )(?<!and )(?<!& )(?<!\+ )(?<!plus )(?:trumpet|gig|hard|soft|double|single) (?:cases?|bags?)')
+             r'|backbores?|first aid|lead ?pipes?|valve (?:caps?|tops?|buttons?|guides?)|finger buttons?|trumpet tops?')
+# A case or bag is the item only when nothing outside the case phrase names a horn:
+# "Taylor trumpet case" is a case, "trumpet with original hard case" is a horn.
+CASE_PHRASE = r'\b(?:trumpet\s+)?(?:(?:gig|hard|soft|double|single|flight|carrying)\s+)?(?:cases?|bags?)\b'
+
+
+def is_accessory(subject, extra=''):
+    if re.search(r'\b(?:'+ACCESSORY+(extra and '|'+extra)+r')\b',subject): return True
+    if not re.search(CASE_PHRASE,subject): return False
+    return not re.search(r'\btrumpet\b|\btrompette\b|\btrompet\b',re.sub(CASE_PHRASE,' ',subject))
+
+
 TRAITS = ['raw brass','raw nickel','aged brass','patina','engraving','gold plate','mixed metals','black hardware','upswept','one-off','artist','provenance','custom','handcraft','oiram','antique','engineering','rare','vintage','unusual bell','artist model','prototype','discontinued']
 
 
@@ -172,7 +182,7 @@ def normalize_product(product,url,source,profile):
     text=(title+' '+description).lower()
     if not re.search(r'\btrumpet\b|\btrompette\b|トランペット|\btrompet\b',text): return None
     subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()
-    if re.search(r'\b(?:'+ACCESSORY+r')\b',subject): return None
+    if is_accessory(subject): return None
     if re.search(r'\b(c trumpet|eb trumpet|d trumpet|e-flat|c-trumpet)\b',title.lower()): return None
     maker=identify_maker(title) or identify_maker(description)
     brand=product.get('brand',{})
@@ -356,7 +366,7 @@ def candidate_hint(result, source, profile, page=''):
     text=(title+' '+description+' '+path.replace('-',' ')).lower()
     maker=identify_maker(title) or identify_maker(text)
     subject=re.split(r'\s[|–—]\s',title,maxsplit=1)[0].lower()+' '+path.replace('-',' ')
-    if not maker or re.search(r'\b(?:'+ACCESSORY+r'|c trumpet|eb trumpet|d trumpet)\b',subject): return None
+    if not maker or is_accessory(subject,'c trumpet|eb trumpet|d trumpet'): return None
     # Reuse ranking without treating the temporary scoring offer as evidence.
     scoring=normalize_product({'name':title+' trumpet','description':text,'offers':{'priceCurrency':'USD','availability':'InStock'}},url,source,profile)
     if not scoring or scoring['searchScore']<45: return None

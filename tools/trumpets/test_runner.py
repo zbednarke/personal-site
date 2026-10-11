@@ -259,8 +259,8 @@ class DailyFreshnessTests(unittest.TestCase):
         with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only'}),patch.object(runner,'fetch',side_effect=fetch),patch.object(runner,'search',side_effect=search),patch('builtins.print'):
             return runner.daily(client)
     def test_blocked_active_offer_is_recorded_not_partial_and_blocked_leads_are_free(self):
-        active=runner.normalize_product(PRODUCT,'https://ebay.com/itm/297326287591','eBay',PROFILE)
-        active.update(id='jericho',verificationState='verified',acquired=False,lastChecked='2026-10-07T01:23:47Z',feedback={'interestState':'watch'})
+        active=runner.normalize_product(PRODUCT,'https://ebay.com/itm/1000000001','eBay',PROFILE)
+        active.update(id='blocked-active',verificationState='verified',acquired=False,lastChecked='2026-01-05T00:00:00Z',feedback={'interestState':'watch'})
         leads=[self.lead(i,'ebay.com') for i in range(5)]+[self.lead(i,'shop.test') for i in range(3)]
         def fetch(url,*_):
             if 'ebay.com' in url:raise urllib.error.HTTPError(url,403,'Forbidden',None,None)
@@ -270,14 +270,14 @@ class DailyFreshnessTests(unittest.TestCase):
         report=client.report
         self.assertEqual(report['status'],'succeeded')
         failed={f['id']:f['reason'] for f in report['checkFailures']}
-        self.assertIn('HTTP 403',failed['jericho'])
+        self.assertIn('HTTP 403',failed['blocked-active'])
         self.assertIn('Recheck failed, recorded for retry: ebay.com / HTTP 403',report['error'])
         # Every eBay lead is recorded (so it rotates back), none consumes a check.
         self.assertTrue(all('skipped' in failed[l['id']] for l in leads[:5]))
         promoted={l['id'] for l in report['listings'] if l.get('verificationState')=='verified'}
         self.assertEqual(promoted,{l['id'] for l in leads[5:]})
         self.assertIn('3 queued leads checked (3 verified',report['error'])
-        self.assertNotIn('jericho',{l['id'] for l in report['listings']})
+        self.assertNotIn('blocked-active',{l['id'] for l in report['listings']})
     def test_unsupported_active_page_is_recorded(self):
         active=runner.normalize_product(PRODUCT,'https://shop.test/horn','Shop',PROFILE)
         active.update(id='known',verificationState='verified',acquired=False,feedback={'interestState':'watch'})
@@ -341,6 +341,16 @@ class VerificationCoverageTests(unittest.TestCase):
             p=copy.deepcopy(PRODUCT);p['name']=title
             self.assertIsNone(runner.normalize_product(p,'https://shop.test/x','Shop',PROFILE),title)
             self.assertIsNone(runner.candidate_hint({'url':'https://shop.test/products/x','title':title},'Shop',PROFILE),title)
-        for title in ['Taylor Chicago II Bb trumpet with hard case','Taylor Chicago II trumpet w/ gig bag','Taylor Chicago II trumpet and trumpet case']:
+        for title in ['Taylor Chicago II Bb trumpet with hard case','Taylor Chicago II trumpet w/ gig bag','Taylor Chicago II trumpet and trumpet case',
+                      'Taylor Chicago II Bb trumpet with original hard case','Taylor Chicago II Trumpet, Hard Case','Taylor Chicago II Trumpet in Gig Bag',
+                      'Taylor Chicago II Trumpet - includes double case','Taylor Chicago II trumpet, gig bag included']:
             p=copy.deepcopy(PRODUCT);p['name']=title
             self.assertIsNotNone(runner.normalize_product(p,'https://shop.test/x','Shop',PROFILE),title)
+            self.assertIsNotNone(runner.candidate_hint({'url':'https://shop.test/products/x','title':title},'Shop',PROFILE),title)
+    def test_verified_horn_with_case_in_title_stays_active(self):
+        p=copy.deepcopy(PRODUCT);p['name']='Taylor Chicago II Bb trumpet with original hard case'
+        listing=runner.normalize_product(p,'https://shop.test/horn','Shop',PROFILE)
+        listing.update(id='known',verificationState='verified')
+        result=runner.recheck(listing,lambda *_:page(p),PROFILE)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['status'],'active')

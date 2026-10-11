@@ -493,7 +493,9 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		if oldPrice != nil && c.Price != nil && oldCurrency == c.Currency && *c.Price < *oldPrice {
 			discovery = "price drop"
 		}
-		if oldStatus != c.Status {
+		// A blocked offer that verifies again is the same offer: not a rediscovery.
+		restored := oldStatus == "unverifiable" && c.Status == "active"
+		if oldStatus != c.Status && !restored {
 			discovery = "status change"
 			if oldStatus != "active" && c.Status == "active" {
 				discovery = "rediscovered"
@@ -520,13 +522,13 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		}
 		if oldStatus != c.Status {
 			kind := "status change"
-			if oldStatus != "active" && c.Status == "active" {
+			if oldStatus != "active" && c.Status == "active" && !restored {
 				kind = "rediscovered"
 				if oldVerification == "candidate" {
 					kind = "newly discovered"
 				}
 			}
-			meaningful := !acquired && c.VerificationState != "candidate"
+			meaningful := !acquired && c.VerificationState != "candidate" && !restored
 			if oldVerification == "candidate" && c.Status == "active" {
 				var crossposted bool
 				if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_listings WHERE horn_id=$1 AND id<>$2 AND verification_state='verified' AND status='active' AND (currency<>$3 OR price IS NULL OR $4::numeric IS NULL OR price<=$4::numeric*1.03))`, horn, id, c.Currency, c.Price).Scan(&crossposted); err != nil {

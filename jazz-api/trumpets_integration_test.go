@@ -366,6 +366,15 @@ func TestTrumpetPersistence(t *testing.T) {
 		if status, failures, reason := state(); status != "active" || failures != 0 || reason != "" {
 			t.Fatalf("recovery state %s %d %q", status, failures, reason)
 		}
+		// Recovering from a blocked page is the same offer, not a meaningful rediscovery.
+		var recoveredKind, discoveryType string
+		var recoveredMeaningful bool
+		if err := isolated.QueryRow(ctx, `SELECT kind,meaningful FROM trumpet_events WHERE listing_id=$1 AND old_status='unverifiable' AND new_status='active'`, otherID).Scan(&recoveredKind, &recoveredMeaningful); err != nil || recoveredKind != "status change" || recoveredMeaningful {
+			t.Fatalf("recovery event %q %v %v", recoveredKind, recoveredMeaningful, err)
+		}
+		if err := isolated.QueryRow(ctx, `SELECT discovery_type FROM trumpet_listings WHERE id=$1`, otherID).Scan(&discoveryType); err != nil || discoveryType == "rediscovered" {
+			t.Fatalf("recovery discovery type %q %v", discoveryType, err)
+		}
 		// A failure on a listing already verified today is ignored.
 		blocked.ExternalID = "blocked-after-success"
 		if ingest(blocked, 200)["checkFailures"].(float64) != 0 {
