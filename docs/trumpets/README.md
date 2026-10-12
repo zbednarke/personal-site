@@ -576,8 +576,11 @@ or keyboard.
   photos come first (one photo-less card in five), and stale or unverified leads
   come after everything else. Acquired and passed horns are left out. **Undo**
   always brings the card back in front; it stays there through later replies
-  (even stale or out-of-order ones, which are ignored) until it gets a new
-  reaction or leaves the board's eligible set.
+  until it gets a new reaction or its horn leaves the board's eligible set
+  (checked whenever the board loads). Every taste reply carries a
+  `watermark` (the newest event and the preferences revision it was computed
+  from); the page ignores a reply older than the one on screen, so a reload
+  answered before a write landed can't hide it.
 - **Head to head:** two horns; tap the one you'd rather own, or **Both** (↑) /
   **Neither** (↓). Both sides must be *comparable* (`tasteComparable`): an
   active, verified listing with a photo and a price, checked in the last 10
@@ -585,13 +588,15 @@ or keyboard.
   "Head to head needs more verified listings with photos — N eligible" instead
   of pairing weak ones.
   Pair selection is connectivity first (`trumpets_taste_pairs.go`): choices
-  (Both and Neither included; undone ones not) are edges between horns, and
-  while the comparison graph has islands the next pairs bridge them, the
-  largest component against singletons (new horns) and smaller islands, each
-  side represented by its most uncertain horn. After that, the pairs whose
-  outcome the model is least sure of (largest predictive sd of the difference ×
-  p(1−p)), with one pair in five linking the least-compared horn to one far from
-  it. Pairs compared in the last two weeks are skipped, and each horn appears at
+  (Both and Neither included; undone ones not) are edges between horns (also
+  through horns no longer comparable, so a sold horn still links its
+  neighbours), and while the comparable horns form islands the next pairs
+  bridge them, the largest component against singletons (new horns) and
+  smaller islands, each side represented by its most uncertain horn. After
+  that, the pairs whose outcome the model is least sure of (largest predictive
+  sd of the difference × p(1−p)); every fifth choice the first pair instead
+  links the least-compared horn to one far from it. A horn is compared through
+  its comparable listing even when its primary listing is stale. Pairs compared in the last two weeks are skipped, and each horn appears at
   most twice per batch. **What I've learned** shows "Comparisons connect N of M
   eligible horns (K islands)".
 - **Chips** on a card (raw brass, gold plate, patina, engraving, odd bell, vintage,

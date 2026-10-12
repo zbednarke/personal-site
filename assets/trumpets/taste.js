@@ -21,11 +21,10 @@
     frontPair = null,
     pinGen = 0,
     pinnedGen = 0;
-  // Every API call gets a sequence number when it is sent; a reply older
-  // than the newest one already applied is stale and does not replace data.
-  let seqSent = 0,
-    seqApplied = 0;
-  const seqOf = new WeakMap();
+  // The watermark of the taste state on screen (see TasteModel.newerOrSame):
+  // a reply computed from older history never replaces newer state, whatever
+  // order requests were sent or answered in.
+  let applied = null;
   const tagState = new Map(); // listingId -> Set of chips (optimistic)
 
   function el(tag, className, text) {
@@ -67,7 +66,6 @@
     n.classList.toggle("error", error);
   }
   async function api(path, body, method = "POST", headers = { "Content-Type": "application/json" }) {
-    const seq = ++seqSent;
     const response = await fetch("/trumpets/api/v1/trumpets" + path, {
       credentials: "same-origin",
       cache: "no-store",
@@ -82,36 +80,31 @@
       error.status = response.status;
       throw error;
     }
-    if (payload && typeof payload === "object") seqOf.set(payload, seq);
     return payload;
   }
-  // Applies a /taste state reply unless a newer one was already applied.
+  // Applies a /taste state reply unless the state on screen is newer.
   // Returns whether it was applied.
   function accept(next) {
-    const seq = seqOf.get(next) ?? ++seqSent;
-    if (seq < seqApplied) return false;
-    seqApplied = seq;
+    if (!T.newerOrSame(next.watermark, applied)) return false;
+    applied = next.watermark || applied;
     data = next;
-    keepFront();
     for (const [id, chips] of Object.entries(next.tags || {})) tagState.set(id, new Set(chips));
     render();
     return true;
   }
-  // Puts the pinned card or pair first; drops the pin once its horn has left
-  // the board (acquired, passed or deleted).
-  function keepFront() {
-    if (!data) return;
-    if (frontCard && !T.pinnable(listing(frontCard))) frontCard = null;
-    if (frontCard) data.queue = T.cardToFront(data.queue, frontCard, (id) => listing(id)?.hornId);
-    if (frontPair && !frontPair.split("|").every((id) => T.pinnable(listing(id)))) frontPair = null;
-    if (frontPair) data.pairs = T.pairToFront(data.pairs, frontPair);
+  // The queue and pairs as shown: the server's, with an undo's pinned card or
+  // pair in front. data keeps the server's order, so a pin that lets go (its
+  // horn left the board) leaves no trace. Validated on every render.
+  function shown() {
+    const kept = T.keepFront(data, { frontCard, frontPair }, { listing, boardReady: boardState === "ready" });
+    ({ frontCard, frontPair } = kept);
+    return kept;
   }
   function pin(entry, gen) {
     if (gen < pinnedGen) return; // a newer undo already holds the front
     pinnedGen = gen;
     if (entry.kind === "swipe") frontCard = entry.listingId;
     else frontPair = entry.key;
-    keepFront();
   }
   async function load() {
     if (loading) return loading;
@@ -193,10 +186,10 @@
     return boardState === "failed" ? "Tap Refresh board above to try again." : "";
   }
   function currentCard() {
-    return T.nextCards(data?.queue, doneCards).find((q) => listing(q.listingId)) || null;
+    return T.nextCards(shown().queue, doneCards).find((q) => listing(q.listingId)) || null;
   }
   function currentPair() {
-    return T.nextPairs(data?.pairs, donePairs).find((p) => listing(p.a) && listing(p.b)) || null;
+    return T.nextPairs(shown().pairs, donePairs).find((p) => listing(p.a) && listing(p.b)) || null;
   }
   function renderSwipe() {
     const deck = $("#swipe-deck");
@@ -350,7 +343,7 @@
     renderChips();
     renderLearned();
     $("#taste-undo").disabled = $("#pair-undo").disabled = !undoStack.length;
-    $("#taste-count").textContent = T.nextCards(data?.queue, doneCards).length;
+    $("#taste-count").textContent = T.nextCards(shown().queue, doneCards).length;
   }
 
   // ---- Reactions ------------------------------------------------------------
@@ -670,7 +663,7 @@
     },
     boardLoaded() {
       boardState = "ready";
-      if (data) render();
+      if (data) render(); // also validates pins against the board just loaded
       else if (active) load();
       else
         api("/taste")

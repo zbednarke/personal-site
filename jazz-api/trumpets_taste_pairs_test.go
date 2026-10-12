@@ -115,20 +115,91 @@ func TestTastePairsStrengthenAConnectedGraph(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		events = append(events, pairEvent(int64(i+1), fmt.Sprintf("h%02d", i), fmt.Sprintf("h%02d", i+1), "a", now.Add(-30*24*time.Hour)))
 	}
-	m, d := buildTasteModel(listings, markUndone(events), now)
+	// The page shows the first pair of each answer: answering it 20 times,
+	// about one top pair in five strengthens the graph.
+	structures := 0
+	for round := 0; round < 20; round++ {
+		m, d := buildTasteModel(listings, markUndone(events), now)
+		g := newTastePairGraph(d, events, now)
+		if len(g.components()) != 1 {
+			t.Fatal("the path should stay connected")
+		}
+		pairs := tastePairs(m, d, events, now)
+		if len(pairs) == 0 {
+			t.Fatal("no pairs")
+		}
+		top := pairs[0]
+		if top.Reason == "structure" {
+			structures++
+			a, b := "horn-"+top.A, "horn-"+top.B
+			minDegree := len(g.nodes)
+			for _, h := range g.nodes {
+				minDegree = min(minDegree, len(g.adj[h]))
+			}
+			if g.adj[a][b] || (len(g.adj[a]) != minDegree && len(g.adj[b]) != minDegree) {
+				t.Fatalf("round %d: structure pair %+v is not a least-compared horn against a horn not yet next to it", round, top)
+			}
+		}
+		for _, p := range pairs[1:] {
+			if p.Reason == "structure" {
+				t.Fatalf("a structure pair below the top: %+v", pairs)
+			}
+		}
+		events = append(events, pairEvent(int64(len(events)+1), top.A, top.B, "a", now))
+	}
+	if structures < 3 || structures > 5 {
+		t.Fatalf("%d structure pairs at the top in 20 answers, want about 4", structures)
+	}
+}
+
+// A horn that is no longer comparable (sold) still connects the horns it
+// was compared with; components count comparable horns only.
+func TestTastePairGraphKeepsPathsThroughIneligibleHorns(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 7)
+	listings[6].Status = "sold" // h06
+	events := []tasteEvent{
+		pairEvent(1, "h00", "h06", "a", now), // h00 > h06
+		pairEvent(2, "h06", "h01", "a", now), // h06 > h01
+	}
+	_, d := buildTasteModel([]trumpetListing{listings[0], listings[1], listings[6]}, markUndone(events), now)
 	g := newTastePairGraph(d, events, now)
-	if len(g.components()) != 1 {
-		t.Fatal("fixture should be connected")
+	if len(g.nodes) != 2 || len(g.components()) != 1 {
+		t.Fatalf("nodes %v, components %v", g.nodes, g.components())
 	}
-	pairs := tastePairs(m, d, events, now)
-	if len(pairs) < tasteStructureEvery {
-		t.Fatalf("pairs %+v", pairs)
+	if s := g.stats(); s.Components != 1 || s.Largest != 2 || s.Share != 1 {
+		t.Fatalf("stats %+v", s)
 	}
-	// One pair in five links a least-compared horn to one far from it.
-	p := pairs[tasteStructureEvery-1]
-	dist := g.distances("horn-" + p.A)["horn-"+p.B]
-	if dist < 2 || (len(g.adj["horn-"+p.A]) > 1 && len(g.adj["horn-"+p.B]) > 1) {
-		t.Fatalf("structure pair %+v: distance %d, degrees %d/%d", p, dist, len(g.adj["horn-"+p.A]), len(g.adj["horn-"+p.B]))
+}
+
+// A horn whose primary listing is not comparable is still a node when another
+// of its listings is, and that listing is the one compared.
+func TestTastePairsUseAHornsComparableListing(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 6)
+	// Same horn as h00, listed first and ranked as high, but without a price.
+	stale := tasteListing("h00-unpriced", "Maker0", "M0", "raw brass", 1500, comparable(now), func(l *trumpetListing) {
+		l.HornID = "horn-h00"
+		l.Price = nil
+	})
+	listings = append([]trumpetListing{stale}, listings...)
+	m, d := buildTasteModel(listings, nil, now)
+	if d.horns["horn-h00"].primary.ID != "h00-unpriced" {
+		t.Fatalf("fixture: the unpriced listing should be the primary, got %s", d.horns["horn-h00"].primary.ID)
+	}
+	g := newTastePairGraph(d, nil, now)
+	if len(g.nodes) != 6 || g.listed["horn-h00"].ID != "h00" {
+		t.Fatalf("nodes %v, horn-h00 listed as %q", g.nodes, g.listed["horn-h00"].ID)
+	}
+	seen := false
+	for _, p := range tastePairs(m, d, nil, now) {
+		if p.A == "h00-unpriced" || p.B == "h00-unpriced" {
+			t.Fatalf("pair with the unpriced listing: %+v", p)
+		}
+		seen = seen || p.A == "h00" || p.B == "h00"
+	}
+	if !seen {
+		t.Fatal("horn h00 is never compared")
 	}
 }
 

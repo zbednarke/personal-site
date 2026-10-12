@@ -24,11 +24,17 @@ import (
 //     comparable horn is a singleton, so it is asked about at once.
 //  2. Then the most informative pairs (largest predictive sd of the
 //     difference times p(1-p)), as before.
-//  3. Once the graph is connected, one pair in five (tasteStructureEvery)
-//     instead strengthens its structure: the least-compared horn (lowest
-//     degree) against the horn farthest from it (breadth-first distance),
-//     which adds a second path to weakly connected horns and shortens the
-//     graph's diameter.
+//  3. Once the graph is connected, every fifth choice (tasteStructureEvery,
+//     counted over live pair choices) is asked first a structure pair: the
+//     least-compared horn (lowest degree) against the horn farthest from it
+//     (breadth-first distance), which adds a second path to weakly connected
+//     horns and shortens the graph's diameter. It goes first because the
+//     page always shows the first pair of the newest answer.
+//
+// A horn is represented by its comparable listing (tasteComparableListing).
+// Edges are every live choice between two horns, comparable or not, so a
+// horn that stops being comparable (sold) still connects its neighbours;
+// components are counted over the comparable horns only.
 //
 // In every case each horn appears at most twice per answer, and pairs compared
 // in the last two weeks are not offered again.
@@ -51,6 +57,9 @@ func newTasteUnionFind(nodes []string) *tasteUnionFind {
 }
 
 func (u *tasteUnionFind) find(n string) string {
+	if _, ok := u.parent[n]; !ok { // a node first seen in an edge
+		u.parent[n], u.size[n] = n, 1
+	}
 	for u.parent[n] != n {
 		u.parent[n] = u.parent[u.parent[n]]
 		n = u.parent[n]
@@ -72,22 +81,49 @@ func (u *tasteUnionFind) union(a, b string) bool {
 	return true
 }
 
-// tastePairGraph is the comparison graph over comparable horns.
+// tasteComparableListing is the listing that represents a horn in Head to
+// head: its primary when that is comparable, else its first comparable other
+// listing (a stale primary must not hide a horn that has a live offer).
+func tasteComparableListing(h *tasteHorn, now time.Time) (trumpetListing, bool) {
+	if tasteComparable(h.primary, now) {
+		return h.primary, true
+	}
+	for _, l := range h.listings {
+		if tasteComparable(l, now) {
+			return l, true
+		}
+	}
+	return trumpetListing{}, false
+}
+
+// tastePairGraph is the comparison graph. Its nodes are the comparable
+// horns; its edges are every live pair choice between any two horns, so a
+// path through a horn that is no longer comparable (sold, say) still
+// connects the horns on either side of it.
 type tastePairGraph struct {
-	nodes []string // horns, in board order
-	uf    *tasteUnionFind
-	adj   map[string]map[string]bool
+	nodes  []string                  // comparable horns, in board order
+	listed map[string]trumpetListing // the listing that represents each node
+	all    []string                  // every horn, in board order (for walks)
+	uf     *tasteUnionFind
+	adj    map[string]map[string]bool
+	live   int // live (not undone) pair choices between two different horns
 }
 
 func newTastePairGraph(d *tasteData, events []tasteEvent, now time.Time) *tastePairGraph {
-	g := &tastePairGraph{adj: map[string]map[string]bool{}}
+	g := &tastePairGraph{adj: map[string]map[string]bool{}, listed: map[string]trumpetListing{}}
 	for _, horn := range d.order {
-		if h := d.horns[horn]; d.eligible(h) && tasteComparable(h.primary, now) {
+		g.all = append(g.all, horn)
+		g.adj[horn] = map[string]bool{}
+		h := d.horns[horn]
+		if !d.eligible(h) {
+			continue
+		}
+		if l, ok := tasteComparableListing(h, now); ok {
 			g.nodes = append(g.nodes, horn)
-			g.adj[horn] = map[string]bool{}
+			g.listed[horn] = l
 		}
 	}
-	g.uf = newTasteUnionFind(g.nodes)
+	g.uf = newTasteUnionFind(g.all)
 	for _, e := range events {
 		if e.Kind != "pair" || e.undone {
 			continue
@@ -97,6 +133,7 @@ func newTastePairGraph(d *tasteData, events []tasteEvent, now time.Time) *tasteP
 		if !okA || !okB || a.HornID == b.HornID || g.adj[a.HornID] == nil || g.adj[b.HornID] == nil {
 			continue
 		}
+		g.live++
 		g.adj[a.HornID][b.HornID], g.adj[b.HornID][a.HornID] = true, true
 		g.uf.union(a.HornID, b.HornID)
 	}
@@ -129,7 +166,7 @@ func (g *tastePairGraph) distances(from string) map[string]int {
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
-		for _, m := range g.nodes { // board order keeps ties deterministic
+		for _, m := range g.all { // board order keeps ties deterministic
 			if g.adj[n][m] {
 				if _, seen := dist[m]; !seen {
 					dist[m] = dist[n] + 1
@@ -194,7 +231,7 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	}
 	cands := map[string]cand{}
 	for _, horn := range g.nodes {
-		id := d.horns[horn].primary.ID
+		id := g.listed[horn].ID
 		keys := d.keys(id)
 		z, v := m.affinity(keys)
 		cands[horn] = cand{id: id, keys: keys, z: z, v: v}
@@ -206,14 +243,14 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	ok := func(a, b string) bool {
 		return a != b && free(a) && free(b) && !recent[pairKey(a, b)] && !offered[pairKey(a, b)]
 	}
-	add := func(a, b string) {
+	add := func(a, b, reason string) {
 		ca, cb := cands[a], cands[b]
 		v := math.Max(0, ca.v+cb.v-2*m.covariance(ca.keys, cb.keys))
 		p := sigmoid(ca.z - cb.z)
 		used[a]++
 		used[b]++
 		offered[pairKey(a, b)] = true
-		out = append(out, tastePair{A: ca.id, B: cb.id, P: math.Round(1000*p) / 1000, SD: math.Round(1000*math.Sqrt(v)) / 1000})
+		out = append(out, tastePair{A: ca.id, B: cb.id, P: math.Round(1000*p) / 1000, SD: math.Round(1000*math.Sqrt(v)) / 1000, Reason: reason})
 	}
 	// The most uncertain free horn of a group (ties: board order).
 	pick := func(group []string, partner string) string {
@@ -268,7 +305,7 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 					continue
 				}
 				if a := pick(anchor, b); a != "" {
-					add(a, b)
+					add(a, b, "bridge")
 					break
 				}
 			}
@@ -304,8 +341,13 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		if far == "" {
 			return false
 		}
-		add(low, far)
+		add(low, far, "structure")
 		return true
+	}
+	// The page shows the first pair of each answer, so the structure pair
+	// goes first, on every fifth choice of a connected graph.
+	if connected && g.live%tasteStructureEvery == tasteStructureEvery-1 {
+		structure()
 	}
 
 	// 2. The most informative pairs, bounded to the 40 most uncertain horns.
@@ -344,11 +386,8 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		if len(out) == tastePairLimit {
 			break
 		}
-		if connected && len(out)%tasteStructureEvery == tasteStructureEvery-1 {
-			structure()
-		}
-		if len(out) < tastePairLimit && ok(o.a, o.b) {
-			add(o.a, o.b)
+		if ok(o.a, o.b) {
+			add(o.a, o.b, "uncertain")
 		}
 	}
 	return out

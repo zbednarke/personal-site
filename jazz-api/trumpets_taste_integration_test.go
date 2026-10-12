@@ -186,6 +186,13 @@ func TestTrumpetTastePersistence(t *testing.T) {
 	if c, _ := graph(reverted); c != 6 {
 		t.Fatalf("an undone choice still joins horns: %v components", c)
 	}
+	// The watermark is the newest event the response was computed from.
+	watermark := func(state map[string]any) float64 {
+		return state["watermark"].(map[string]any)["events"].(float64)
+	}
+	if watermark(chose) != chose["event"].(map[string]any)["id"].(float64) || watermark(reverted) != reverted["event"].(map[string]any)["id"].(float64) || watermark(reverted) <= watermark(chose) || watermark(taste) >= watermark(chose) {
+		t.Fatalf("watermarks: taste %v, choice %v, undo %v", taste["watermark"], chose["watermark"], reverted["watermark"])
+	}
 	if conf := taste["model"].(map[string]any)["confidence"].(float64); conf != 0 {
 		t.Fatalf("confidence before any reaction = %v", conf)
 	}
@@ -333,6 +340,9 @@ func TestTrumpetTastePersistence(t *testing.T) {
 	prefs["statements"] = []string{"Cool horn, not dark horn (fixture)", "Unusual engineering (fixture)"}
 	if again := call("PUT", "/v1/trumpets/taste/preferences", prefs, "owner", 200); again["revision"].(float64) != 2 {
 		t.Fatal("second version")
+	}
+	if w := call("GET", "/v1/trumpets/taste", nil, "owner", 200)["watermark"].(map[string]any); w["preferences"].(float64) != 2 {
+		t.Fatalf("watermark after two preference versions: %v", w)
 	}
 	if other := call("GET", "/v1/trumpets/taste/preferences", nil, "intruder", 200); other["revision"].(float64) != 0 {
 		t.Fatal("preferences leaked across owners")

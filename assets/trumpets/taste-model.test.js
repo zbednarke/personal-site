@@ -123,6 +123,46 @@ test("an undone card is pinned while its horn is still on the board, once per ho
   assert.equal(T.pinnable({ feedback: { interestState: "pass" } }), false);
 });
 
+test("pins: validated against the board once it has loaded; pairs must stay comparable and appear once per pair of horns", () => {
+  const now = Date.parse("2026-10-12T12:00:00Z");
+  const good = (id, horn) => ({ id, hornId: horn, status: "active", verificationState: "verified", images: ["x"], price: 2000, currency: "USD", lastChecked: "2026-10-11T12:00:00Z", feedback: { interestState: "watch" } });
+  const board = { a: good("a", "ha"), b: good("b", "hb"), a2: good("a2", "ha"), c: { ...good("c", "hc"), lastChecked: "2026-09-20T00:00:00Z" } };
+  const listing = (id) => board[id] || null;
+  assert.equal(T.comparable(board.a, now), true);
+  assert.equal(T.comparable(board.c, now), false, "not checked in 10 days");
+  assert.equal(T.comparable({ ...board.a, price: null }, now), false);
+  assert.equal(T.comparable({ ...board.a, images: [] }, now), false);
+  assert.equal(T.comparable({ ...board.a, verificationState: "candidate" }, now), false);
+  // The pinned pair goes first; the same two horns under other listings go.
+  const state = { queue: [{ listingId: "b" }], pairs: [{ a: "a2", b: "b" }, { a: "b", b: "c" }] };
+  let kept = T.keepFront(state, { frontCard: null, frontPair: "a|b" }, { listing, now });
+  assert.deepEqual(kept.pairs, [{ a: "a", b: "b", p: 0.5, sd: 1 }, { a: "b", b: "c" }]);
+  assert.equal(kept.frontPair, "a|b");
+  // A pair with a side no longer comparable lets go.
+  kept = T.keepFront(state, { frontCard: null, frontPair: "b|c" }, { listing, now });
+  assert.equal(kept.frontPair, null);
+  assert.deepEqual(kept.pairs, state.pairs);
+  // A card whose horn left the board lets go, but only once the board has
+  // loaded: before that the pin is kept (and checked when it loads).
+  kept = T.keepFront(state, { frontCard: "gone", frontPair: null }, { listing, now, boardReady: false });
+  assert.equal(kept.frontCard, "gone");
+  assert.equal(kept.queue[0].listingId, "gone");
+  kept = T.keepFront(state, { frontCard: "gone", frontPair: null }, { listing, now, boardReady: true });
+  assert.equal(kept.frontCard, null);
+  assert.deepEqual(kept.queue, state.queue);
+});
+
+test("a reply applies only if its watermark is not older than the one on screen", () => {
+  const on = { events: 10, preferences: 2 };
+  assert.equal(T.newerOrSame({ events: 11, preferences: 2 }, on), true);
+  assert.equal(T.newerOrSame({ events: 10, preferences: 2 }, on), true, "ties apply");
+  assert.equal(T.newerOrSame({ events: 10, preferences: 3 }, on), true);
+  assert.equal(T.newerOrSame({ events: 9, preferences: 5 }, on), false, "computed before an event on screen");
+  assert.equal(T.newerOrSame({ events: 10, preferences: 1 }, on), false);
+  assert.equal(T.newerOrSame(undefined, on), true, "older servers send none");
+  assert.equal(T.newerOrSame(on, null), true, "nothing on screen yet");
+});
+
 test("head to head explains a shortage of comparable listings", () => {
   assert.equal(T.pairShortage({ pairEligible: 6, pairMinimum: 6 }), null);
   assert.equal(T.pairShortage({}), null, "older servers: no claim");

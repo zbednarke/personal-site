@@ -96,11 +96,55 @@
   function pinnable(l) {
     return !!l && !l.acquired && l.feedback?.interestState !== "pass";
   }
-  function pairToFront(pairs, key) {
+  // The server's tasteComparable, mirrored for pins: Head to head compares
+  // only active, verified listings with a photo and a price, checked in the
+  // last 10 days, not acquired or passed.
+  const COMPARABLE_CHECKED_MS = 10 * 24 * 3600 * 1000;
+  function comparable(l, now = Date.now()) {
+    return (
+      pinnable(l) &&
+      l.status === "active" &&
+      l.verificationState === "verified" &&
+      (l.images?.length || 0) > 0 &&
+      l.price > 0 &&
+      !!l.currency &&
+      !!l.lastChecked &&
+      now - Date.parse(l.lastChecked) <= COMPARABLE_CHECKED_MS
+    );
+  }
+  // As cardToFront, for a pair key "a|b"; hornOf also drops pairs of the
+  // same two horns under other listings.
+  function pairToFront(pairs, key, hornOf) {
     const list = pairs || [];
     const [a, b] = key.split("|");
     const item = list.find((p) => pairKey(p) === key) || { a, b, p: 0.5, sd: 1 };
-    return [item, ...list.filter((p) => pairKey(p) !== key)];
+    const horns = hornOf ? [hornOf(a), hornOf(b)].sort().join("|") : null;
+    const sameHorns = (p) => horns != null && hornOf(p.a) != null && [hornOf(p.a), hornOf(p.b)].sort().join("|") === horns;
+    return [item, ...list.filter((p) => pairKey(p) !== key && !sameHorns(p))];
+  }
+  // Keeps an undo's pinned card and pair in front of a taste state, or lets go
+  // of them once their horns have left the board (or, for a pair, are no
+  // longer comparable). While the board has not loaded (boardReady false) a
+  // pin is kept unchecked: it is validated when the board loads.
+  // Returns { queue, pairs, frontCard, frontPair }.
+  function keepFront(state, pins, { listing, boardReady = true, now = Date.now() }) {
+    let { frontCard, frontPair } = pins;
+    let queue = state?.queue,
+      pairs = state?.pairs;
+    const hornOf = (id) => listing(id)?.hornId;
+    if (frontCard && boardReady && !pinnable(listing(frontCard))) frontCard = null;
+    if (frontCard) queue = cardToFront(queue, frontCard, hornOf);
+    if (frontPair && boardReady && !frontPair.split("|").every((id) => comparable(listing(id), now))) frontPair = null;
+    if (frontPair) pairs = pairToFront(pairs, frontPair, hornOf);
+    return { queue, pairs, frontCard, frontPair };
+  }
+  // Whether a taste state reply is at least as new as the one on screen, by
+  // the watermark the server computes with it (newest event, preferences
+  // revision). Ties apply; replies without a watermark always apply.
+  function newerOrSame(next, applied) {
+    if (!next || !applied) return true;
+    if (next.events !== applied.events) return next.events > applied.events;
+    return next.preferences >= applied.preferences;
   }
   // Head to head only compares listings worth comparing (the server's
   // tasteComparable: active, verified, a photo, a price, checked in the last
@@ -191,5 +235,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, pairShortage, graphText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, newerOrSame, pairShortage, graphText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });

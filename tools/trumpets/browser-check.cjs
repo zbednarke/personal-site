@@ -946,18 +946,57 @@ function syntheticPng(width, height) {
       assert.equal(await chip.getAttribute("aria-pressed"), pressed);
     }
     // Once the horn leaves the board's eligible set (here: passed), the pin
-    // lets go at the next reply instead of bringing it back.
+    // lets go as soon as the board reloads, instead of bringing it back.
     const feedback = (method, body) => mobile.evaluate(async ([id, method, body]) => (await fetch(`/trumpets/api/v1/trumpets/listings/${id}/feedback`, { method, headers: { "Content-Type": "application/json" }, body })).status, [partialId, method, body]);
     assert.equal(await feedback("PUT", JSON.stringify({ interestState: "pass" })), 200);
     await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
     await mobile.waitForFunction((id) => window.TrumpetApp.listing(id)?.feedback.interestState === "pass", partialId);
-    await chip.evaluate((c) => (c.dataset.before = "1"));
-    await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), chip.tap()]);
-    await mobile.waitForFunction(() => !document.querySelector("#taste-chips .chip")?.dataset.before);
+    // (The board's reload and the taste page's render happen in one task.)
     assert.notEqual(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "a passed horn is no longer pinned in front");
     assert.equal(await feedback("DELETE"), 200);
     await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
     await mobile.unroute("**/taste/events", lastInQueue);
+    // A reply that was computed before another one's write landed never hides
+    // that write. A chip's POST is held until a taste reload (sent later) has
+    // been answered; the chip stays pressed when the POST's reply arrives.
+    {
+      // Settle on the server's first card (a reload), then use two chips not
+      // yet pressed on it.
+      const settled = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+      await mobile.evaluate(() => window.TasteBoard.setActive(true));
+      const head = (await (await settled).json()).queue[0].listingId;
+      await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, head);
+      const [i, j] = await mobile.locator("#taste-chips .chip").evaluateAll((n) => n.map((c, k) => (c.getAttribute("aria-pressed") === "false" ? k : -1)).filter((k) => k >= 0));
+      const chipAt = (k) => mobile.locator("#taste-chips .chip").nth(k);
+      const [first, second] = [chipAt(i), chipAt(j)];
+      await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), first.tap()]);
+      await mobile.waitForFunction((k) => document.querySelectorAll("#taste-chips .chip")[k].getAttribute("aria-pressed") === "true", i);
+      const secondTag = await second.innerText();
+      let releaseTag;
+      const tagGate = new Promise((r) => (releaseTag = r));
+      const holdTag = async (route) => {
+        const body = JSON.parse(route.request().postData() || "{}");
+        if (route.request().method() !== "POST" || body.kind !== "tag" || body.tag !== secondTag) return route.fallback();
+        await tagGate;
+        return route.fallback();
+      };
+      await mobile.route("**/taste/events", holdTag);
+      await second.tap(); // pressed optimistically; its POST is held
+      const reload = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+      await mobile.evaluate(() => window.TasteBoard.setActive(true)); // sent after the chip's POST
+      await (await reload).finished();
+      await mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+      const tagged = mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300);
+      releaseTag();
+      await (await tagged).finished();
+      await mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+      assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), head);
+      assert.equal(await chipAt(j).getAttribute("aria-pressed"), "true", "the chip's write is not hidden by a reload answered before it landed");
+      await mobile.unroute("**/taste/events", holdTag);
+      for (const chip of [chipAt(j), chipAt(i)]) {
+        await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), chip.tap()]);
+      }
+    }
     assert.equal(await mobile.locator("#taste-toast").count(), 0, "the toast closes on undo");
     // Review fixes: a reaction whose POST fails after it was already undone
     // must not remove another reaction from the undo stack, and must not hide
@@ -1089,7 +1128,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line), photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line), photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

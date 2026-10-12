@@ -118,6 +118,9 @@ type tastePair struct {
 	B  string  `json:"b"`
 	P  float64 `json:"p"`
 	SD float64 `json:"sd"`
+	// Why this pair: "bridge" (joins two islands), "structure" (strengthens a
+	// connected graph) or "uncertain" (the model is least sure of it).
+	Reason string `json:"reason"`
 }
 type tasteChange struct {
 	tasteFeature
@@ -1240,12 +1243,37 @@ func (app *application) tasteResponse(ctx context.Context, user uuid.UUID) (map[
 	summary := tasteMachineSummary(m)
 	graph := newTastePairGraph(d, events, now)
 	return map[string]any{
-		"model": summary, "weights": summary["weights"], "changes": tasteChanges(m, tasteCachedWeekAgo(user, m, d, events, now)),
+		"watermark": tasteStateWatermark(events, m.preferences),
+		"model":     summary, "weights": summary["weights"], "changes": tasteChanges(m, tasteCachedWeekAgo(user, m, d, events, now)),
 		"scores": scores, "queue": tasteQueue(m, d, events, now), "pairs": tastePairs(m, d, events, now),
 		"pairEligible": len(graph.nodes), "pairMinimum": tastePairMinimum, "pairGraph": graph.stats(),
 		"tags": tags, "tagCounts": counts, "chips": tasteChips, "recent": recent, "preferences": m.preferences,
 		"noteSignals": trumpetNotePreferences(notes),
 	}, nil
+}
+
+// tasteWatermark says how much of the owner's taste history a response
+// reflects: the newest event it was computed from and the preferences
+// revision, from the same reads as the rest of the response. The page applies
+// a response only if its watermark is not older than the one on screen, so a
+// reply that was computed before another one's write landed cannot hide it,
+// whatever order the requests were sent or answered in.
+type tasteWatermark struct {
+	Events      int64 `json:"events"`
+	Preferences int   `json:"preferences"`
+}
+
+func tasteStateWatermark(events []tasteEvent, prefs *tastePreferences) tasteWatermark {
+	w := tasteWatermark{}
+	for _, e := range events {
+		if e.ID > w.Events {
+			w.Events = e.ID
+		}
+	}
+	if prefs != nil {
+		w.Preferences = prefs.Revision
+	}
+	return w
 }
 
 func (app *application) getTrumpetTaste(w http.ResponseWriter, r *http.Request) {
