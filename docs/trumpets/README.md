@@ -765,7 +765,8 @@ The first taste-training run was stored, but the runner crashed: `POST
   from the previous one (`null` otherwise; the detail lists each version once);
   `trumpet_events(listing_id, occurred_at)` is indexed for the per-listing
   history; the taste endpoints skip loading the histories they never use.
-- **Runner.** The submit gets 180 s. If the response still never arrives, the runner
+- **Runner.** The submit gets 180 s. If the response still never arrives (or the
+  API answers 429, 502, 503 or 504), the runner
   asks `GET /machine/runs?externalId=` (after 15, 30 and 60 s) whether the run was
   stored, and submits again only if not. That is safe: a run is stored once per
   `externalId` under the owner's lock, and a repeat replays it. Against an API

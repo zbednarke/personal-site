@@ -433,10 +433,13 @@ def is_reverb(url):
     return bool(reverb_id(url))
 
 
-def reverb_item(item, get_api=None, sleep=None):
+def reverb_item(item, get_api=None, sleep=None, currency=None):
     """GET /api/listings/{id} in the listing's own currency (the API converts to
     a display currency guessed from the caller; a mismatch is refetched with
-    X-Display-Currency)."""
+    X-Display-Currency). When the native currency is already known (from a
+    search result), one request asks for it directly."""
+    if currency and re.fullmatch('[A-Z]{3}',currency):
+        return api_json(REVERB_API+item,dict(REVERB_HEADERS,**{'X-Display-Currency':currency}),get=get_api,sleep=sleep)
     data=api_json(REVERB_API+item,REVERB_HEADERS,get=get_api,sleep=sleep)
     native=str(data.get('listing_currency') or '').upper()
     shown=str((data.get('price') or {}).get('currency') or '').upper()
@@ -889,6 +892,15 @@ def is_timeout(error):
     return False
 
 
+# Responses that mean "not handled (yet)": an overloaded or restarting API may
+# still have stored the run, so they are treated like a timeout.
+TRANSIENT_CODES=(429,502,503,504)
+
+
+def is_transient(error):
+    return is_timeout(error) or (isinstance(error,urllib.error.HTTPError) and error.code in TRANSIENT_CODES)
+
+
 def landed_run(client, external_id):
     """The stored run for external_id, None when it is not stored, or False
     when the API has no lookup endpoint (an older deploy)."""
@@ -912,19 +924,19 @@ def post_run(client, report):
 
 
 def submit_run(client, report, sleep=None):
-    """Submit once; if the response never arrives, ask whether the run was
-    stored before submitting again. Resubmission is safe: the API stores a run
+    """Submit once; if the response never arrives (or the API answers 429,
+    502, 503 or 504), ask whether the run was stored before submitting again. Resubmission is safe: the API stores a run
     once per externalId (under the owner's lock) and replays it afterwards."""
     sleep=sleep or time.sleep
     try: return post_run(client,report)
     except Exception as error:
-        if not is_timeout(error): raise
-        print(json.dumps({'note':'run submit timed out; checking whether it was stored','externalId':report['externalId']}),flush=True)
+        if not is_transient(error): raise
+        print(json.dumps({'note':'run submit '+('timed out' if is_timeout(error) else f'got HTTP {error.code}')+'; checking whether it was stored','externalId':report['externalId']}),flush=True)
     for wait in LANDED_CHECKS:
         sleep(wait)
         try: found=landed_run(client,report['externalId'])
         except Exception as error:
-            if not is_timeout(error): raise
+            if not is_transient(error): raise
             continue
         if found is False:break  # no lookup endpoint: rely on the idempotent replay
         if found:
@@ -1401,7 +1413,7 @@ def daily(client):
         return dict(source=name,domain=domain,query='; '.join(t or 'newest trumpets' for t in terms)[:10000],status='checked',candidates=0,note='',
                     pagesOpened=0,verifiedOffers=0,staleResults=0,geography='International',specialty=specialty)
     check=market_check('Reverb API','reverb.com','Marketplace (public listings API)')
-    seen=collections.Counter();calls=0
+    seen=collections.Counter();calls=0;reverb_urls=set()
     try:
         for term in terms:
             if calls>=REVERB_CALLS:check['note']='Request budget reached before every term was searched. ';break
@@ -1409,12 +1421,15 @@ def daily(client):
             for data in results:
                 url=reverb_web_url(data)
                 if not url:seen['no web link']+=1;continue
+                # Terms overlap: an item another term already returned costs nothing.
+                if url in reverb_urls:seen['tracked']+=1;continue
+                reverb_urls.add(url)
                 live['reverb.com']['pagesOpened']+=1
                 native=str(data.get('listing_currency') or '').upper()
                 if native and native!=str((data.get('price') or {}).get('currency') or '').upper():
                     # Shown in a converted display currency: fetch it in its own.
                     if calls>=REVERB_CALLS:seen['budget']+=1;continue
-                    calls+=1;data=reverb_item(str(data.get('id')))
+                    calls+=1;data=reverb_item(str(data.get('id')),currency=native)
                 c=reverb_offer_from(data,url,'Reverb',profile)
                 if not c:seen['not a verifiable Bb trumpet offer']+=1;continue
                 seen[keep_market(c,reverb_id(url),'reverb.com',check)]+=1

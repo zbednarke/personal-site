@@ -29,21 +29,13 @@
     n.textContent = message;
     n.className = error ? "error" : "";
   }
-  // Reads retry a dropped connection (Safari reports it as "Load failed");
-  // writes are never retried here because they are not all idempotent.
-  async function request(path, init, retries) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await fetch("/trumpets/api/v1/trumpets" + path, init);
-      } catch (e) {
-        if (attempt >= retries) throw e;
-        await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
-      }
-    }
-  }
+  // Reads retry a dropped connection (Safari reports it as "Load failed"),
+  // including one that drops while the body is read; writes are never retried
+  // here because they are not all idempotent. See TrumpetModel.fetchJSON.
   async function api(path, body, method = "POST") {
-    const response = await request(
-      path,
+    const response = await M.fetchJSON(
+      fetch,
+      "/trumpets/api/v1/trumpets" + path,
       {
         credentials: "same-origin",
         cache: "no-store",
@@ -58,17 +50,13 @@
       body === undefined ? 2 : 0,
     );
     if (!response.ok) {
-      let error;
-      try {
-        error = (await response.json()).error;
-      } catch {}
       throw new Error(
         response.status === 401
           ? "Signed out. Sign in again to continue."
-          : error || `Data service returned ${response.status}`,
+          : response.data?.error || `Data service returned ${response.status}`,
       );
     }
-    return response.json();
+    return response.data;
   }
   function populate(name, values) {
     const s = form.elements[name],
@@ -107,12 +95,10 @@
       render();
       window.TasteBoard?.boardLoaded();
     } catch (e) {
-      report(
-        e instanceof TypeError
-          ? "Couldn't reach the board. Check your connection and tap Refresh board."
-          : e.message,
-        true,
-      );
+      // A dropped connection is an M.NetworkError ("Couldn't reach the
+      // board…"); anything else, including a bug, shows its own message
+      // rather than being blamed on the connection.
+      report(e.message || String(e), true);
       $("#result-count").textContent = "Could not load private board";
       window.TasteBoard?.boardFailed?.();
     } finally {

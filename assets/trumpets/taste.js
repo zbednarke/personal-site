@@ -22,13 +22,19 @@
     return n;
   }
   // After every committed reaction: a one-tap undo for 4 seconds.
-  let toastTimer = null;
-  function hideUndoToast() {
+  // The toast belongs to one reaction (entry): a later failure of an earlier
+  // reaction must not hide the toast of the newest one.
+  let toastTimer = null,
+    toastFor = null;
+  function hideUndoToast(entry) {
+    if (entry && entry !== toastFor) return;
     clearTimeout(toastTimer);
+    toastFor = null;
     document.querySelector("#taste-toast")?.remove();
   }
-  function showUndoToast(text) {
+  function showUndoToast(text, entry) {
     hideUndoToast();
+    toastFor = entry || null;
     const toast = el("div", "toast taste-toast");
     toast.id = "taste-toast";
     toast.setAttribute("role", "status");
@@ -40,7 +46,7 @@
     });
     toast.append(el("span", "", text), undoButton);
     document.body.append(toast);
-    toastTimer = setTimeout(hideUndoToast, 4000);
+    toastTimer = setTimeout(() => hideUndoToast(), 4000);
   }
   function status(text, error = false) {
     const n = $("#taste-status");
@@ -294,15 +300,17 @@
     undoStack.push(entry);
     const said = r.kind === "swipe" ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action] : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action];
     status(said);
-    showUndoToast(said);
+    showUndoToast(said, entry);
     render();
     try {
       const out = await entry.pending;
       entry.eventId = out.event.id;
       accept(out);
     } catch (e) {
-      undoStack.splice(undoStack.indexOf(entry), 1);
-      hideUndoToast();
+      // Already gone if it was undone while its POST was in flight.
+      const i = undoStack.indexOf(entry);
+      if (i >= 0) undoStack.splice(i, 1);
+      hideUndoToast(entry);
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
       status(e.message, true);
@@ -434,8 +442,15 @@
       for (const [dir, stamp] of Object.entries(stamps)) if (stamp) stamp.style.opacity = dir === s.direction ? String(s.commit ? 1 : 0.15 + 0.6 * s.progress) : "";
       card.dataset.leaning = s.commit ? s.direction : "";
     };
-    const springBack = () => {
+    // While a drag is active, a release or cancel anywhere ends it, so a press
+    // that leaves the card and is released outside can never linger.
+    const release = () => {
       drag = null;
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", cancel, true);
+    };
+    const springBack = () => {
+      release();
       card.classList.remove("dragging");
       card.classList.add("springing");
       card.style.transform = "";
@@ -445,6 +460,8 @@
     };
     const move = (e) => {
       if (!drag || e.pointerId !== drag.id) return;
+      // A mouse or pen whose buttons are all up is no longer dragging.
+      if (drag.pointerType !== "touch" && e.buttons === 0) return springBack();
       drag.dx = e.clientX - drag.x;
       drag.dy = e.clientY - drag.y;
       drag.axis = T.lockAxis(drag.axis, drag.dx, drag.dy);
@@ -454,8 +471,6 @@
       if (!drag.captured) {
         drag.captured = true;
         card.classList.add("dragging");
-        // Touch is implicitly captured by the card already.
-        if (drag.pointerType !== "touch") card.setPointerCapture?.(e.pointerId);
       }
       // Follow the finger along the locked axis (a little give on the other).
       const x = drag.axis === "x" ? drag.dx : drag.dx * 0.15;
@@ -463,23 +478,32 @@
       card.style.transform = `translate(${x}px, ${y}px) rotate(${x / 18}deg)`;
       show(state());
     };
-    const end = (e) => {
+    function end(e) {
       if (!drag || e.pointerId !== drag.id) return;
       const s = state();
       if (!s.commit) return springBack();
-      drag = null;
+      release();
       card.classList.remove("dragging");
       card.classList.add("gone-" + s.direction);
       react({ kind: "swipe", action: s.direction });
-    };
+    }
+    // Scrolling (or anything else that takes the pointer) never commits.
+    function cancel(e) {
+      if (drag && e.pointerId === drag.id) springBack();
+    }
     card.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0 || drag) return;
+      if (e.button !== 0) return;
+      if (drag) springBack(); // a stale drag never carries over to a new press
       drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, axis: null, captured: false, pointerType: e.pointerType || "mouse", samples: [{ t: e.timeStamp, x: e.clientX, y: e.clientY }] };
+      // Mouse and pen: capture at once, so moves and the release outside the
+      // card still reach it. Touch is implicitly captured by the card already.
+      if (drag.pointerType !== "touch") card.setPointerCapture?.(e.pointerId);
+      window.addEventListener("pointerup", end, true);
+      window.addEventListener("pointercancel", cancel, true);
     });
     card.addEventListener("pointermove", move);
     card.addEventListener("pointerup", end);
-    // Scrolling (or anything else that takes the pointer) never commits.
-    card.addEventListener("pointercancel", (e) => drag && e.pointerId === drag.id && springBack());
+    card.addEventListener("pointercancel", cancel);
   }
   document.addEventListener("keydown", (e) => {
     if (!active || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;

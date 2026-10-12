@@ -239,7 +239,44 @@
       if (re.test(text)) out.push(b);
     return [...new Set(out)];
   }
+  // A connection that dropped before or while the response arrived (Safari:
+  // "Load failed"). Marked explicitly so a programming error (a TypeError in
+  // our own code) is never reported as a connection problem.
+  class NetworkError extends Error {
+    constructor(cause) {
+      super("Couldn't reach the board. Check your connection and tap Refresh board.");
+      this.name = "NetworkError";
+      this.network = true;
+      this.cause = cause;
+    }
+  }
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Fetch and read the body; reads pass retries > 0 and are retried when the
+  // connection drops before the response or while its body is being read.
+  // Resolves { ok, status, data } (data: parsed JSON, or null).
+  async function fetchJSON(fetchFn, url, init, retries = 0, sleep = pause) {
+    for (let attempt = 0; ; attempt++) {
+      let response, text;
+      try {
+        response = await fetchFn(url, init);
+        text = await response.text();
+      } catch (e) {
+        if (attempt >= retries) throw new NetworkError(e);
+        await sleep(600 * 2 ** attempt);
+        continue;
+      }
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        if (response.ok) throw new Error("Data service returned an unreadable response");
+      }
+      return { ok: response.ok, status: response.status, data };
+    }
+  }
   return {
+    NetworkError,
+    fetchJSON,
     statuses,
     interests,
     money,

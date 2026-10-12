@@ -566,6 +566,30 @@ function syntheticPng(width, height) {
     await page.mouse.move(cx + 260, cy + 10, { steps: 10 });
     await Promise.all([tastePosts(), page.mouse.up()]);
     await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, beforeDrag);
+    // Review fix: a press near the card's edge that leaves the card and is
+    // released outside (before the axis locks) must not leave a drag behind
+    // that a later hover and click would commit.
+    {
+      let posts = 0;
+      const count = (r) => r.method() === "POST" && r.url().includes("/taste/events") && posts++;
+      page.on("request", count);
+      const edgeId = await swipeId();
+      const card = await page.locator(".swipe-card").boundingBox();
+      const y = card.y + 120;
+      await page.mouse.move(card.x + 3, y);
+      await page.mouse.down();
+      await page.mouse.move(card.x - 6, y); // 9 px: out of the card, no axis yet
+      await page.mouse.up(); // released outside the card
+      await page.mouse.move(card.x + card.width / 2, y, { steps: 3 });
+      await page.mouse.move(card.x + card.width - 10, y, { steps: 6 }); // hover far to the right
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(600);
+      page.off("request", count);
+      assert.equal(posts, 0, "a release outside the card leaves no drag behind");
+      assert.equal(await swipeId(), edgeId);
+      assert.equal(await page.locator(".swipe-card").evaluate((c) => c.style.transform), "", "the card does not follow the hover");
+    }
     // Buttons: must see, not for me.
     await Promise.all([tastePosts(), page.getByRole("button", { name: "Must see (up arrow)" }).click()]);
     await Promise.all([tastePosts(), page.getByRole("button", { name: "Not for me (left arrow)" }).click()]);
@@ -705,6 +729,40 @@ function syntheticPng(width, height) {
     await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), mobile.locator("#taste-toast").getByRole("button", { name: "Undo" }).tap()]);
     await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, partialId);
     assert.equal(await mobile.locator("#taste-toast").count(), 0, "the toast closes on undo");
+    // Review fixes: a reaction whose POST fails after it was already undone
+    // must not remove another reaction from the undo stack, and must not hide
+    // a newer reaction's toast.
+    let failNextPost = 0;
+    await mobile.route("**/taste/events", async (route) => {
+      if (route.request().method() === "POST" && failNextPost > 0) {
+        failNextPost--;
+        await new Promise((r) => setTimeout(r, 900));
+        return route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"fixture failure"}' });
+      }
+      return route.continue();
+    });
+    const tasteOk = () => mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300);
+    const tasteFailed = () => mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() === 500);
+    const bId = await mobile.locator(".swipe-card").getAttribute("data-id");
+    await Promise.all([tasteOk(), mobile.getByRole("button", { name: "Cool (right arrow)" }).tap()]); // B, kept
+    failNextPost = 1;
+    const failedA = tasteFailed();
+    await mobile.getByRole("button", { name: "Not for me (left arrow)" }).tap(); // A, in flight
+    await mobile.keyboard.press("z"); // undo A while its POST is in flight
+    await failedA;
+    await mobile.waitForTimeout(300);
+    // The next undo takes back B (not an older reaction).
+    await Promise.all([tasteOk(), mobile.keyboard.press("z")]);
+    await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, bId, { timeout: 5000 });
+    // A fails after a newer reaction C: C's toast stays.
+    failNextPost = 1;
+    const failedA2 = tasteFailed();
+    await mobile.getByRole("button", { name: "Not for me (left arrow)" }).tap(); // A, in flight
+    await Promise.all([tasteOk(), mobile.getByRole("button", { name: "Cool (right arrow)" }).tap()]); // C
+    await failedA2;
+    await mobile.waitForTimeout(200);
+    assert.match(await mobile.locator("#taste-toast").innerText(), /Cool\./, "the newest reaction keeps its undo toast");
+    await mobile.unroute("**/taste/events");
     await mobile.setViewportSize({ width: 390, height: 844 });
     // Other views stay overflow-free at these widths with the extra tab.
     await mobile.goto(base + "/trumpets/");

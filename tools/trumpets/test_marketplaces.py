@@ -369,7 +369,8 @@ class RecordedReverbSearchTests(unittest.TestCase):
         self.assertEqual(set(kept), {'900000101', '900000102'})
         # The EUR listing shown in USD was refetched and stored in EUR.
         self.assertEqual((kept['900000102']['price'], kept['900000102']['currency']), (3900, 'EUR'))
-        self.assertIn(('https://api.reverb.com/api/listings/900000102', dict(runner.REVERB_HEADERS, **{'X-Display-Currency': 'EUR'})), requests)
+        # One request per refetch: the native currency is known from the search.
+        self.assertEqual([h for u, h in requests if u == 'https://api.reverb.com/api/listings/900000102'], [dict(runner.REVERB_HEADERS, **{'X-Display-Currency': 'EUR'})])
         reverb = next(s for s in client.report['sources'] if s['source'] == 'Reverb API')
         self.assertEqual((reverb['status'], reverb['candidates']), ('checked', 2))
         self.assertIn('not a verifiable Bb trumpet offer', reverb['note'])  # Bach without traits, flugelhorn
@@ -425,6 +426,16 @@ class SubmitTimeoutTests(unittest.TestCase):
         api = self.Api([TimeoutError(), {'runId': 'r1', 'status': 'succeeded', 'replayed': True}], [http_error(404)])
         result, _ = self.submit(api)
         self.assertTrue(result['replayed']); self.assertEqual(api.calls.count('/runs'), 2)
+
+    def test_overload_and_gateway_errors_check_whether_the_run_landed(self):
+        for code in (429, 502, 503, 504):
+            api = self.Api([http_error(code)], [{'found': True, 'runId': 'r1', 'status': 'succeeded'}])
+            result, _ = self.submit(api)
+            self.assertTrue(result['recovered'], code)
+            self.assertEqual(api.calls.count('/runs'), 1, code)
+        api = self.Api([http_error(503), {'runId': 'r2', 'status': 'succeeded'}], [http_error(503), {'found': False}, {'found': False}])
+        result, sleeps = self.submit(api)
+        self.assertEqual(result['runId'], 'r2'); self.assertEqual(api.calls.count('/runs'), 2); self.assertEqual(sleeps, [15, 30, 60])
 
     def test_other_errors_are_not_retried(self):
         api = self.Api([http_error(500)], [])
