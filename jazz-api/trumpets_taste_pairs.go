@@ -20,8 +20,12 @@ import (
 //
 //  1. While there is more than one component, the first pairs bridge them:
 //     the largest component against the others, singletons (new horns)
-//     first, each side represented by its most uncertain horn. A newly
-//     comparable horn is a singleton, so it is asked about at once.
+//     first. Each side is represented by its least-compared horn (fewest
+//     pair edges), then the most uncertain, then board order, so the
+//     largest component grows as a balanced tree rather than a star around
+//     one hub. (Uncertainty comes from a horn's features, not from how often
+//     it was compared, so "most uncertain" alone kept picking one anchor.)
+//     A newly comparable horn is a singleton, so it is asked about at once.
 //  2. Then the most informative pairs (largest predictive sd of the
 //     difference times p(1-p)), as before.
 //  3. Once the graph is connected, every fifth choice (tasteStructureEvery,
@@ -36,10 +40,52 @@ import (
 // horn that stops being comparable (sold) still connects its neighbours;
 // components are counted over the comparable horns only.
 //
-// In every case each horn appears at most twice per answer, and pairs compared
-// in the last two weeks are not offered again.
+// The page shows only the first pair of each answer and asks again after
+// every choice, so variety has to hold across answers, not only within one.
+// Horns in the owner's last tasteFreshAfter live pair choices are "stale":
+// in every phase a side that is not stale is preferred whenever one exists
+// (stale horns go last; they are never dropped), so the next pair shows
+// different horns. This never reorders the phases: while the graph has
+// islands, the first pair is still a bridge.
+//
+// In every case each horn appears at most twice per answer (horns not yet
+// used in this answer are preferred), and pairs compared in the last two
+// weeks are not offered again.
 
-const tasteStructureEvery = 5
+const (
+	tasteStructureEvery = 5
+	// tasteFreshAfter: horns in this many of the latest pair choices are kept
+	// out of the next pairs when there is an alternative.
+	tasteFreshAfter = 3
+)
+
+// tasteRecentPairHorns is the set of horns in the latest n live pair choices
+// between two different known horns (latest by CreatedAt, then id).
+func tasteRecentPairHorns(d *tasteData, events []tasteEvent, n int) map[string]bool {
+	pairs := []tasteEvent{}
+	for _, e := range events {
+		if e.Kind != "pair" || e.undone {
+			continue
+		}
+		a, okA := d.byListing[e.ListingID]
+		b, okB := d.byListing[e.OtherListingID]
+		if okA && okB && a.HornID != b.HornID {
+			pairs = append(pairs, e)
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if !pairs[i].CreatedAt.Equal(pairs[j].CreatedAt) {
+			return pairs[i].CreatedAt.After(pairs[j].CreatedAt)
+		}
+		return pairs[i].ID > pairs[j].ID
+	})
+	out := map[string]bool{}
+	for i := 0; i < len(pairs) && i < n; i++ {
+		out[d.byListing[pairs[i].ListingID].HornID] = true
+		out[d.byListing[pairs[i].OtherListingID].HornID] = true
+	}
+	return out
+}
 
 // tasteUnionFind: disjoint sets over string nodes (path halving, union by
 // size).
@@ -236,6 +282,7 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		z, v := m.affinity(keys)
 		cands[horn] = cand{id: id, keys: keys, z: z, v: v}
 	}
+	stale := tasteRecentPairHorns(d, events, tasteFreshAfter)
 	used := map[string]int{}
 	offered := map[string]bool{}
 	out := []tastePair{}
@@ -252,17 +299,43 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		offered[pairKey(a, b)] = true
 		out = append(out, tastePair{A: ca.id, B: cb.id, P: math.Round(1000*p) / 1000, SD: math.Round(1000*math.Sqrt(v)) / 1000, Reason: reason})
 	}
-	// The most uncertain free horn of a group (ties: board order).
-	pick := func(group []string, partner string) string {
+	// better: whether horn a is a better side of a bridge than b. Not stale
+	// first, then not yet used in this answer, then fewest pair edges, then
+	// the most uncertain (ties: the caller's order, board order).
+	better := func(a, b string) bool {
+		switch {
+		case stale[a] != stale[b]:
+			return stale[b]
+		case used[a] != used[b]:
+			return used[a] < used[b]
+		case len(g.adj[a]) != len(g.adj[b]):
+			return len(g.adj[a]) < len(g.adj[b])
+		}
+		return cands[a].v > cands[b].v
+	}
+	// The best free horn of a group to pair with partner ("": with anyone);
+	// with fresh, only a horn that is not stale.
+	pick := func(group []string, partner string, fresh bool) string {
 		best := ""
 		for _, h := range group {
+			if fresh && stale[h] {
+				continue
+			}
 			if (partner == "" && free(h)) || (partner != "" && ok(partner, h)) {
-				if best == "" || cands[h].v > cands[best].v {
+				if best == "" || better(h, best) {
 					best = h
 				}
 			}
 		}
 		return best
+	}
+	hasFresh := func(c []string) bool {
+		for _, h := range c {
+			if !stale[h] {
+				return true
+			}
+		}
+		return false
 	}
 
 	// 1. Bridges: each island against the largest component (or, once its
@@ -292,32 +365,48 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 			}
 			return maxV(islands[i]) > maxV(islands[j])
 		})
+		// Islands made only of stale horns go after the others (in practice
+		// never a singleton: a horn just compared is no longer one).
+		sort.SliceStable(islands, func(i, j int) bool { return hasFresh(islands[i]) && !hasFresh(islands[j]) })
 		for _, island := range islands {
 			if len(out) == tastePairLimit {
 				break
 			}
-			b := pick(island, "")
+			b := pick(island, "", false) // stale only when the island has nothing else
 			if b == "" {
 				continue
 			}
-			for _, anchor := range comps {
-				if g.uf.find(anchor[0]) == g.uf.find(island[0]) {
-					continue
+			// The anchor: a fresh horn of the largest other component that has
+			// one, else any horn of the largest other component that has one.
+			a := ""
+			for _, fresh := range []bool{true, false} {
+				for _, anchor := range comps {
+					if a == "" && g.uf.find(anchor[0]) != g.uf.find(island[0]) {
+						a = pick(anchor, b, fresh)
+					}
 				}
-				if a := pick(anchor, b); a != "" {
-					add(a, b, "bridge")
-					break
-				}
+			}
+			if a != "" {
+				add(a, b, "bridge")
 			}
 		}
 	}
 
 	// 3. A structure pair: the least-compared horn against the horn farthest
 	// from it (unreachable never happens once connected).
+	// On both sides a stale horn is taken only when no fresh one fits.
+	// freshFirst(h, best, rest): h beats best when it is fresh and best is
+	// stale, or they are alike and rest holds.
+	freshFirst := func(h, best string, rest bool) bool {
+		if stale[h] != stale[best] {
+			return stale[best]
+		}
+		return rest
+	}
 	structure := func() bool {
 		low := ""
 		for _, h := range g.nodes {
-			if free(h) && (low == "" || len(g.adj[h]) < len(g.adj[low]) || (len(g.adj[h]) == len(g.adj[low]) && cands[h].v > cands[low].v)) {
+			if free(h) && (low == "" || freshFirst(h, low, len(g.adj[h]) < len(g.adj[low]) || (len(g.adj[h]) == len(g.adj[low]) && cands[h].v > cands[low].v))) {
 				low = h
 			}
 		}
@@ -327,13 +416,13 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		dist := g.distances(low)
 		far := ""
 		for _, h := range g.nodes {
-			if dist[h] >= 2 && ok(low, h) && (far == "" || dist[h] > dist[far] || (dist[h] == dist[far] && cands[h].v > cands[far].v)) {
+			if dist[h] >= 2 && ok(low, h) && (far == "" || freshFirst(h, far, dist[h] > dist[far] || (dist[h] == dist[far] && cands[h].v > cands[far].v))) {
 				far = h
 			}
 		}
 		if far == "" { // low is next to everyone it may be paired with
 			for _, h := range g.nodes {
-				if !g.adj[low][h] && ok(low, h) && (far == "" || cands[h].v > cands[far].v) {
+				if !g.adj[low][h] && ok(low, h) && (far == "" || freshFirst(h, far, cands[h].v > cands[far].v)) {
 					far = h
 				}
 			}
@@ -382,12 +471,19 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		}
 		return cands[options[i].a].id+cands[options[i].b].id < cands[options[j].a].id+cands[options[j].b].id
 	})
-	for _, o := range options {
-		if len(out) == tastePairLimit {
-			break
-		}
-		if ok(o.a, o.b) {
-			add(o.a, o.b, "uncertain")
+	// Pairs of two fresh horns first, then the rest, so a stale horn comes
+	// back only when nothing else is left.
+	for _, fresh := range []bool{true, false} {
+		for _, o := range options {
+			if len(out) == tastePairLimit {
+				break
+			}
+			if fresh && (stale[o.a] || stale[o.b]) {
+				continue
+			}
+			if ok(o.a, o.b) {
+				add(o.a, o.b, "uncertain")
+			}
 		}
 	}
 	return out

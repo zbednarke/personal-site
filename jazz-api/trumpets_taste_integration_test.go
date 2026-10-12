@@ -160,8 +160,9 @@ func TestTrumpetTastePersistence(t *testing.T) {
 		}
 	}
 	// The comparison graph: six never-compared horns are six islands. One
-	// choice joins two; the next pair bridges that component to an island;
-	// undoing the choice splits it again.
+	// choice joins two; the next pair is still a bridge, but between two
+	// other islands, as the horns just compared are kept out of the next
+	// pair while there are others; undoing the choice splits it again.
 	graph := func(state map[string]any) (components, largest float64) {
 		g := state["pairGraph"].(map[string]any)
 		if g["eligible"].(float64) != 6 {
@@ -179,8 +180,8 @@ func TestTrumpetTastePersistence(t *testing.T) {
 	}
 	next := chose["pairs"].([]any)[0].(map[string]any)
 	joined := map[any]bool{top["a"]: true, top["b"]: true}
-	if joined[next["a"]] == joined[next["b"]] {
-		t.Fatalf("next pair %v does not bridge the joined pair %v to an island", next, top)
+	if next["reason"] != "bridge" || joined[next["a"]] || joined[next["b"]] {
+		t.Fatalf("next pair %v is not a bridge of two fresh islands (just compared: %v)", next, top)
 	}
 	reverted := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "graph-0002", "kind": "undo", "undoes": chose["event"].(map[string]any)["id"]}, "owner", 201)
 	if c, _ := graph(reverted); c != 6 {
