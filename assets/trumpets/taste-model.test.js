@@ -107,6 +107,38 @@ test("an undone card or pair goes back in front wherever the server lists it", (
   assert.deepEqual(T.pairToFront([], "a|b"), [{ a: "a", b: "b", p: 0.5, sd: 1 }]);
 });
 
+test("an undone card is pinned while its horn is still on the board, once per horn", () => {
+  const horns = { x: "h1", y: "h2", relist: "h3", undone: "h3" };
+  const queue = [{ listingId: "x" }, { listingId: "relist" }, { listingId: "y" }];
+  // The server now lists the horn under another listing: shown once, as the undone one.
+  assert.deepEqual(
+    T.cardToFront(queue, "undone", (id) => horns[id]).map((q) => q.listingId),
+    ["undone", "x", "y"],
+  );
+  // Without horn information nothing else is dropped.
+  assert.deepEqual(T.cardToFront(queue, "undone").map((q) => q.listingId), ["undone", "x", "relist", "y"]);
+  assert.equal(T.pinnable({ feedback: { interestState: "watch" } }), true);
+  assert.equal(T.pinnable(null), false, "gone from the board");
+  assert.equal(T.pinnable({ acquired: true, feedback: {} }), false);
+  assert.equal(T.pinnable({ feedback: { interestState: "pass" } }), false);
+});
+
+test("head to head explains a shortage of comparable listings", () => {
+  assert.equal(T.pairShortage({ pairEligible: 6, pairMinimum: 6 }), null);
+  assert.equal(T.pairShortage({}), null, "older servers: no claim");
+  const s = T.pairShortage({ pairEligible: 2, pairMinimum: 6 });
+  assert.equal(s.title, "Head to head needs more verified listings with photos — 2 eligible");
+  assert.match(s.note, /at least 6/);
+});
+
+test("the comparison graph line", () => {
+  assert.equal(T.graphText(null), "");
+  assert.equal(T.graphText({ eligible: 0, components: 0, largest: 0 }), "");
+  assert.equal(T.graphText({ eligible: 92, components: 4, largest: 84 }), "Comparisons connect 84 of 92 eligible horns (3 islands)");
+  assert.equal(T.graphText({ eligible: 7, components: 2, largest: 6 }), "Comparisons connect 6 of 7 eligible horns (1 island)");
+  assert.equal(T.graphText({ eligible: 12, components: 1, largest: 12 }), "Comparisons connect all 12 eligible horns");
+});
+
 test("learned panel lists strongest liked and disliked traits", () => {
   const weights = [
     { feature: "finish:raw brass", kind: "finish", label: "Raw brass", weight: 0.9, sd: 0.4 },

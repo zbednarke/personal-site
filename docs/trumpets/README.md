@@ -572,12 +572,28 @@ or keyboard.
   touch only once the card was grabbed sideways: the card is `touch-action: pan-y`,
   so vertical touch drags scroll the page (a cancelled pointer never commits) and
   touch uses the **Must see** button. Head to head has no drag gestures. The queue shows unseen horns first (active offers, newest first), then
-  horns not swiped in two weeks, least certain first. Acquired and passed horns
-  are left out.
+  horns not swiped in two weeks, least certain first. Within each, cards with
+  photos come first (one photo-less card in five), and stale or unverified leads
+  come after everything else. Acquired and passed horns are left out. **Undo**
+  always brings the card back in front; it stays there through later replies
+  (even stale or out-of-order ones, which are ignored) until it gets a new
+  reaction or leaves the board's eligible set.
 - **Head to head:** two horns; tap the one you'd rather own, or **Both** (↑) /
-  **Neither** (↓). Pairs are the ones whose outcome the model is least sure of
-  (largest predictive sd of the difference × p(1−p)); pairs compared in the last
-  two weeks are skipped, and each horn appears at most twice per batch.
+  **Neither** (↓). Both sides must be *comparable* (`tasteComparable`): an
+  active, verified listing with a photo and a price, checked in the last 10
+  days, not acquired or passed. With fewer than six such horns the page says
+  "Head to head needs more verified listings with photos — N eligible" instead
+  of pairing weak ones.
+  Pair selection is connectivity first (`trumpets_taste_pairs.go`): choices
+  (Both and Neither included; undone ones not) are edges between horns, and
+  while the comparison graph has islands the next pairs bridge them, the
+  largest component against singletons (new horns) and smaller islands, each
+  side represented by its most uncertain horn. After that, the pairs whose
+  outcome the model is least sure of (largest predictive sd of the difference ×
+  p(1−p)), with one pair in five linking the least-compared horn to one far from
+  it. Pairs compared in the last two weeks are skipped, and each horn appears at
+  most twice per batch. **What I've learned** shows "Comparisons connect N of M
+  eligible horns (K islands)".
 - **Chips** on a card (raw brass, gold plate, patina, engraving, odd bell, vintage,
   one-off, great value, too pricey, wrong vibe) tag the physical horn. Trait chips
   add that feature to the horn; "wrong vibe" is recorded for analysis only.

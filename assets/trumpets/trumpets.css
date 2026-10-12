@@ -1299,6 +1299,7 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
 .taste-learned h2 { margin: 0 0 12px; font: 400 26px/1.1 Georgia, serif; }
 .taste-learned h3 { margin: 18px 0 8px; font: 9px monospace; letter-spacing: 1.5px; text-transform: uppercase; color: var(--brass); }
 .taste-confidence { font-size: 12px; color: var(--muted); }
+.taste-graph { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 .taste-meter { height: 4px; background: #262b23; margin-top: 7px; }
 .taste-meter i { display: block; height: 100%; width: 0; background: var(--brass); transition: width 0.3s; }
 .taste-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }

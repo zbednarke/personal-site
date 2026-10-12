@@ -82,16 +82,45 @@
   // listed it. The server's order among equally ranked horns (for example all
   // horns found in one run share a first-seen time) is not a promise, so
   // "back in front" cannot rely on it. Keeps the server's item when present.
-  function cardToFront(queue, listingId) {
+  // hornOf(listingId), when given, also drops other listings of the same horn
+  // (the server lists one listing per horn, and may pick a different one).
+  function cardToFront(queue, listingId, hornOf) {
     const list = queue || [];
     const item = list.find((q) => q.listingId === listingId) || { listingId, reason: "new", taste: 50, sd: 1 };
-    return [item, ...list.filter((q) => q.listingId !== listingId)];
+    const horn = hornOf?.(listingId);
+    const sameHorn = (id) => horn != null && hornOf(id) === horn;
+    return [item, ...list.filter((q) => q.listingId !== listingId && !sameHorn(q.listingId))];
+  }
+  // Whether a board listing can still be pinned in front after an undo: not
+  // gone from the board, acquired or passed (the server queue skips those).
+  function pinnable(l) {
+    return !!l && !l.acquired && l.feedback?.interestState !== "pass";
   }
   function pairToFront(pairs, key) {
     const list = pairs || [];
     const [a, b] = key.split("|");
     const item = list.find((p) => pairKey(p) === key) || { a, b, p: 0.5, sd: 1 };
     return [item, ...list.filter((p) => pairKey(p) !== key)];
+  }
+  // Head to head only compares listings worth comparing (the server's
+  // tasteComparable: active, verified, a photo, a price, checked in the last
+  // 10 days, not acquired or passed); with too few it says so.
+  function pairShortage(state) {
+    const eligible = state?.pairEligible,
+      minimum = state?.pairMinimum;
+    if (eligible == null || minimum == null || eligible >= minimum) return null;
+    return {
+      title: `Head to head needs more verified listings with photos — ${eligible} eligible`,
+      note: `Pairs use only active, verified listings with a photo and a price, checked in the last 10 days, and need at least ${minimum}. Swipe works on every listing.`,
+    };
+  }
+  // How well the comparisons connect the eligible horns (one island: every
+  // horn can be compared with every other through the choices made).
+  function graphText(g) {
+    if (!g?.eligible) return "";
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    if (g.components <= 1) return `Comparisons connect all ${plural(g.eligible, "eligible horn")}`;
+    return `Comparisons connect ${g.largest} of ${plural(g.eligible, "eligible horn")} (${plural(g.components - 1, "island")})`;
   }
   const kindLabels = {
     maker: "maker",
@@ -162,5 +191,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, pairShortage, graphText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });

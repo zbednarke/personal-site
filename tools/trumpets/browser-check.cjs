@@ -524,6 +524,37 @@ function syntheticPng(width, height) {
     assert.equal(await page.locator("#detail").evaluate((n) => n.open), false);
     await page.getByRole("button", { name: "Close inspiration" }).click();
     // ---- Taste training: Swipe and Head to head (synthetic fixtures only) ----
+    // Head to head compares only active, verified listings with a photo and a
+    // price (at least six): three more such fixtures join the three above.
+    {
+      const fixture = (maker, model, price) => ({
+        maker,
+        model,
+        title: `${maker} ${model} · TEST FIXTURE`,
+        url: `https://fixtures.invalid/compare/${model.toLowerCase().replace(/\W+/g, "-")}`,
+        source: "Independent dealer · TEST FIXTURE",
+        price,
+        currency: "USD",
+        status: "active",
+        searchScore: 80,
+        searchRationale: "TEST FIXTURE · A comparable listing for Head to head. Synthetic price.",
+        tags: ["TEST FIXTURE"],
+        images: ["https://fixtures.invalid/horn.svg"],
+      });
+      const comparable = await fetch(base + "/trumpets/api/v1/trumpets/machine/runs", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          externalId: "visual-fixture-comparable",
+          kind: "combined",
+          status: "succeeded",
+          sources: [{ source: "Independent dealer · TEST FIXTURE", status: "checked", candidates: 3 }],
+          listings: [fixture("Bach", "Stradivarius 37 fixture", 2400), fixture("Yamaha", "Xeno 8335 fixture", 1900), fixture("Monette", "Prana fixture", 6100)],
+        }),
+      });
+      assert.equal(comparable.status, 200, await comparable.text());
+      await Promise.all([page.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), page.locator("#refresh").evaluate((b) => b.click())]);
+    }
     const tastePosts = () => page.waitForResponse((r) => r.url().includes("/taste/events") && r.request().method() === "POST" && r.status() < 300);
     const swipeId = () => page.locator(".swipe-card").getAttribute("data-id");
     await page.setViewportSize({ width: 1440, height: 1100 });
@@ -617,9 +648,31 @@ function syntheticPng(width, height) {
     await Promise.all([tastePosts(), page.keyboard.press("ArrowDown")]);
     await Promise.all([tastePosts(), page.keyboard.press("z")]);
     await page.waitForFunction(() => /7 reactions/.test(document.querySelector("#taste-confidence-text").textContent));
+    assert.match(await page.locator("#taste-graph").innerText(), /^Comparisons connect (all \d+|\d+ of \d+) eligible horns( \(\d+ islands?\))?$/, "the learned panel says how well comparisons connect the horns");
     await page.getByRole("button", { name: "Swipe", exact: true }).click();
     await page.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 20));
     await page.screenshot({ path: path.join(out, "taste-desktop.png") });
+    // Too few comparable listings: Head to head explains why instead of
+    // pairing weak ones.
+    {
+      const short = async (route) => {
+        const response = await route.fetch();
+        const json = await response.json();
+        Object.assign(json, { pairs: [], pairEligible: 2, pairMinimum: 6 });
+        await route.fulfill({ response, json });
+      };
+      await page.route("**/trumpets/api/v1/trumpets/taste", short);
+      await page.reload();
+      await page.waitForSelector(".swipe-card, .taste-empty");
+      await page.getByRole("button", { name: "Head to head" }).click();
+      await page.locator("#pair-cards .pair-shortage").waitFor();
+      assert.equal(await page.locator("#pair-cards .pair-shortage h3").innerText(), "Head to head needs more verified listings with photos — 2 eligible");
+      assert.match(await page.locator("#pair-cards .pair-shortage p").innerText(), /active, verified listings with a photo and a price/);
+      assert.equal(await page.locator(".pair-card").count(), 0);
+      assert.equal(await page.locator("#pair-a").isDisabled(), true);
+      await page.unroute("**/trumpets/api/v1/trumpets/taste", short);
+      await page.getByRole("button", { name: "Swipe", exact: true }).click();
+    }
     // ---- No photo: an obvious "View listing" link (new tab) that is never a
     // reaction; reactions record whether the card showed a photo. ----
     {
@@ -841,20 +894,43 @@ function syntheticPng(width, height) {
     // The server's queue after an undo lists the horn again, but not
     // necessarily first (horns found in one run share first_seen). Undo must
     // still bring back the card that was just swiped, and keep it in front
-    // through later responses (a chip tap): here those responses list it last.
+    // through later responses (a chip tap): here the undo response lists it
+    // last and the chip responses leave it out.
     const lastInQueue = async (route) => {
-      if (route.request().method() !== "POST" || !["undo", "tag"].includes(JSON.parse(route.request().postData() || "{}").kind)) return route.continue();
+      const kind = route.request().method() === "POST" && JSON.parse(route.request().postData() || "{}").kind;
+      if (kind !== "undo" && kind !== "tag") return route.continue();
       const response = await route.fetch();
       const body = await response.json();
       const i = body.queue.findIndex((q) => q.listingId === partialId);
-      assert.ok(i >= 0, "the undone horn is back in the server's queue");
-      body.queue.push(...body.queue.splice(i, 1));
+      if (kind === "undo") {
+        assert.ok(i >= 0, "the undone horn is back in the server's queue");
+        body.queue.push(...body.queue.splice(i, 1));
+      } else if (i >= 0) body.queue.splice(i, 1);
       return route.fulfill({ response, json: body });
     };
     await mobile.route("**/taste/events", lastInQueue);
+    // A board refresh in flight during the undo answers late, with the state
+    // from before the undo: that stale reply must not undo the undo.
+    let releaseStale;
+    const staleGate = new Promise((r) => (releaseStale = r));
+    const holdTaste = async (route) => {
+      const response = await route.fetch();
+      await staleGate;
+      return route.fulfill({ response });
+    };
+    await mobile.route("**/trumpets/api/v1/trumpets/taste", holdTaste);
+    const staleReply = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+    await mobile.evaluate(() => window.TasteBoard.setActive(true)); // reloads the taste state
     await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), mobile.locator("#taste-toast").getByRole("button", { name: "Undo" }).tap()]);
     await mobile.waitForFunction(() => document.querySelector("#taste-status").textContent === "Undone.");
     assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "undo brings back the card just swiped, wherever the server lists it");
+    const afterUndo = await mobile.locator("#taste-confidence-text").innerText();
+    releaseStale();
+    await (await staleReply).finished();
+    await mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+    assert.equal(await mobile.locator("#taste-confidence-text").innerText(), afterUndo, "a reply sent before the undo does not replace newer state");
+    assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId);
+    await mobile.unroute("**/trumpets/api/v1/trumpets/taste", holdTaste);
     const chip = mobile.locator("#taste-chips .chip").first();
     for (const pressed of ["true", "false"]) {
       await chip.evaluate((c) => (c.dataset.before = "1"));
@@ -864,16 +940,29 @@ function syntheticPng(width, height) {
       assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "the card an undo brought back stays in front after a chip tap");
       assert.equal(await chip.getAttribute("aria-pressed"), pressed);
     }
+    // Once the horn leaves the board's eligible set (here: passed), the pin
+    // lets go at the next reply instead of bringing it back.
+    const feedback = (method, body) => mobile.evaluate(async ([id, method, body]) => (await fetch(`/trumpets/api/v1/trumpets/listings/${id}/feedback`, { method, headers: { "Content-Type": "application/json" }, body })).status, [partialId, method, body]);
+    assert.equal(await feedback("PUT", JSON.stringify({ interestState: "pass" })), 200);
+    await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
+    await mobile.waitForFunction((id) => window.TrumpetApp.listing(id)?.feedback.interestState === "pass", partialId);
+    await chip.evaluate((c) => (c.dataset.before = "1"));
+    await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), chip.tap()]);
+    await mobile.waitForFunction(() => !document.querySelector("#taste-chips .chip")?.dataset.before);
+    assert.notEqual(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "a passed horn is no longer pinned in front");
+    assert.equal(await feedback("DELETE"), 200);
+    await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
     await mobile.unroute("**/taste/events", lastInQueue);
     assert.equal(await mobile.locator("#taste-toast").count(), 0, "the toast closes on undo");
     // Review fixes: a reaction whose POST fails after it was already undone
     // must not remove another reaction from the undo stack, and must not hide
     // a newer reaction's toast.
-    let failNextPost = 0;
+    let failNextPost = 0,
+      failGate = null; // when set, a failing POST waits for it instead of 900 ms
     await mobile.route("**/taste/events", async (route) => {
       if (route.request().method() === "POST" && failNextPost > 0) {
         failNextPost--;
-        await new Promise((r) => setTimeout(r, 900));
+        await (failGate || new Promise((r) => setTimeout(r, 900)));
         return route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"fixture failure"}' });
       }
       return route.continue();
@@ -899,6 +988,29 @@ function syntheticPng(width, height) {
     await failedA2;
     await mobile.waitForTimeout(200);
     assert.match(await mobile.locator("#taste-toast").innerText(), /Cool\./, "the newest reaction keeps its undo toast");
+    // A reaction to a card an undo brought back fails only after a newer undo
+    // pinned another card: the newer undo keeps the front.
+    await Promise.all([tasteOk(), mobile.keyboard.press("z")]); // undo C: C pinned
+    await mobile.waitForFunction(() => document.querySelector("#taste-status").textContent === "Undone.");
+    const pinnedId = await mobile.locator(".swipe-card").getAttribute("data-id");
+    failNextPost = 1;
+    let releaseFailure;
+    failGate = new Promise((r) => (releaseFailure = r)); // fails after the newer undo below
+    let oldFailed = false;
+    const failedOld = mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() === 500, { timeout: 0 }).then(() => (oldFailed = true));
+    failedOld.catch(() => {}); // awaited below; a failure elsewhere must surface as itself
+    await mobile.getByRole("button", { name: "Not for me (left arrow)" }).tap(); // on the pinned card, in flight
+    await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, pinnedId);
+    const newerId = await mobile.locator(".swipe-card").getAttribute("data-id");
+    await Promise.all([tasteOk(), mobile.getByRole("button", { name: "Cool (right arrow)" }).tap()]); // D
+    await Promise.all([tasteOk(), mobile.keyboard.press("z")]); // undo D: D pinned, newer
+    await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, newerId);
+    assert.equal(oldFailed, false, "fixture: the older reaction is still in flight after the newer undo");
+    releaseFailure();
+    failGate = null;
+    await failedOld;
+    await mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+    assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), newerId, "a late failure of an older reaction does not take the front from a newer undo");
     await mobile.unroute("**/taste/events");
     await mobile.setViewportSize({ width: 390, height: 844 });
     // Other views stay overflow-free at these widths with the extra tab.
@@ -972,7 +1084,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front, chips, text and voice notes, head to head, photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line), photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();
