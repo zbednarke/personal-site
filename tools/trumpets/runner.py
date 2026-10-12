@@ -656,7 +656,7 @@ def clean_images(values, base=''):
         except ValueError:continue
         if p.scheme=='http':value='https'+value[4:];p=urllib.parse.urlsplit(value)
         host=(p.hostname or '').lower()
-        if p.scheme!='https' or not host or p.username or p.password or len(value)>2000:continue
+        if p.scheme!='https' or not host or p.username or p.password or len(value.encode('utf-8','ignore'))>2000:continue
         if any(host==t or host.endswith('.'+t) or (t.endswith('.') and (host.startswith(t) or '.'+t in host)) for t in TRACKING_HOSTS):continue
         path=urllib.parse.unquote(p.path).lower()
         if path.endswith(NOT_PHOTO_EXT) or NOT_PHOTO.search(path) or re.search(r'(?:^|[?&])(?:w|width|h|height)=1(?:&|$)',p.query):continue
@@ -1889,12 +1889,17 @@ def landed_run(client, external_id):
     return found if found.get('found') else None
 
 
+# Control characters other than \n (and tab): Postgres text rejects NUL, and
+# none of them belongs in a reason, a note or a title.
+CONTROL_CHARS=re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+
+
 def clip_bytes(text, limit):
-    """text cut to at most limit UTF-8 bytes, never inside a character (the
+    """text without control characters (except newline and tab) or lone
+    surrogates, cut to at most limit UTF-8 bytes, never inside a character (the
     API bounds its strings in bytes, not characters)."""
-    text=str(text if text is not None else '')
-    data=text.encode('utf-8')
-    return text if len(data)<=limit else data[:limit].decode('utf-8','ignore')
+    text=CONTROL_CHARS.sub('',str(text if text is not None else ''))
+    return text.encode('utf-8','ignore')[:limit].decode('utf-8','ignore')
 
 
 # The API's limits (jazz-api trumpets.go validateTrumpetRun, normalizeTrumpet,

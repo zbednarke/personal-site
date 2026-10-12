@@ -1062,7 +1062,7 @@ class ApiByteLimitTests(unittest.TestCase):
         # One reading with a 300× "通貨" currency and a huge non-ASCII price text,
         # then 79 EUR shadow hints (the default cap is 80 pages), then one over the cap.
         listings = [self.tracked_listing(80)] + [self.tracked_listing(i) for i in range(80)]
-        readings = [reading(currency='通貨' * 300, price_text='¥' + '４' * 2000)] + [reading(currency='EUR', price_text='4.350,00 € inkl. MwSt. – 価格は税込みです') for _ in range(79)]
+        readings = [reading(currency='通貨' * 300, price_text='¥' + '４' * 2000)] + [reading(currency='EUR', price_text='4.350,00\x00 € inkl.\x07 MwSt.\x1b[0m – 価格は税込みです\x7f') for _ in range(79)]
         report = self.shadow_run(listings, readings)
         self.assertIsNone(api_rejects(report))
         self.assertEqual(len(report['checkFailures']), 81)
@@ -1070,6 +1070,15 @@ class ApiByteLimitTests(unittest.TestCase):
             first = failure['reason'].split('\n')[0]
             self.assertEqual(first, 'horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)')
         self.assertNotIn('通貨', json.dumps(report, ensure_ascii=False))  # the model's currency is never echoed
+        # No control character but newline/tab survives anywhere in the payload (Postgres rejects NUL).
+        def strings(node):
+            if isinstance(node, str): yield node
+            elif isinstance(node, dict):
+                for v in node.values(): yield from strings(v)
+            elif isinstance(node, list):
+                for v in node: yield from strings(v)
+        self.assertFalse([t for t in strings(report) if re.search(r'[\x00-\x08\x0b-\x1f\x7f]', t)])
+        self.assertIn('4.350,00 € inkl. MwSt.[0m', report['checkFailures'][1]['reason'])
         self.assertIn('" ?; differs from the stored 4400 EUR', report['checkFailures'][0]['reason'])
         self.assertTrue(all('page reading' in f['reason'] for f in report['checkFailures'][:80]))
         self.assertTrue(report['checkFailures'][-1]['reason'].endswith('\npage-reading budget reached'))
@@ -1082,6 +1091,15 @@ class ApiByteLimitTests(unittest.TestCase):
             fixture = json.load(f)
         strip = lambda r: {k: v for k, v in r.items() if k not in ('externalId', 'startedAt')}
         self.assertEqual(strip(fixture), strip(report))
+
+    def test_lone_surrogates_and_control_only_reasons(self):
+        self.assertEqual(runner.clip_bytes('a\ud800b\x00c', 100), 'abc')
+        self.assertEqual(runner.bound_report({'externalId': 'x', 'checkFailures': [{'id': 'i', 'reason': '\x00\x01\x02'}]})['checkFailures'][0]['reason'], 'check failed')
+        report = self.shadow_run([self.tracked_listing(1)], [reading(price_text='$4,350\ud800.00 USD', currency='US\udfffD')])
+        payload = json.dumps(report, ensure_ascii=False).encode('utf-8')  # would raise on a lone surrogate
+        self.assertNotIn(b'\\ud8', payload)
+        self.assertIsNone(api_rejects(report))
+        self.assertIn('"$4,350.00 USD" ?', report['checkFailures'][0]['reason'])
 
     def test_fix_list_grouping_line_stays_fixed(self):
         """S2: the page-reading detail is on the second line of the reason; the
@@ -1097,7 +1115,7 @@ def regenerate_runner_payload_fixture():
     """python -c 'import test_dealer_pages as t; t.regenerate_runner_payload_fixture()'"""
     case = ApiByteLimitTests('test_eighty_eur_shadow_hints_and_a_bad_currency_fit_the_api')
     listings = [case.tracked_listing(80)] + [case.tracked_listing(i) for i in range(80)]
-    readings = [reading(currency='通貨' * 300, price_text='¥' + '４' * 2000)] + [reading(currency='EUR', price_text='4.350,00 € inkl. MwSt. – 価格は税込みです') for _ in range(79)]
+    readings = [reading(currency='通貨' * 300, price_text='¥' + '４' * 2000)] + [reading(currency='EUR', price_text='4.350,00\x00 € inkl.\x07 MwSt.\x1b[0m – 価格は税込みです\x7f') for _ in range(79)]
     report = case.shadow_run(listings, readings)
     with open(RUNNER_PAYLOAD_FIXTURE, 'w', encoding='utf-8') as f:
         json.dump(report, f, ensure_ascii=False, indent=1)

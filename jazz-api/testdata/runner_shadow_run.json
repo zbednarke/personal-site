@@ -1,6 +1,6 @@
 {
- "externalId": "adaptive-watch-2026-10-12T13:27:07.078087+00:00",
- "startedAt": "2026-10-12T13:27:07.078119+00:00",
+ "externalId": "adaptive-watch-2026-10-12T13:41:34.122085+00:00",
+ "startedAt": "2026-10-12T13:41:34.122113+00:00",
  "kind": "combined",
  "status": "partial",
  "sources": [
@@ -49,324 +49,324 @@
   },
   {
    "id": "00000000-0000-4000-8000-000000000000",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000001",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000002",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000003",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000004",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000005",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000006",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000007",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000008",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000009",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000010",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000011",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000012",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000013",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000014",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000015",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000016",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000017",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000018",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000019",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000020",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000021",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000022",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000023",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000024",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000025",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000026",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000027",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000028",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000029",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000030",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000031",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000032",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000033",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000034",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000035",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000036",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000037",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000038",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000039",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000040",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000041",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000042",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000043",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000044",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000045",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000046",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000047",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000048",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000049",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000050",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000051",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000052",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000053",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000054",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000055",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000056",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000057",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000058",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000059",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000060",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000061",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000062",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000063",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000064",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000065",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000066",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000067",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000068",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000069",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000070",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000071",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000072",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000073",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000074",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000075",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000076",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000077",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000078",
-   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text not on the page (shadow: read \"4.350,00 € inkl. MwSt. – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
+   "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage reading rejected: price text does not match the price (shadow: read \"4.350,00 € inkl. MwSt.[0m – 価格は税込みです\" EUR; differs from the stored 4400 EUR)"
   },
   {
    "id": "00000000-0000-4000-8000-000000000079",
    "reason": "horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)\npage-reading budget reached"
   }
  ],
- "error": "No search provider key configured; Recheck failed, recorded for retry: horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock); Page reading (LLM, shadow mode): 80 pages read, 0 grounded offers accepted, 80 rejected, 0 shadow agreements, 80 shadow disagreements with stored prices (1 price text does not match the price, 79 price text not on the page), 1 skipped (per-run cap of 80 pages or 8 minutes)"
+ "error": "No search provider key configured; Recheck failed, recorded for retry: horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock); Page reading (LLM, shadow mode): 80 pages read, 0 grounded offers accepted, 80 rejected, 0 shadow agreements, 80 shadow disagreements with stored prices (80 price text does not match the price), 1 skipped (per-run cap of 80 pages or 8 minutes)"
 }
