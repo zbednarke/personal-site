@@ -29,18 +29,34 @@
     n.textContent = message;
     n.className = error ? "error" : "";
   }
+  // Reads retry a dropped connection (Safari reports it as "Load failed");
+  // writes are never retried here because they are not all idempotent.
+  async function request(path, init, retries) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fetch("/trumpets/api/v1/trumpets" + path, init);
+      } catch (e) {
+        if (attempt >= retries) throw e;
+        await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+      }
+    }
+  }
   async function api(path, body, method = "POST") {
-    const response = await fetch("/trumpets/api/v1/trumpets" + path, {
-      credentials: "same-origin",
-      cache: "no-store",
-      ...(body !== undefined
-        ? {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }
-        : {}),
-    });
+    const response = await request(
+      path,
+      {
+        credentials: "same-origin",
+        cache: "no-store",
+        ...(body !== undefined
+          ? {
+              method,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }
+          : {}),
+      },
+      body === undefined ? 2 : 0,
+    );
     if (!response.ok) {
       let error;
       try {
@@ -91,8 +107,14 @@
       render();
       window.TasteBoard?.boardLoaded();
     } catch (e) {
-      report(e.message, true);
+      report(
+        e instanceof TypeError
+          ? "Couldn't reach the board. Check your connection and tap Refresh board."
+          : e.message,
+        true,
+      );
       $("#result-count").textContent = "Could not load private board";
+      window.TasteBoard?.boardFailed?.();
     } finally {
       loading = false;
       $("#refresh").disabled = false;

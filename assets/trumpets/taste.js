@@ -6,6 +6,7 @@
     M = window.TrumpetModel,
     $ = (s) => document.querySelector(s);
   let data = null,
+    boardState = "loading", // loading | ready | failed: listings come from the main board
     active = false,
     loading = null,
     mode = "swipe";
@@ -93,6 +94,14 @@
     if (score) body.append(el("p", "taste-score", `Taste ${Math.round(score.taste)} · ±${score.sd.toFixed(2)} · ${score.reason || ""}`.replace(/ · $/, "")));
     return body;
   }
+  // The queue names listings by id; until the board has loaded there is
+  // nothing to show, which is not the same as having reacted to everything.
+  function waitingText() {
+    return boardState === "failed" ? "Listings didn't load." : "Loading listings…";
+  }
+  function waitingNote() {
+    return boardState === "failed" ? "Tap Refresh board above to try again." : "";
+  }
   function currentCard() {
     return T.nextCards(data?.queue, doneCards).find((q) => listing(q.listingId)) || null;
   }
@@ -108,8 +117,8 @@
       const empty = el("div", "taste-empty");
       empty.append(
         el("span", "empty-mark", "◎"),
-        el("h3", "", data ? "All caught up." : "Loading…"),
-        el("p", "", data ? "Every horn has a reaction. Try Head to head, or come back when new listings arrive." : ""),
+        el("h3", "", !data ? "Loading…" : boardState !== "ready" && data.queue?.length ? waitingText() : "All caught up."),
+        el("p", "", !data ? "" : boardState !== "ready" && data.queue?.length ? waitingNote() : "Every horn has a reaction. Try Head to head, or come back when new listings arrive."),
       );
       deck.append(empty);
       return;
@@ -136,7 +145,7 @@
     for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither"]) $(id).disabled = !p;
     if (!p) {
       const empty = el("div", "taste-empty");
-      empty.append(el("span", "empty-mark", "◎"), el("h3", "", data ? "No close calls left." : "Loading…"), el("p", "", data ? "The model is sure about every pairing it can make today." : ""));
+      empty.append(el("span", "empty-mark", "◎"), el("h3", "", !data ? "Loading…" : boardState !== "ready" && data.pairs?.length ? waitingText() : "No close calls left."), el("p", "", !data ? "" : boardState !== "ready" && data.pairs?.length ? waitingNote() : "The model is sure about every pairing it can make today."));
       box.append(empty);
       return;
     }
@@ -498,7 +507,12 @@
       active = on;
       if (on) load();
     },
+    boardFailed() {
+      boardState = "failed";
+      if (data) render();
+    },
     boardLoaded() {
+      boardState = "ready";
       if (data) render();
       else if (active) load();
       else
