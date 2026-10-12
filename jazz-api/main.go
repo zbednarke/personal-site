@@ -298,7 +298,10 @@ func main() {
 		app.counters = newRouteCounters(routeService(false))
 		app.push = pusherFromEnv()
 	}
-	app.fix.enabled = fixListOwnerSubject() != ""
+	// The fix list's after-request fallback and sweep run only in Workbench:
+	// it keeps its CPU between requests (--no-cpu-throttling), while the API
+	// is throttled after each response, where a background send could stall.
+	app.fix.enabled = app.wbOnly && fixListOwnerSubject() != ""
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           app.routes(),
@@ -321,8 +324,9 @@ func main() {
 		go func() {
 			<-sig
 			slog.Info("workbench draining")
-			app.flushRouteCountersOnExit()
-			app.wbDrain(wbCancelRuns, 7*time.Second)
+			// Counter flushes run during and right after the drain, inside
+			// 8 s, leaving the shutdown below within Cloud Run's 10 s.
+			app.drainAndFlush(func() { app.wbDrain(wbCancelRuns, 7*time.Second) }, 8*time.Second)
 			shutdown, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			if err := server.Shutdown(shutdown); err != nil {
@@ -1509,15 +1513,17 @@ func (app *application) recoverPanic(next http.Handler) http.Handler {
 
 // logRequests logs each request and, with counters set, counts 5xx and slow
 // responses per route pattern (r.Pattern, set by the mux). Workbench event
-// streams are not counted. After the response it may start the fix list's
-// fallback trigger; neither waits on the database.
+// streams are not counted. In Workbench, after the response it may start the
+// fix list's fallback trigger; neither waits on the database.
 func (app *application) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		if app.counters == nil || wbIsEventStream(r) {
 			next.ServeHTTP(w, r)
 			app.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
-			app.fixListMaybe(time.Now(), app.fixFallbackTrigger())
+			if app.wbOnly {
+				app.fixListMaybe(time.Now(), "workbench-fallback")
+			}
 			return
 		}
 		rec := &statusRecorder{ResponseWriter: w}
@@ -1536,7 +1542,9 @@ func (app *application) logRequests(next http.Handler) http.Handler {
 			if recovered != nil {
 				panic(recovered) // recoverPanic answers it
 			}
-			app.fixListMaybe(now, app.fixFallbackTrigger())
+			if app.wbOnly {
+				app.fixListMaybe(now, "workbench-fallback")
+			}
 		}()
 		next.ServeHTTP(rec, r)
 	})

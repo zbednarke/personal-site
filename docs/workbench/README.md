@@ -116,8 +116,13 @@ list of things to fix (`jazz-api/fixlist.go`, migration `035_fix_list.sql`).
 
 - **What it counts**, from Postgres only (no Cloud Logging, no GitHub API):
   - **Trumpet runs:** whether the daily run (`externalId` `adaptive-watch-*`)
-    happened (missing when there is none by 14:30 UTC), its status and its
-    notes; failed and partial runs of any kind.
+    happened, its status and its notes; failed and partial runs of any kind.
+    The runner registers each run's start (`POST machine/fixlist/start`), so
+    a run under way reads **running**; a start with no stored run after 50
+    minutes is its own item ("started but never stored"); a day with neither
+    is **missing** only after 16:30 UTC (the run starts at 13:17 within a
+    13:00–16:00 window and has a 45-minute budget, so a late or long run is
+    not called missing).
   - **Search sources** that failed or were skipped, grouped by reason (a lead
     whose page nobody opened yet is shown as context, not a fault).
   - **Failed checks** by domain and reason, from the listings'
@@ -130,11 +135,15 @@ list of things to fix (`jazz-api/fixlist.go`, migration `035_fix_list.sql`).
     budget reached"), the 240-page discovery budget, the search time budget.
   - **Magic Film** jobs that failed (by error) or are stuck over an hour.
   - **The API itself:** 5xx responses and requests of 10 s or more per route
-    pattern and service. The request-logging middleware counts them in memory
+    pattern and service. Clip Studio renders (`POST /v1/studio/renders`)
+    stream up to a ten-minute movie by design, so they count as slow only
+    from 15 minutes. The request-logging middleware counts them in memory
     (a map update; Workbench event streams are left out) and adds them to
     `api_route_counters` (one row per UTC hour, service and route) in one
-    statement about once a minute, from a goroutine, and on SIGTERM. Both
-    services count, since they share the code (`K_SERVICE` names them).
+    statement about once a minute, from a goroutine, and on SIGTERM (in
+    Workbench, during and right after the drain, all within 8 s of the 10 s
+    grace). Both services count, since they share the code (`K_SERVICE`
+    names them).
 - **Fix next** is the single most valuable item: a base value per kind (a
   missing daily run first, then failed runs, 5xx, failed films, partial runs,
   unverifiable listings, failed checks and sources, slow routes, budgets),
@@ -147,34 +156,46 @@ list of things to fix (`jazz-api/fixlist.go`, migration `035_fix_list.sql`).
   counts and changes, Fix next, the run's notes and the last two weeks'
   verdicts (`assets/workbench/fixlist.js`, loaded by the sheet when the hash
   is `#fixlist`, on any private page). The thread also gets a hidden server
-  note with the digest, so asking "fix the eBay one" there gives the agent
-  the details; an unread older note is superseded by the next day's.
+  note with the digest (inside `<untrusted_data source="fix_list">`, like
+  tool output, since its reasons come from runners and outside pages), so
+  asking "fix the eBay one" there gives the agent the details; an unread
+  older note is superseded by the next day's.
 - **Privacy:** pushes carry fixed words, counts, domains and route patterns
   only. Listing titles, notes, profile text and free-form error text never
   reach a push; the page and thread show domains, counts and reasons.
 - **When it is sent (no Cloud Scheduler).** Once per owner and UTC day: the
   first trigger to claim the day's row in `fix_list_digests` sends it;
-  every other trigger gets the stored outcome (a claim that crashed before
-  delivery can be retaken after 15 minutes). Triggers:
+  every other trigger gets the stored outcome. A claim carries a token: a
+  claim that stalled for 15 minutes can be taken over with a new token, and
+  only the current token may release it, push or mark it delivered (the
+  sender renews its claim right before pushing and stops if it lost it), so
+  a day is pushed at most once. Triggers:
   1. **The trumpet runner** calls `POST /v1/trumpets/machine/fixlist` at the
-     end of its 13:17 UTC run (machine bearer token; nothing before 13:00
-     UTC). This is the normal path: the digest arrives about 14:00 UTC with
-     that run in it.
-  2. **Fallback:** any request to the API or to Workbench after 15:00 UTC
-     starts a background delivery if the day has not been sent (checked once
-     per instance and day), so a runner that crashed or never ran still
-     produces a fix list, flagging the missing run. Workbench's minute sweep
-     does the same while it is awake (it scales to zero, so it cannot be the
-     clock on its own).
+     end of its run, a synchronous request on the API (machine bearer
+     token), but only when that run **started between 13:00 and 16:00 UTC**
+     (the systemd timer's 13:17 run) or with `--trigger-fix-list`. A manual
+     run earlier in the day therefore does not use up the day. This is the
+     normal path: the digest arrives about 14:00 UTC with that run in it.
+  2. **Fallback, Workbench only:** a request to Workbench after 16:30 UTC
+     starts a background delivery if the day has not been sent (checked
+     once per instance and day), and its minute sweep does the same while
+     it is awake, so a runner that crashed or never ran still produces a fix
+     list, flagging the run. Workbench keeps its CPU between requests
+     (`--no-cpu-throttling`); the API is CPU-throttled after each response,
+     where a background send could stall, so it has no fallback.
 
   The runner is the daily clock because it already runs on a timer and the
-  digest should follow its run; the fallback covers the day it does not.
-  The API sends pushes itself when it has the VAPID keys (deploy step 5), so
-  delivery never waits for Workbench to wake; without them it stores the
-  digest and marks the push pending, and Workbench's sweep sends it the
-  same day.
+  digest should follow its run; Workbench catches the day it does not (it
+  scales to zero, so that needs the owner or a device to wake it, typically
+  by opening a page). The API sends pushes itself when it has the VAPID keys
+  (deploy step 5), so the normal path never waits for Workbench; without
+  them it stores the digest and marks the push pending, and Workbench's
+  sweep sends it the same day. A push only drops a device when the push
+  service answers 404 or 410; timeouts and other errors are logged and the
+  subscription kept.
 - **Owner:** `FIX_LIST_OWNER_SUBJECT`, else `WORKBENCH_OWNER_SUBJECT`, else
-  `TRUMPETS_MACHINE_USER` (the same signed-in subject).
+  `TRUMPETS_MACHINE_USER`, for every trigger (the runner's too). It should be
+  the subject the trumpet runs are stored under.
 - `GET /fixlist` (`?day=YYYY-MM-DD` optional) returns the latest delivered
   digest, the thread id and recent verdicts; before the first one is sent it
   returns a live digest marked `live`.
@@ -211,7 +232,7 @@ list of things to fix (`jazz-api/fixlist.go`, migration `035_fix_list.sql`).
 | `WORKBENCH_VAPID_SUBJECT` | env, optional | Default `mailto:workbench@zachbednarke.com` |
 | `WORKBENCH_MONTHLY_CAP_USD` | env, optional | Default `25` |
 | `WORKBENCH_MODEL`, `WORKBENCH_GITHUB_REPO` | env, optional | Defaults `claude-opus-5-5`, `zbednarke/personal-site` |
-| `FIX_LIST_OWNER_SUBJECT` | env, optional, both services | Whose fix list; defaults to `WORKBENCH_OWNER_SUBJECT`, then `TRUMPETS_MACHINE_USER`. With none set, only the runner's trigger sends it |
+| `FIX_LIST_OWNER_SUBJECT` | env, optional, both services | Whose fix list; defaults to `WORKBENCH_OWNER_SUBJECT`, then `TRUMPETS_MACHINE_USER`. Workbench's fallback needs one of them |
 | `WORKBENCH_VAPID_PUBLIC_KEY`, `WORKBENCH_VAPID_PRIVATE_KEY` on **jazz-api** | env and secret, optional | Lets the API push the fix list itself (deploy step 5) |
 
 Everything else (`DATABASE_URL`, `GATEWAY_KEY`, `GCS_BUCKET`,
@@ -270,12 +291,12 @@ runs on its startup) and the static pages:
    ```
 
    Then copy the updated `tools/trumpets/runner.py` to `/opt/trumpets/runner.py`
-   on the VM (its end-of-run call to `POST /v1/trumpets/machine/fixlist`;
-   `docs/trumpets/README.md`). Turn on notifications on each device from the
+   on the VM (it registers each run's start and, after a scheduled run,
+   calls `POST /v1/trumpets/machine/fixlist`; `docs/trumpets/README.md`). Turn on notifications on each device from the
    sheet's menu if they are not on yet. To check it end to end without waiting
-   for the timer, `systemctl start trumpets-research.service` after 13:00 UTC,
-   or call the endpoint with the machine token; a second call that day answers
-   `replayed`.
+   for the timer, run `python3 /opt/trumpets/runner.py --trigger-fix-list`
+   with the runner's environment, or call the endpoint with the machine
+   token; a second call that day answers `replayed`.
 
 ## Local preview and tests
 
@@ -291,7 +312,11 @@ runs on its startup) and the static pages:
   runs, sources, checks, films and counters, a missing run, delivery once per
   day under concurrent triggers, the thread message and note, the machine
   trigger and the fallback, pending pushes, route counting (5xx, slow, panics,
-  streams left out) and the push payload's size and privacy.
+  streams left out) and the push payload's size and privacy; and
+  (`fixlist_review_test.go`) an owned claim across a stale takeover, push
+  timeouts that never drop a device, no API after-response fallback, the
+  render route's 15-minute threshold, the agent note as untrusted data, the
+  SIGTERM flush budget, and run starts with the 16:30 UTC deadline.
 - `node tools/workbench/browser-check.cjs` starts an isolated preview
   (`TestWorkbenchBrowserPreview`: loopback, throwaway schema, fake model and
   GitHub) and checks 390, 768 and 1440 px with touch and pointer, two browser

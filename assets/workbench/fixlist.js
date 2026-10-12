@@ -49,6 +49,8 @@
   function runLine(run) {
     if (!run) return "";
     if (run.missing) return `No daily run for ${run.expectedDay} (expected at 13:17 UTC).`;
+    if (run.running) return `Daily run ${run.expectedDay}: running since ${utcTime(run.startedAt)}.`;
+    if (run.unfinished) return `Daily run ${run.expectedDay}: started ${utcTime(run.startedAt)} but never stored.`;
     if (!run.found) return "";
     const status = { succeeded: "succeeded", partial: "partial", failed: "failed" }[run.status] || String(run.status || "unknown");
     return `Daily run ${run.expectedDay}: ${status}, started ${utcTime(run.startedAt)}.`;
@@ -74,7 +76,7 @@
       live: !!(res && res.live),
       generated: utcTime(d.generatedAt),
       fixNext: next,
-      run: { line: runLine(d.run), notes: ((d.run && d.run.notes) || []).map(String).slice(0, 12), missing: !!(d.run && d.run.missing), status: (d.run && d.run.status) || "" },
+      run: { line: runLine(d.run), notes: ((d.run && d.run.notes) || []).map(String).slice(0, 12), missing: !!(d.run && d.run.missing), running: !!(d.run && d.run.running), unfinished: !!(d.run && d.run.unfinished), status: (d.run && d.run.status) || "" },
       sections,
       threadId: (res && res.threadId) || "",
       history: ((res && res.history) || []).map((h) => ({ day: String(h.day || ""), verdict: String(h.verdict || ""), allClear: !!h.allClear })),
@@ -117,7 +119,7 @@
         const sec = el("div", { class: "wb-fl-section", "data-section": s.id },
           el("h2", {}, s.title, s.open ? el("span", { class: "wb-fl-badge" }, String(s.open)) : null));
         if (s.id === "run") {
-          if (m.run.line) sec.append(el("p", { class: `wb-fl-run${m.run.missing || (m.run.status && m.run.status !== "succeeded") ? " wb-fl-warn" : ""}` }, m.run.line));
+          if (m.run.line) sec.append(el("p", { class: `wb-fl-run${m.run.missing || m.run.unfinished || (m.run.status && !["succeeded", "running"].includes(m.run.status)) ? " wb-fl-warn" : ""}` }, m.run.line));
           if (m.run.notes.length) sec.append(el("ul", { class: "wb-fl-notes" }, m.run.notes.map((n) => el("li", {}, n))));
         }
         if (s.items.length) {

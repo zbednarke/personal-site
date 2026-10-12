@@ -165,7 +165,7 @@ func TestFixDigestFromTheDatabase(t *testing.T) {
 
 func TestFixDigestFlagsAMissingDailyRun(t *testing.T) {
 	f := newFixFixture(t)
-	now := time.Date(2026, 10, 12, 15, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 12, 16, 31, 0, 0, time.UTC)
 	f.run("adaptive-watch-yesterday", "succeeded", "", time.Date(2026, 10, 11, 13, 17, 0, 0, time.UTC))
 	d, err := f.h.app.computeFixDigest(f.ctx, f.user, now)
 	if err != nil {
@@ -174,8 +174,9 @@ func TestFixDigestFlagsAMissingDailyRun(t *testing.T) {
 	if !d.Run.Missing || d.FixNext == nil || d.FixNext.Key != "run:missing" || d.Verdict != "1 to fix · next: daily run missing" {
 		t.Fatalf("missing run: %+v %q", d.Run, d.Verdict)
 	}
-	// Before 14:30 UTC today's run is not due yet: yesterday's is checked.
-	early, err := f.h.app.computeFixDigest(f.ctx, f.user, time.Date(2026, 10, 12, 14, 0, 0, 0, time.UTC))
+	// Before 16:30 UTC a late or long run is not called missing yet:
+	// yesterday's is checked.
+	early, err := f.h.app.computeFixDigest(f.ctx, f.user, time.Date(2026, 10, 12, 16, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +222,7 @@ func TestFixListIsDeliveredOncePerDay(t *testing.T) {
 	if sent != 1 || f.h.pusher.count("fixlist") != 2 {
 		t.Fatalf("sent %d times, %d pushes", sent, f.h.pusher.count("fixlist"))
 	}
-	again, err := f.h.app.fixListDeliver(f.ctx, f.user, now.Add(3*time.Hour), "api-fallback")
+	again, err := f.h.app.fixListDeliver(f.ctx, f.user, now.Add(3*time.Hour), "workbench-fallback")
 	if err != nil || !again.Replayed || again.Reason != "already sent today" || !again.AllClear || again.Pushed != 2 {
 		t.Fatalf("a later trigger replays: %+v %v", again, err)
 	}
@@ -292,10 +293,12 @@ func TestFixListMachineTriggerAndFallback(t *testing.T) {
 	token := strings.Repeat("m", 40)
 	sum := sha256.Sum256([]byte(token))
 	t.Setenv("TRUMPETS_MACHINE_TOKEN_SHA256", hex.EncodeToString(sum[:]))
-	t.Setenv("TRUMPETS_MACHINE_USER", "owner")
-	t.Setenv("FIX_LIST_OWNER_SUBJECT", "")
+	// The runner's token belongs to another subject; every trigger resolves
+	// the same owner as the fallbacks (FIX_LIST_OWNER_SUBJECT first).
+	t.Setenv("TRUMPETS_MACHINE_USER", "machine-subject")
+	t.Setenv("FIX_LIST_OWNER_SUBJECT", "owner")
 	t.Setenv("WORKBENCH_OWNER_SUBJECT", "")
-	clock := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	clock := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
 	f.h.app.fix.now = func() time.Time { return clock }
 	post := func(auth string) (int, map[string]any) {
 		r := httptest.NewRequest("POST", "/v1/trumpets/machine/fixlist", strings.NewReader(`{}`))
@@ -312,24 +315,27 @@ func TestFixListMachineTriggerAndFallback(t *testing.T) {
 	if code, _ := post(strings.Repeat("x", 40)); code != 401 {
 		t.Fatalf("machine token required: %d", code)
 	}
-	if code, out := post(token); code != 200 || out["sent"] != false || !strings.Contains(out["reason"].(string), "before 13:00") {
-		t.Fatalf("an early manual run sends nothing: %d %v", code, out)
-	}
-	clock = time.Date(2026, 10, 12, 13, 52, 0, 0, time.UTC)
+	// The runner decides when to call (its scheduled window, or the explicit
+	// flag); the server sends whenever asked, once per day, for the owner.
 	if code, out := post(token); code != 200 || out["sent"] != true {
 		t.Fatalf("the runner's trigger sends: %d %v", code, out)
+	}
+	var owned int
+	_ = f.h.app.db.QueryRow(f.ctx, `SELECT count(*) FROM fix_list_digests WHERE user_id=$1 AND day='2026-10-12'`, f.user).Scan(&owned)
+	if owned != 1 {
+		t.Fatal("the machine trigger delivers the fix list owner's digest, not the token subject's")
 	}
 	if code, out := post(token); code != 200 || out["sent"] != false || out["replayed"] != true {
 		t.Fatalf("and is idempotent: %d %v", code, out)
 	}
 
-	// The fallback: off until enabled, nothing before 15:00 UTC, then once.
+	// The fallback: off until enabled, nothing before 16:30 UTC, then once.
 	f.h.app.fix.enabled = true
 	f.h.app.fix.wait = make(chan fixListResult, 4)
-	clock = time.Date(2026, 10, 13, 14, 59, 0, 0, time.UTC)
-	f.h.app.fixListMaybe(time.Now(), "api-fallback")
-	clock = time.Date(2026, 10, 13, 15, 1, 0, 0, time.UTC)
-	f.h.app.fixListMaybe(time.Now(), "api-fallback")
+	clock = time.Date(2026, 10, 13, 16, 29, 0, 0, time.UTC)
+	f.h.app.fixListMaybe(time.Now(), "workbench-fallback")
+	clock = time.Date(2026, 10, 13, 16, 31, 0, 0, time.UTC)
+	f.h.app.fixListMaybe(time.Now(), "workbench-fallback")
 	select {
 	case res := <-f.h.app.fix.wait:
 		if !res.Sent || res.Day != "2026-10-13" || res.AllClear {
@@ -338,7 +344,7 @@ func TestFixListMachineTriggerAndFallback(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the fallback did not run")
 	}
-	f.h.app.fixListMaybe(time.Now(), "api-fallback")
+	f.h.app.fixListMaybe(time.Now(), "workbench-fallback")
 	select {
 	case res := <-f.h.app.fix.wait:
 		t.Fatalf("the day is known to be sent; no second attempt: %+v", res)
@@ -346,7 +352,7 @@ func TestFixListMachineTriggerAndFallback(t *testing.T) {
 	}
 	var trigger string
 	_ = f.h.app.db.QueryRow(f.ctx, `SELECT trigger FROM fix_list_digests WHERE user_id=$1 AND day='2026-10-13'`, f.user).Scan(&trigger)
-	if trigger != "api-fallback" {
+	if trigger != "workbench-fallback" {
 		t.Fatalf("trigger recorded: %q", trigger)
 	}
 	var missing bool

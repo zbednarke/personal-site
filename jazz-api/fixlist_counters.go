@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -22,6 +23,28 @@ import (
 // long-lived by design and are left out.
 
 const routeSlowAfter = 10 * time.Second
+
+// Routes that are long by design get their own threshold: a Clip Studio
+// render streams up to a ten-minute movie through FFmpeg, so it only counts
+// as slow from 15 minutes (otherwise every render day would read "not clear").
+var routeSlowOverrides = map[string]time.Duration{
+	"POST /v1/studio/renders": 15 * time.Minute,
+}
+
+func routeSlowThreshold(route string) time.Duration {
+	if d, ok := routeSlowOverrides[route]; ok {
+		return d
+	}
+	return routeSlowAfter
+}
+
+// routeSlowLabel says what "slow" means for a route in the digest.
+func routeSlowLabel(route string) string {
+	if d := routeSlowThreshold(route); d >= time.Minute {
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%d s", int(routeSlowThreshold(route).Seconds()))
+}
 
 type routeCounterKey struct {
 	hour  int64 // Unix seconds at the start of the UTC hour
@@ -76,7 +99,7 @@ func (c *routeCounters) record(route string, status int, took time.Duration, now
 	if status >= 500 {
 		n.errors++
 	}
-	if took >= routeSlowAfter {
+	if took >= routeSlowThreshold(route) {
 		n.slow++
 	}
 	return now.Sub(c.last) >= c.every

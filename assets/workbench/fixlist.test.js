@@ -68,3 +68,12 @@ test("an empty or malformed response still gives a usable model", () => {
   assert.equal(odd.sections[1].items[0].count, 2);
   assert.equal(odd.sections[1].items[0].label, "7");
 });
+
+test("a run that has started reads running, and one never stored says so", () => {
+  const running = F.fixListModel({ digest: { day: "2026-10-12", run: { expectedDay: "2026-10-12", running: true, status: "running", startedAt: "2026-10-12T13:17:00Z" }, items: [] } });
+  assert.equal(running.run.line, "Daily run 2026-10-12: running since 2026-10-12 13:17 UTC.");
+  assert.equal(running.run.running, true);
+  const lost = F.fixListModel({ digest: { day: "2026-10-12", run: { expectedDay: "2026-10-12", unfinished: true, startedAt: "2026-10-12T13:17:00Z" }, items: [] } });
+  assert.equal(lost.run.line, "Daily run 2026-10-12: started 2026-10-12 13:17 UTC but never stored.");
+  assert.equal(lost.run.unfinished, true);
+});

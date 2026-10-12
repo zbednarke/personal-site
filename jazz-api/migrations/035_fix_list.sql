@@ -34,7 +34,20 @@ CREATE TABLE IF NOT EXISTS fix_list_digests (
   -- Delivered by a process without the VAPID keys: the next one with them
   -- (the Workbench sweep) sends the push, the same day only.
   push_pending boolean NOT NULL DEFAULT false,
+  -- The current claim's owner: only its holder may release, push or deliver.
+  claim_token uuid,
   PRIMARY KEY (user_id, day)
+);
+ALTER TABLE fix_list_digests ADD COLUMN IF NOT EXISTS claim_token uuid;
+
+-- The trumpet runner registers each run's start (POST machine/fixlist/start),
+-- so until the run is stored the fix list says "running", not "missing".
+-- Pruned after 35 days.
+CREATE TABLE IF NOT EXISTS fix_list_run_starts (
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  external_id text NOT NULL CHECK (char_length(external_id) BETWEEN 1 AND 200),
+  started_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, external_id)
 );
 
 -- The digest reads the last two days of these.

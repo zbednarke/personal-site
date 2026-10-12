@@ -155,7 +155,7 @@ func wbApproveFromNotification(a wbApproval) bool {
 }
 
 // wbPushTo sends to the owner's devices (all, or nudge-opted only), skipping
-// one device. Failed endpoints are dropped after repeated failures.
+// one device. Endpoints the push service reports gone (404/410) are dropped.
 func (app *application) wbPushTo(ctx context.Context, user uuid.UUID, nudgesOnly bool, skipDevice string, p wbPushPayload) int {
 	payload, _ := json.Marshal(p)
 	return app.wbPushRaw(ctx, user, nudgesOnly, skipDevice, payload)
@@ -185,12 +185,14 @@ func (app *application) wbPushRaw(ctx context.Context, user uuid.UUID, nudgesOnl
 		case err == nil && (status == 404 || status == 410):
 			_, _ = app.db.Exec(ctx, `DELETE FROM wb_push_subscriptions WHERE user_id=$1 AND device_id=$2`, user, s.DeviceID)
 		case err != nil || status >= 400:
+			// Only the push service saying the subscription is gone (404/410)
+			// drops a device. A timeout or network error (say, on a
+			// CPU-throttled instance) or another status is logged and the
+			// subscription kept, so a slow sender never unsubscribes anyone.
 			if err == nil {
 				err = errors.New(http.StatusText(status))
 			}
 			app.logger.Warn("workbench push failed", "device", s.DeviceID, "error", err)
-			_, _ = app.db.Exec(ctx, `UPDATE wb_push_subscriptions SET failures=failures+1 WHERE user_id=$1 AND device_id=$2`, user, s.DeviceID)
-			_, _ = app.db.Exec(ctx, `DELETE FROM wb_push_subscriptions WHERE user_id=$1 AND device_id=$2 AND failures>=5`, user, s.DeviceID)
 		default:
 			sent++
 		}
