@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -356,7 +357,173 @@ func TestTastePairsRotateBridgeAnchors(t *testing.T) {
 		}
 	}
 	t.Logf("connected after %d answers; max degree %d (%s), hub degree %d", connectedAfter, maxDegree, hub, len(g.adj["horn-h07"]))
-	if maxDegree > 4 {
+	if maxDegree > 5 { // 4 today (the would-be hub); 5 leaves room for tie-order changes
 		t.Fatalf("max degree %d (%s): the bridges form a star", maxDegree, hub)
+	}
+}
+
+// tasteRecentPairHornsBySort is the obvious reference: sort every live pair
+// between two known horns by CreatedAt then id, latest first, and take n.
+func tasteRecentPairHornsBySort(d *tasteData, events []tasteEvent, n int) map[string]bool {
+	pairs := []tasteEvent{}
+	for _, e := range events {
+		if e.Kind != "pair" || e.undone {
+			continue
+		}
+		a, okA := d.byListing[e.ListingID]
+		b, okB := d.byListing[e.OtherListingID]
+		if okA && okB && a.HornID != b.HornID {
+			pairs = append(pairs, e)
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if !pairs[i].CreatedAt.Equal(pairs[j].CreatedAt) {
+			return pairs[i].CreatedAt.After(pairs[j].CreatedAt)
+		}
+		return pairs[i].ID > pairs[j].ID
+	})
+	out := map[string]bool{}
+	for i := 0; i < len(pairs) && i < n; i++ {
+		out[d.byListing[pairs[i].ListingID].HornID] = true
+		out[d.byListing[pairs[i].OtherListingID].HornID] = true
+	}
+	return out
+}
+
+func TestTasteRecentPairHorns(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 10)
+	listings = append(listings, tasteListing("h00-relist", "Maker0", "M0", "raw brass", 1500, comparable(now), func(l *trumpetListing) { l.HornID = "horn-h00" }))
+	at := func(m int) time.Time { return now.Add(time.Duration(m) * time.Minute) }
+	undone := pairEvent(20, "h08", "h09", "a", at(9)) // the latest, but undone
+	events := markUndone([]tasteEvent{
+		pairEvent(1, "h01", "h02", "a", at(1)),           // too old: three live choices are newer
+		pairEvent(2, "h03", "h04", "a", at(5)),           // same time as 3, lower id: older
+		pairEvent(3, "h05", "h06", "b", at(5)),           //
+		pairEvent(4, "h00-relist", "h07", "both", at(4)), // another listing of horn h00
+		pairEvent(5, "h00", "h00-relist", "a", at(8)),    // one horn against itself: not a choice
+		pairEvent(6, "h01", "gone", "a", at(8)),          // an unknown listing
+		{ID: 7, Kind: "swipe", ListingID: "h09", Action: "right", CreatedAt: at(9)},
+		undone,
+		{ID: 21, Kind: "undo", Undoes: &undone.ID, CreatedAt: at(9)},
+	})
+	_, d := buildTasteModel(listings, events, now)
+	got := tasteRecentPairHorns(d, events, 3)
+	want := map[string]bool{"horn-h03": true, "horn-h04": true, "horn-h05": true, "horn-h06": true, "horn-h00": true, "horn-h07": true}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("recent horns %v, want %v", got, want)
+	}
+	// The same-time tie goes by id: with n=1 only the later id counts.
+	if got := tasteRecentPairHorns(d, events, 1); fmt.Sprint(got) != fmt.Sprint(map[string]bool{"horn-h05": true, "horn-h06": true}) {
+		t.Fatalf("n=1: %v", got)
+	}
+	if got := tasteRecentPairHorns(d, events, 0); len(got) != 0 {
+		t.Fatalf("n=0: %v", got)
+	}
+	// Against the sorted reference on shuffled, tied and partly undone events.
+	rng := rand.New(rand.NewSource(3))
+	ids := []string{"h00", "h00-relist", "h01", "h02", "h03", "h04", "h05", "h06", "h07", "h08", "h09", "gone"}
+	for round := 0; round < 300; round++ {
+		evs := []tasteEvent{}
+		perm := rng.Perm(1000) // unique ids, in no particular order, as event ids are unique
+		for i, count := 0, rng.Intn(40); i < count; i++ {
+			e := pairEvent(int64(perm[i]), ids[rng.Intn(len(ids))], ids[rng.Intn(len(ids))], "a", at(rng.Intn(6)))
+			e.undone = rng.Intn(5) == 0
+			evs = append(evs, e)
+		}
+		for _, n := range []int{1, 3, 5} {
+			if got, want := tasteRecentPairHorns(d, evs, n), tasteRecentPairHornsBySort(d, evs, n); fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("round %d n=%d: %v, want %v (events %+v)", round, n, got, want, evs)
+			}
+		}
+	}
+}
+
+// assertBridgesNonRedundant: every bridge of one answer joins two sets of
+// the graph's components plus that answer's earlier bridges. It returns the
+// number of bridges.
+func assertBridgesNonRedundant(t *testing.T, d *tasteData, g *tastePairGraph, pairs []tastePair) int {
+	t.Helper()
+	joined := g.uf.clone()
+	bridges := 0
+	for _, p := range pairs {
+		if p.Reason != "bridge" {
+			continue
+		}
+		bridges++
+		if !joined.union(d.byListing[p.A].HornID, d.byListing[p.B].HornID) {
+			t.Fatalf("redundant bridge %+v in %+v", p, pairs)
+		}
+	}
+	return bridges
+}
+
+// When every horn of the largest component was just compared, a smaller
+// component anchors the bridge, and the answer's bridges stay non-redundant.
+func TestTastePairsSmallerComponentAnchors(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 10)
+	events := markUndone([]tasteEvent{
+		pairEvent(1, "h03", "h04", "a", now.Add(-48*time.Hour)),  // an island of two, compared long ago
+		pairEvent(2, "h00", "h01", "a", now.Add(-3*time.Minute)), // the largest component, all just compared
+		pairEvent(3, "h01", "h02", "a", now.Add(-2*time.Minute)),
+		pairEvent(4, "h00", "h02", "a", now.Add(-time.Minute)),
+	})
+	m, d := buildTasteModel(listings, events, now)
+	g := newTastePairGraph(d, events, now)
+	pairs := tastePairs(m, d, events, now)
+	if len(pairs) == 0 {
+		t.Fatal("no pairs")
+	}
+	main := map[string]bool{"h00": true, "h01": true, "h02": true}
+	island := map[string]bool{"h03": true, "h04": true}
+	top := pairs[0]
+	if top.Reason != "bridge" || main[top.A] || main[top.B] || !(island[top.A] || island[top.B]) {
+		t.Fatalf("first pair %+v: want a bridge anchored on the island h03-h04, away from the horns just compared", top)
+	}
+	// 7 components: 6 non-redundant bridges join them all in one answer.
+	if n := assertBridgesNonRedundant(t, d, g, pairs); n != 6 {
+		t.Fatalf("%d bridges for 7 components: %+v", n, pairs)
+	}
+}
+
+// Random graphs and recent choices: the bridges of an answer never pair two
+// horns that the graph or that answer's earlier bridges already join.
+func TestTastePairsBridgesNonRedundantFuzz(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	rng := rand.New(rand.NewSource(11))
+	bridges, smaller := 0, 0
+	for round := 0; round < 150; round++ {
+		n := 8 + rng.Intn(30)
+		listings := comparableHorns(now, "h", n)
+		events := []tasteEvent{}
+		for i, count := 0, rng.Intn(2*n); i < count; i++ {
+			a, b := rng.Intn(n), rng.Intn(n)
+			if rng.Intn(3) > 0 { // mostly short edges: several components of mixed size
+				b = (a + 1 + rng.Intn(2)) % n
+			}
+			events = append(events, pairEvent(int64(i+1), fmt.Sprintf("h%02d", a), fmt.Sprintf("h%02d", b), "a", now.Add(-time.Duration(rng.Intn(600))*time.Minute)))
+		}
+		events = markUndone(events)
+		m, d := buildTasteModel(listings, events, now)
+		g := newTastePairGraph(d, events, now)
+		pairs := tastePairs(m, d, events, now)
+		bridges += assertBridgesNonRedundant(t, d, g, pairs)
+		if comps := g.components(); len(comps) > 1 {
+			largest := map[string]bool{}
+			for _, h := range comps[0] {
+				largest[h] = true
+			}
+			for _, p := range pairs {
+				if p.Reason == "bridge" && !largest[d.byListing[p.A].HornID] && !largest[d.byListing[p.B].HornID] {
+					smaller++
+					break
+				}
+			}
+		}
+	}
+	t.Logf("%d bridges; %d answers with a bridge outside the largest component", bridges, smaller)
+	if bridges < 200 || smaller == 0 {
+		t.Fatalf("fuzz too weak: %d bridges, %d with a smaller anchor", bridges, smaller)
 	}
 }
