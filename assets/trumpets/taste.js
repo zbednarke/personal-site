@@ -6,6 +6,7 @@
     M = window.TrumpetModel,
     $ = (s) => document.querySelector(s);
   let data = null,
+    boardState = "loading", // loading | ready | failed: listings come from the main board
     active = false,
     loading = null,
     mode = "swipe";
@@ -19,6 +20,33 @@
     if (className) n.className = className;
     if (text != null) n.textContent = text;
     return n;
+  }
+  // After every committed reaction: a one-tap undo for 4 seconds.
+  // The toast belongs to one reaction (entry): a later failure of an earlier
+  // reaction must not hide the toast of the newest one.
+  let toastTimer = null,
+    toastFor = null;
+  function hideUndoToast(entry) {
+    if (entry && entry !== toastFor) return;
+    clearTimeout(toastTimer);
+    toastFor = null;
+    document.querySelector("#taste-toast")?.remove();
+  }
+  function showUndoToast(text, entry) {
+    hideUndoToast();
+    toastFor = entry || null;
+    const toast = el("div", "toast taste-toast");
+    toast.id = "taste-toast";
+    toast.setAttribute("role", "status");
+    const undoButton = el("button", "", "Undo");
+    undoButton.type = "button";
+    undoButton.addEventListener("click", () => {
+      hideUndoToast();
+      undo();
+    });
+    toast.append(el("span", "", text), undoButton);
+    document.body.append(toast);
+    toastTimer = setTimeout(() => hideUndoToast(), 4000);
   }
   function status(text, error = false) {
     const n = $("#taste-status");
@@ -93,6 +121,14 @@
     if (score) body.append(el("p", "taste-score", `Taste ${Math.round(score.taste)} · ±${score.sd.toFixed(2)} · ${score.reason || ""}`.replace(/ · $/, "")));
     return body;
   }
+  // The queue names listings by id; until the board has loaded there is
+  // nothing to show, which is not the same as having reacted to everything.
+  function waitingText() {
+    return boardState === "failed" ? "Listings didn't load." : "Loading listings…";
+  }
+  function waitingNote() {
+    return boardState === "failed" ? "Tap Refresh board above to try again." : "";
+  }
   function currentCard() {
     return T.nextCards(data?.queue, doneCards).find((q) => listing(q.listingId)) || null;
   }
@@ -108,8 +144,8 @@
       const empty = el("div", "taste-empty");
       empty.append(
         el("span", "empty-mark", "◎"),
-        el("h3", "", data ? "All caught up." : "Loading…"),
-        el("p", "", data ? "Every horn has a reaction. Try Head to head, or come back when new listings arrive." : ""),
+        el("h3", "", !data ? "Loading…" : boardState !== "ready" && data.queue?.length ? waitingText() : "All caught up."),
+        el("p", "", !data ? "" : boardState !== "ready" && data.queue?.length ? waitingNote() : "Every horn has a reaction. Try Head to head, or come back when new listings arrive."),
       );
       deck.append(empty);
       return;
@@ -136,7 +172,7 @@
     for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither"]) $(id).disabled = !p;
     if (!p) {
       const empty = el("div", "taste-empty");
-      empty.append(el("span", "empty-mark", "◎"), el("h3", "", data ? "No close calls left." : "Loading…"), el("p", "", data ? "The model is sure about every pairing it can make today." : ""));
+      empty.append(el("span", "empty-mark", "◎"), el("h3", "", !data ? "Loading…" : boardState !== "ready" && data.pairs?.length ? waitingText() : "No close calls left."), el("p", "", !data ? "" : boardState !== "ready" && data.pairs?.length ? waitingNote() : "The model is sure about every pairing it can make today."));
       box.append(empty);
       return;
     }
@@ -262,14 +298,19 @@
     $("#taste-note").value = "";
     entry.pending = post(body);
     undoStack.push(entry);
-    status(r.kind === "swipe" ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action] : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action]);
+    const said = r.kind === "swipe" ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action] : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action];
+    status(said);
+    showUndoToast(said, entry);
     render();
     try {
       const out = await entry.pending;
       entry.eventId = out.event.id;
       accept(out);
     } catch (e) {
-      undoStack.splice(undoStack.indexOf(entry), 1);
+      // Already gone if it was undone while its POST was in flight.
+      const i = undoStack.indexOf(entry);
+      if (i >= 0) undoStack.splice(i, 1);
+      hideUndoToast(entry);
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
       status(e.message, true);
@@ -279,6 +320,7 @@
   async function undo() {
     const entry = undoStack.pop();
     if (!entry) return;
+    hideUndoToast();
     render();
     try {
       if (!entry.eventId) entry.eventId = (await entry.pending).event.id;
@@ -383,42 +425,85 @@
   }
 
   // ---- Gestures and keyboard -----------------------------------------------
+  // Thresholds live in TasteModel.dragState: a commit is deliberate (40% of
+  // the card or a fast fling); anything else springs back. Vertical touch
+  // drags belong to the page (touch-action: pan-y); the browser then cancels
+  // the pointer, which never commits.
   function attachDrag(card) {
-    let start = null;
-    const move = (e) => {
-      if (!start) return;
-      const dx = e.clientX - start.x,
-        dy = e.clientY - start.y;
-      card.style.transform = `translate(${dx}px, ${Math.min(dy, 40)}px) rotate(${dx / 18}deg)`;
-      const g = T.gesture(dx, dy, card.offsetWidth);
-      card.dataset.leaning = g || "";
+    let drag = null;
+    const stamps = {
+      right: card.querySelector(".stamp.right"),
+      left: card.querySelector(".stamp.left"),
+      up: card.querySelector(".stamp.up"),
     };
-    const end = (e) => {
-      if (!start) return;
-      const g = T.gesture(e.clientX - start.x, e.clientY - start.y, card.offsetWidth);
-      start = null;
+    const state = () =>
+      T.dragState({ dx: drag.dx, dy: drag.dy, width: card.offsetWidth, axis: drag.axis, pointerType: drag.pointerType, vx: T.velocity(drag.samples).vx });
+    const show = (s) => {
+      for (const [dir, stamp] of Object.entries(stamps)) if (stamp) stamp.style.opacity = dir === s.direction ? String(s.commit ? 1 : 0.15 + 0.6 * s.progress) : "";
+      card.dataset.leaning = s.commit ? s.direction : "";
+    };
+    // While a drag is active, a release or cancel anywhere ends it, so a press
+    // that leaves the card and is released outside can never linger.
+    const release = () => {
+      drag = null;
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", cancel, true);
+    };
+    const springBack = () => {
+      release();
       card.classList.remove("dragging");
-      if (g) {
-        card.classList.add("gone-" + g);
-        react({ kind: "swipe", action: g });
-      } else {
-        card.style.transform = "";
-        card.dataset.leaning = "";
-      }
+      card.classList.add("springing");
+      card.style.transform = "";
+      card.dataset.leaning = "";
+      for (const stamp of Object.values(stamps)) if (stamp) stamp.style.opacity = "";
+      setTimeout(() => card.classList.remove("springing"), 320);
     };
+    const move = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      // A mouse or pen whose buttons are all up is no longer dragging.
+      if (drag.pointerType !== "touch" && e.buttons === 0) return springBack();
+      drag.dx = e.clientX - drag.x;
+      drag.dy = e.clientY - drag.y;
+      drag.axis = T.lockAxis(drag.axis, drag.dx, drag.dy);
+      drag.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+      if (drag.samples.length > 12) drag.samples.shift();
+      if (!drag.axis) return;
+      if (!drag.captured) {
+        drag.captured = true;
+        card.classList.add("dragging");
+      }
+      // Follow the finger along the locked axis (a little give on the other).
+      const x = drag.axis === "x" ? drag.dx : drag.dx * 0.15;
+      const y = drag.axis === "y" ? Math.min(drag.dy, 40) : Math.max(-200, Math.min(drag.dy, 40)) * 0.35;
+      card.style.transform = `translate(${x}px, ${y}px) rotate(${x / 18}deg)`;
+      show(state());
+    };
+    function end(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      const s = state();
+      if (!s.commit) return springBack();
+      release();
+      card.classList.remove("dragging");
+      card.classList.add("gone-" + s.direction);
+      react({ kind: "swipe", action: s.direction });
+    }
+    // Scrolling (or anything else that takes the pointer) never commits.
+    function cancel(e) {
+      if (drag && e.pointerId === drag.id) springBack();
+    }
     card.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      start = { x: e.clientX, y: e.clientY };
-      card.classList.add("dragging");
-      card.setPointerCapture?.(e.pointerId);
+      if (drag) springBack(); // a stale drag never carries over to a new press
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, axis: null, captured: false, pointerType: e.pointerType || "mouse", samples: [{ t: e.timeStamp, x: e.clientX, y: e.clientY }] };
+      // Mouse and pen: capture at once, so moves and the release outside the
+      // card still reach it. Touch is implicitly captured by the card already.
+      if (drag.pointerType !== "touch") card.setPointerCapture?.(e.pointerId);
+      window.addEventListener("pointerup", end, true);
+      window.addEventListener("pointercancel", cancel, true);
     });
     card.addEventListener("pointermove", move);
     card.addEventListener("pointerup", end);
-    card.addEventListener("pointercancel", () => {
-      start = null;
-      card.classList.remove("dragging");
-      card.style.transform = "";
-    });
+    card.addEventListener("pointercancel", cancel);
   }
   document.addEventListener("keydown", (e) => {
     if (!active || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -498,7 +583,12 @@
       active = on;
       if (on) load();
     },
+    boardFailed() {
+      boardState = "failed";
+      if (data) render();
+    },
     boardLoaded() {
+      boardState = "ready";
       if (data) render();
       else if (active) load();
       else

@@ -1,0 +1,151 @@
+{
+ "id": 900000102,
+ "make": "Schilke",
+ "model": "Fixture B6",
+ "finish": "Raw Brass",
+ "year": "2018",
+ "title": "Schilke Fixture Custom Bb Trumpet gold plate",
+ "created_at": "2026-10-11T19:08:40-05:00",
+ "shop_name": "Fixture Shop 2",
+ "shop": {
+  "slug": "fixture-shop-2",
+  "preferred_seller": false
+ },
+ "description": "<p>FICTIONAL FIXTURE 900000102: Schilke Fixture Custom Bb Trumpet gold plate. Professional Bb trumpet with case.</p>",
+ "condition": {
+  "uuid": "00000000-0000-4000-8000-000000000001",
+  "display_name": "Excellent",
+  "slug": "excellent"
+ },
+ "price": {
+  "tax_included": false,
+  "amount": "3900.00",
+  "amount_cents": 390000,
+  "currency": "EUR",
+  "symbol": "\u20ac",
+  "display": "$3,900"
+ },
+ "buyer_price": {
+  "tax_included": false,
+  "amount": "3900.00",
+  "amount_cents": 390000,
+  "currency": "EUR",
+  "symbol": "$",
+  "display": "$3,900"
+ },
+ "original_price": {
+  "tax_included": false,
+  "amount": "3900.00",
+  "amount_cents": 390000,
+  "currency": "EUR",
+  "symbol": "$",
+  "display": "$3,900"
+ },
+ "inventory": 1,
+ "has_inventory": false,
+ "offers_enabled": true,
+ "categories": [
+  {
+   "uuid": "d1c7768e-068d-4b0f-8e3d-b4e7be71a751",
+   "full_name": "Band and Orchestra / Brass / Trumpets"
+  }
+ ],
+ "listing_currency": "EUR",
+ "published_at": "2026-10-11T19:20:12-05:00",
+ "state": {
+  "slug": "live",
+  "description": "Live"
+ },
+ "auction": false,
+ "shop_id": 2,
+ "shipping": {
+  "free_expedited_shipping": false,
+  "local": false,
+  "rates": [
+   {
+    "region_code": "FR",
+    "rate": {
+     "tax_included": false,
+     "amount": "55.00",
+     "amount_cents": 5500,
+     "currency": "EUR",
+     "symbol": "$",
+     "display": "$55"
+    },
+    "carrier_calculated": false,
+    "regional": false,
+    "destination_postal_code_needed": false
+   }
+  ],
+  "initial_offer_rate": {
+   "region_code": "XX",
+   "rate": {
+    "original": {
+     "tax_included": false,
+     "amount": "120.00",
+     "amount_cents": 12000,
+     "currency": "EUR",
+     "symbol": "$",
+     "display": "$120"
+    },
+    "display": {
+     "tax_included": false,
+     "amount": "120.00",
+     "amount_cents": 12000,
+     "currency": "EUR",
+     "symbol": "$",
+     "display": "$120"
+    }
+   },
+   "carrier_calculated": false,
+   "regional": false,
+   "destination_postal_code_needed": false
+  }
+ },
+ "us_outlet": false,
+ "original_price_description": "Original price",
+ "_links": {
+  "photo": {
+   "href": "https://fixtures.invalid/reverb/900000102.jpg"
+  },
+  "self": {
+   "href": "https://api.reverb.com/api/listings/900000102-fictional-fixture-900000102"
+  },
+  "edit": {
+   "href": "https://api.reverb.com/api/listings/900000102-fictional-fixture-900000102/edit"
+  },
+  "web": {
+   "href": "https://reverb.com/item/900000102-fictional-fixture-900000102"
+  },
+  "cart": {
+   "href": "https://api.reverb.com/api/cart/900000102"
+  },
+  "watchlist": {
+   "href": "https://api.reverb.com/api/wants/900000102-fictional-fixture-900000102"
+  }
+ },
+ "photos": [
+  {
+   "_links": {
+    "large_crop": {
+     "href": "https://fixtures.invalid/reverb/900000102.jpg"
+    },
+    "small_crop": {
+     "href": "https://fixtures.invalid/reverb/900000102.jpg"
+    },
+    "full": {
+     "href": "https://fixtures.invalid/reverb/900000102.jpg"
+    },
+    "thumbnail": {
+     "href": "https://fixtures.invalid/reverb/900000102.jpg"
+    }
+   }
+  }
+ ],
+ "_fixture": "FICTIONAL. Shape of GET https://api.reverb.com/api/listings/{id} with X-Display-Currency set to the listing's own currency; values invented.",
+ "location": {
+  "locality": "Fixture Town",
+  "country_code": "FR",
+  "display_location": "Fixture Town, FR"
+ }
+}

@@ -235,3 +235,43 @@ test("learned score sort and verification provenance labels", () => {
   assert.equal(M.verifiedViaLabel("api"), "via official API");
   assert.equal(M.verifiedViaLabel("direct"), "");
 });
+
+test("reads retry a connection that drops while the body is read", async () => {
+  const sleeps = [];
+  let calls = 0;
+  const body = (text) => ({ ok: true, status: 200, text: async () => text });
+  const dropped = {
+    ok: true,
+    status: 200,
+    text: async () => {
+      throw new TypeError("Load failed");
+    },
+  };
+  const fetchFn = async () => (++calls === 1 ? dropped : body('{"listings":[1]}'));
+  const out = await M.fetchJSON(fetchFn, "/x", {}, 2, async (ms) => sleeps.push(ms));
+  assert.deepEqual(out, { ok: true, status: 200, data: { listings: [1] } });
+  assert.equal(calls, 2);
+  assert.deepEqual(sleeps, [600]);
+});
+
+test("network failures are marked; writes are not retried; bugs are not network errors", async () => {
+  let calls = 0;
+  const failing = async () => {
+    calls++;
+    throw new TypeError("Load failed");
+  };
+  await assert.rejects(M.fetchJSON(failing, "/x", { method: "POST" }, 0, async () => {}), (e) => e instanceof M.NetworkError && e.network === true);
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(M.fetchJSON(failing, "/x", {}, 2, async () => {}), M.NetworkError);
+  assert.equal(calls, 3);
+  // A TypeError from our own code is not a NetworkError.
+  assert.equal(new TypeError("x is undefined") instanceof M.NetworkError, false);
+  // Errors keep their status and parsed body; an unreadable success is not retried.
+  const error = await M.fetchJSON(async () => ({ ok: false, status: 500, text: async () => '{"error":"boom"}' }), "/x", {}, 2);
+  assert.deepEqual(error, { ok: false, status: 500, data: { error: "boom" } });
+  await assert.rejects(
+    M.fetchJSON(async () => ({ ok: true, status: 200, text: async () => "<html>" }), "/x", {}, 2),
+    (e) => !(e instanceof M.NetworkError),
+  );
+});

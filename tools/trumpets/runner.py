@@ -7,6 +7,7 @@ import base64
 import copy
 import datetime as dt
 import html
+import http.client
 import hashlib
 import collections
 from html.parser import HTMLParser
@@ -15,6 +16,7 @@ import json
 import os
 import re
 import socket
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -431,10 +433,13 @@ def is_reverb(url):
     return bool(reverb_id(url))
 
 
-def reverb_item(item, get_api=None, sleep=None):
+def reverb_item(item, get_api=None, sleep=None, currency=None):
     """GET /api/listings/{id} in the listing's own currency (the API converts to
     a display currency guessed from the caller; a mismatch is refetched with
-    X-Display-Currency)."""
+    X-Display-Currency). When the native currency is already known (from a
+    search result), one request asks for it directly."""
+    if currency and re.fullmatch('[A-Z]{3}',currency):
+        return api_json(REVERB_API+item,dict(REVERB_HEADERS,**{'X-Display-Currency':currency}),get=get_api,sleep=sleep)
     data=api_json(REVERB_API+item,REVERB_HEADERS,get=get_api,sleep=sleep)
     native=str(data.get('listing_currency') or '').upper()
     shown=str((data.get('price') or {}).get('currency') or '').upper()
@@ -466,11 +471,14 @@ def reverb_facts(data):
     native=str(data.get('listing_currency') or currency).upper()
     if native!=currency: return None  # never store a converted display price
     price=amount(price_info.get('amount'))
-    shipping=None
+    # Reverb's domestic US rate is region US_CON (contiguous US); older
+    # listings may use US. Other regions (XX = everywhere else) are not US rates.
+    shipping=None;rates={}
     for rate in (data.get('shipping') or {}).get('rates') or []:
         value=(rate or {}).get('rate') or {}
-        if rate.get('region_code')=='US' and str(value.get('currency','')).upper()==currency:
-            shipping=amount(value.get('amount'))
+        if str(value.get('currency','')).upper()==currency:rates.setdefault((rate or {}).get('region_code'),amount(value.get('amount')))
+    for region in ('US_CON','US'):
+        if region in rates:shipping=rates[region];break
     posted=None
     if isinstance(data.get('published_at'),str):
         try:posted=dt.datetime.fromisoformat(data['published_at'].replace('Z','+00:00')).astimezone(dt.timezone.utc).isoformat()
@@ -870,7 +878,40 @@ def search_openai(query, key):
 NEW_REPORT_FIELDS=('verifiedVia',)
 
 
-def submit_run(client, report):
+# Storing a run can take a while (the API serves one request at a time per
+# instance); a read timeout does not mean the run was lost.
+SUBMIT_TIMEOUT=180
+LANDED_CHECKS=(15,30,60)  # seconds to wait before each "did it land?" lookup
+
+
+def is_timeout(error):
+    """A response that never arrived: the server may still have stored the run."""
+    if isinstance(error,urllib.error.HTTPError):return False
+    if isinstance(error,(TimeoutError,socket.timeout,ConnectionError,http.client.RemoteDisconnected,http.client.IncompleteRead)):return True
+    if isinstance(error,urllib.error.URLError):return isinstance(error.reason,(TimeoutError,socket.timeout,ConnectionError))
+    return False
+
+
+# Responses that mean "not handled (yet)": an overloaded or restarting API may
+# still have stored the run, so they are treated like a timeout.
+TRANSIENT_CODES=(429,502,503,504)
+
+
+def is_transient(error):
+    return is_timeout(error) or (isinstance(error,urllib.error.HTTPError) and error.code in TRANSIENT_CODES)
+
+
+def landed_run(client, external_id):
+    """The stored run for external_id, None when it is not stored, or False
+    when the API has no lookup endpoint (an older deploy)."""
+    try: found=client.call('/runs?'+urllib.parse.urlencode({'externalId':external_id}))
+    except urllib.error.HTTPError as error:
+        if error.code in (404,405):return False
+        raise
+    return found if found.get('found') else None
+
+
+def post_run(client, report):
     try: return client.call('/runs',report)
     except urllib.error.HTTPError as error:
         if error.code!=400: raise
@@ -882,14 +923,42 @@ def submit_run(client, report):
         return client.call('/runs',stripped)
 
 
+def submit_run(client, report, sleep=None):
+    """Submit once; if the response never arrives (or the API answers 429,
+    502, 503 or 504), ask whether the run was stored before submitting again. Resubmission is safe: the API stores a run
+    once per externalId (under the owner's lock) and replays it afterwards."""
+    sleep=sleep or time.sleep
+    try: return post_run(client,report)
+    except Exception as error:
+        if not is_transient(error): raise
+        print(json.dumps({'note':'run submit '+('timed out' if is_timeout(error) else f'got HTTP {error.code}')+'; checking whether it was stored','externalId':report['externalId']}),flush=True)
+    for wait in LANDED_CHECKS:
+        sleep(wait)
+        try: found=landed_run(client,report['externalId'])
+        except Exception as error:
+            if not is_transient(error): raise
+            continue
+        if found is False:break  # no lookup endpoint: rely on the idempotent replay
+        if found:
+            print(json.dumps({'note':'run was stored before the timeout','runId':found.get('runId')}),flush=True)
+            return dict(found,recovered=True)
+    # Not stored (or unknown): the same externalId either stores it now or,
+    # if the first request finished meanwhile, replays it.
+    result=post_run(client,report)
+    if result.get('replayed'):print(json.dumps({'note':'run was stored by the first submit (replayed)','runId':result.get('runId')}),flush=True)
+    return result
+
+
 class Client:
     def __init__(self):
         self.base=os.environ['TRUMPETS_API_URL'].rstrip('/')+'/v1/trumpets/machine'
         self.token=os.environ['TRUMPETS_MACHINE_TOKEN']
     def call(self,path,data=None):
+        # Storing a run gets a long read timeout; every other call 60 s.
+        timeout=SUBMIT_TIMEOUT if path=='/runs' and data is not None else 60
         headers={'Authorization':'Bearer '+self.token,'Accept':'application/json'}
         if data is not None: headers['Content-Type']='application/json'
-        return json.loads(fetch(self.base+path,headers,None if data is None else json.dumps(data).encode()))
+        return json.loads(fetch(self.base+path,headers,None if data is None else json.dumps(data).encode(),timeout=timeout))
 
 
 EXPLORATION_QUERIES = [
@@ -1189,6 +1258,13 @@ def marketplace_terms(taste, day):
 
 
 BLOCKING_CODES = (401, 403, 429)
+# Reverb discovery requests per run (searches plus currency refetches).
+REVERB_CALLS = 40
+# Source-matched checks for new eBay leads, separate from rechecks' budget.
+EBAY_DISCOVERY_VERIFY_LIMIT = 12
+# The general web search stops here, leaving time for eBay discovery and the
+# submit before the 35-minute run budget.
+SEARCH_BUDGET = 30*60
 LEAD_CHECKS_PER_RUN = 40
 
 
@@ -1247,6 +1323,7 @@ def daily(client):
     blocked=set();leads=collections.Counter();ebay_results=[]
     ebay=EbayAPI.from_env()
     verify_limit=int(os.environ.get('TRUMPETS_VERIFY_LIMIT') or VERIFY_LIMIT);verifier=collections.Counter()
+    ebay_verify_limit=int(os.environ.get('TRUMPETS_EBAY_VERIFY_LIMIT') or EBAY_DISCOVERY_VERIFY_LIMIT)
     def search_provider_check(listing,domain):
         """Fallback after a blocked direct check: (verified, failure reason)."""
         if not openai or listing.get('verificationState')=='candidate': return False,None
@@ -1310,12 +1387,63 @@ def daily(client):
         notes.append(f"Lead rotation: {candidate_checks} queued leads checked ({leads['verified']} verified, {leads['retired']} retired as gone, {leads['unverified']} still unverified, {leads['failed']} unreachable), {leads['skipped']} skipped on blocked domains")
     if leads['ebay']:
         notes.append(f"{leads['ebay']} eBay leads await review (no eBay API keys; search-provider answers never promote a lead)")
+    # Reverb and eBay through their official APIs: newest trumpets for the taste
+    # model's makers and traits. They count as source coverage like any domain.
+    # Reverb runs before the general web search, with its own request budget:
+    # its API is cheap and verified, and behind the web search (which can use
+    # the whole 240-page and 35-minute budgets) it used to be skipped entirely.
+    by_item={}
+    for listing in baseline:
+        item=reverb_id(listing.get('url','')) or ebay_id(listing.get('url',''))
+        if item:by_item.setdefault(item,listing)
+    terms=marketplace_terms(taste,dt.datetime.now(dt.timezone.utc).date())
+    def keep_market(c,item,domain,check,via='api'):
+        """Keep a verified marketplace offer; returns why not (or 'kept')."""
+        old=by_item.get(item) or by_url.get(canonical_url(c['url']))
+        if old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status'] in ('active','unverifiable')):return 'tracked'
+        if canonical_url(c['url']) in submitted:return 'tracked'
+        if c['searchScore']<55:return 'low score'
+        if domain_finds[domain]>=taste.page_cap(domain):return 'cap'
+        c.update(verificationState='verified',verifiedVia=via)
+        if old:c.update(id=old['id'],url=old['url'])
+        link_physical_horn(c,baseline);market_context(c,baseline)
+        report['listings'].append(c);submitted.add(canonical_url(c['url']));domain_finds[domain]+=1;check['candidates']+=1;live[domain]['verifiedOffers']+=1
+        return 'kept'
+    def market_check(name,domain,specialty):
+        return dict(source=name,domain=domain,query='; '.join(t or 'newest trumpets' for t in terms)[:10000],status='checked',candidates=0,note='',
+                    pagesOpened=0,verifiedOffers=0,staleResults=0,geography='International',specialty=specialty)
+    check=market_check('Reverb API','reverb.com','Marketplace (public listings API)')
+    seen=collections.Counter();calls=0;reverb_urls=set()
+    try:
+        for term in terms:
+            if calls>=REVERB_CALLS:check['note']='Request budget reached before every term was searched. ';break
+            calls+=1;results=reverb_search(term);seen['results']+=len(results)
+            for data in results:
+                url=reverb_web_url(data)
+                if not url:seen['no web link']+=1;continue
+                # Terms overlap: an item another term already returned costs nothing.
+                if url in reverb_urls:seen['tracked']+=1;continue
+                reverb_urls.add(url)
+                live['reverb.com']['pagesOpened']+=1
+                native=str(data.get('listing_currency') or '').upper()
+                if native and native!=str((data.get('price') or {}).get('currency') or '').upper():
+                    # Shown in a converted display currency: fetch it in its own.
+                    if calls>=REVERB_CALLS:seen['budget']+=1;continue
+                    calls+=1;data=reverb_item(str(data.get('id')),currency=native)
+                c=reverb_offer_from(data,url,'Reverb',profile)
+                if not c:seen['not a verifiable Bb trumpet offer']+=1;continue
+                seen[keep_market(c,reverb_id(url),'reverb.com',check)]+=1
+        why=', '.join(f'{n} {k}' for k,n in seen.items() if k not in ('results','kept') and n)
+        check['note']+=f"{len(terms)} searches (newest first, trumpet category), {seen['results']} results; {check['candidates']} verified offers retained"+(f' (skipped: {why})' if why else '')+'.'
+    except Exception as error:
+        check.update(status='failed',note='Reverb API failed: '+failure_reason(error));failures.append('Reverb API search failed')
+    report['sources'].append(check);market_notes={'reverb':check['note']}
     if not key and not openai: failures.append('No search provider key configured')
     else:
         for task in search_plan(profile):
             check={k:task[k] for k in ('source','domain','query','geography','specialty') if k in task}
             check.update(status='checked',candidates=0,note='',pagesOpened=0,verifiedOffers=0,staleResults=0)
-            if time.monotonic()-started>35*60:
+            if time.monotonic()-started>SEARCH_BUDGET:
                 check.update(status='skipped',note='Run time budget exhausted');report['sources'].append(check);failures.append('Search time budget exhausted');continue
             try:
                 results=search(task['query'],key) if key else search_openai(task['query'],openai)
@@ -1333,7 +1461,7 @@ def daily(client):
                     if domain_finds[domain]>=6:continue
                     source=task.get('name') if task.get('domain')==domain else domain
                     markup='';offers=[]
-                    if pages<240 and domain_pages[domain]<taste.page_cap(domain) and time.monotonic()-started<35*60:
+                    if pages<240 and domain_pages[domain]<taste.page_cap(domain) and time.monotonic()-started<SEARCH_BUDGET:
                         pages+=1;domain_pages[domain]+=1
                         try:
                             if reverb_id(url):
@@ -1373,43 +1501,6 @@ def daily(client):
             except Exception as error:
                 check.update(status='failed',note='Search provider failed: '+type(error).__name__);failures.append(check['source']+' search failed')
             report['sources'].append(check);print(json.dumps({'source':check['source'],'status':check['status'],'candidates':check['candidates']}),flush=True)
-    # Reverb and eBay through their official APIs: newest trumpets for the taste
-    # model's makers and traits. They count as source coverage like any domain.
-    by_item={}
-    for listing in baseline:
-        item=reverb_id(listing.get('url','')) or ebay_id(listing.get('url',''))
-        if item:by_item.setdefault(item,listing)
-    terms=marketplace_terms(taste,dt.datetime.now(dt.timezone.utc).date())
-    def keep_market(c,item,domain,check,via='api'):
-        old=by_item.get(item) or by_url.get(canonical_url(c['url']))
-        if old and (old.get('acquired') or old.get('feedback',{}).get('interestState')=='pass' or old['status'] in ('active','unverifiable')):return
-        if canonical_url(c['url']) in submitted or c['searchScore']<55 or domain_finds[domain]>=taste.page_cap(domain):return
-        c.update(verificationState='verified',verifiedVia=via)
-        if old:c.update(id=old['id'],url=old['url'])
-        link_physical_horn(c,baseline);market_context(c,baseline)
-        report['listings'].append(c);submitted.add(canonical_url(c['url']));domain_finds[domain]+=1;check['candidates']+=1;live[domain]['verifiedOffers']+=1
-    def market_check(name,domain,specialty):
-        return dict(source=name,domain=domain,query='; '.join(t or 'newest trumpets' for t in terms)[:10000],status='checked',candidates=0,note='',
-                    pagesOpened=0,verifiedOffers=0,staleResults=0,geography='International',specialty=specialty)
-    check=market_check('Reverb API','reverb.com','Marketplace (public listings API)')
-    try:
-        for term in terms:
-            if pages>=240 or time.monotonic()-started>35*60:check['note']='Budget reached before every term was searched. ';break
-            pages+=1
-            for data in reverb_search(term):
-                url=reverb_web_url(data)
-                if not url:continue
-                live['reverb.com']['pagesOpened']+=1
-                native=str(data.get('listing_currency') or '').upper()
-                if native and native!=str((data.get('price') or {}).get('currency') or '').upper():
-                    if pages>=240:continue
-                    pages+=1;data=reverb_item(str(data.get('id')))
-                c=reverb_offer_from(data,url,'Reverb',profile)
-                if c:keep_market(c,reverb_id(url),'reverb.com',check)
-        check['note']+=f"{len(terms)} searches (newest first, trumpet category); {check['candidates']} verified offers retained."
-    except Exception as error:
-        check.update(status='failed',note='Reverb API failed: '+failure_reason(error));failures.append('Reverb API search failed')
-    report['sources'].append(check)
     if ebay is None:
         # eBay without developer keys: discovery through the Responses web_search
         # tool, every candidate verified by a source-matched check (within the cap).
@@ -1418,27 +1509,31 @@ def daily(client):
             check.update(status='skipped',query='',note='OPENAI_API_KEY not configured; eBay discovery needs the search provider.')
         else:
             try:
+                # Its own verification budget: rechecks of tracked eBay offers
+                # (without eBay keys) can use all of TRUMPETS_VERIFY_LIMIT.
+                found=collections.Counter()
                 def ebay_leads():
                     yield from ebay_results  # eBay results of the general search plan first
                     for term in terms:
-                        if time.monotonic()-started>35*60 or verifier['calls']>=verify_limit:
+                        if time.monotonic()-started>35*60 or found['verified']>=ebay_verify_limit:
                             check['note']='Budget reached before every term was searched. ';return
-                        yield from search_openai('site:ebay.com '+(term or 'professional')+' Bb trumpet',openai)
+                        found['searches']+=1
+                        results=search_openai('site:ebay.com '+(term or 'professional')+' Bb trumpet',openai);found['results']+=len(results)
+                        yield from results
                 seen_items={ebay_id(u) for u in submitted}
                 for result in ebay_leads():
                     item=ebay_id(result.get('url',''))
                     old=by_item.get(item)
                     if time.monotonic()-started>35*60:check['note']='Run time budget reached. ';break
-                    if not item or item in seen_items or (old and old['status'] in ('active','unverifiable')) or verifier['calls']>=verify_limit:continue
+                    if not item or item in seen_items or (old and old['status'] in ('active','unverifiable')) or found['verified']>=ebay_verify_limit:continue
                     seen_items.add(item)
                     url='https://ebay.com/itm/'+item
                     if canonical_url(url) in submitted or not candidate_hint(dict(result,url=url),'eBay',profile):continue
-                    verifier['calls']+=1;live['ebay.com']['pagesOpened']+=1
+                    found['verified']+=1;live['ebay.com']['pagesOpened']+=1
                     try:data=verify_via_search(url,openai)
                     except Exception:data=None
                     if not data or data['state']!='available':
-                        verifier['rejected']+=1;continue
-                    verifier['accepted']+=1
+                        found['unavailable']+=1;continue
                     # A search-provider answer is a lead, never a verified offer:
                     # no price, stock or date is asserted.
                     c=candidate_hint(dict(result,url=url,title=data['title'] or result.get('title','')),'eBay',profile)
@@ -1446,7 +1541,7 @@ def daily(client):
                         stated=f" Search provider reported it available{' at '+str(data['price'])+' '+str(data['currency']) if data['price'] is not None and data['currency'] else ''} (unverified)."
                         c.update(url=url,sourceListingId=item,evidence='Search-provider lead (cited eBay source); not a market observation',searchRationale=c['searchRationale']+stated)
                         report['listings'].append(c);submitted.add(canonical_url(url));domain_finds['ebay.com']+=1;check['candidates']+=1
-                check['note']+=f"{len(terms)} web searches; {check['candidates']} eBay leads from cited sources (unverified)."
+                check['note']+=f"{found['searches']} web searches ({len(ebay_results)} eBay results from the general search), {found['results']} results, {found['verified']} items checked ({found['unavailable']} not available); {check['candidates']} eBay leads from cited sources (unverified)."
             except Exception as error:
                 check.update(status='failed',note='eBay web search failed: '+failure_reason(error));failures.append('eBay web search failed')
     else:
@@ -1468,8 +1563,8 @@ def daily(client):
             check['note']+=f"{len(terms)} searches (newly listed, trumpet category); {check['candidates']} verified offers retained."
         except Exception as error:
             check.update(status='failed',note='eBay Browse API failed: '+failure_reason(error));failures.append('eBay Browse API search failed')
-    report['sources'].append(check)
-    print(json.dumps({'source':'marketplace APIs','reverb':domain_finds['reverb.com'],'ebay':domain_finds['ebay.com']}),flush=True)
+    report['sources'].append(check);market_notes['ebay']=check['status']+': '+check['note']
+    print(json.dumps({'source':'marketplace APIs','reverb':domain_finds['reverb.com'],'ebay':domain_finds['ebay.com'],'notes':market_notes}),flush=True)
     if verifier['calls']:
         notes.append(f"Search-provider verification: {verifier['calls']} blocked listings tried, {verifier['accepted']} verified from a matching source, {verifier['rejected']} left as failed checks")
     # The 240-page bound is by design; reaching it is coverage information, not a failure.
@@ -1491,7 +1586,26 @@ def daily(client):
     return 0 if result.get('status')=='succeeded' else 2
 
 
+def run_reason(error):
+    """One line, no secrets: what stopped the runner."""
+    if isinstance(error,KeyError) and error.args and str(error.args[0]).startswith('TRUMPETS_'):
+        return 'missing environment variable '+str(error.args[0])
+    if isinstance(error,urllib.error.HTTPError):return f'API returned HTTP {error.code}'
+    if is_timeout(error):return 'timed out waiting for the API'
+    if isinstance(error,urllib.error.URLError):return 'network error ('+type(error.reason).__name__+')'
+    return type(error).__name__+(': '+str(error)[:200] if str(error) else '')
+
+
 def main():
+    try:return run()
+    except KeyboardInterrupt:
+        print(json.dumps({'error':'interrupted'}),file=sys.stderr,flush=True);return 130
+    except Exception as error:
+        # Never a traceback: one line that says why, and a non-zero exit.
+        print(json.dumps({'error':'trumpet runner failed: '+run_reason(error)}),file=sys.stderr,flush=True);return 1
+
+
+def run():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report',help='Submit a normalized ChatGPT run JSON; retries use the same externalId.')
     parser.add_argument('--prepare',help='Write a private profile/all-tracked/due snapshot for a search client.')

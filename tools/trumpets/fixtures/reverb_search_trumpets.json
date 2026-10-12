@@ -1,0 +1,644 @@
+{
+ "_fixture": "FICTIONAL. Shape recorded 2026-10-12 from Reverb's public GET https://api.reverb.com/api/listings?category_uuid=...&price_min=800&sort=published_at|desc&per_page=24 (Accept: application/hal+json, Accept-Version 3.0); every listing value is invented. No real listing, shop or person.",
+ "total": 4,
+ "current_page": 1,
+ "per_page": 24,
+ "total_pages": 1,
+ "_links": {
+  "next": {
+   "href": "https://api.reverb.com/api/listings?category_uuid=d1c7768e-068d-4b0f-8e3d-b4e7be71a751&page=2&per_page=24&price_min=800&sort=published_at%7Cdesc"
+  },
+  "follow": {
+   "href": "https://api.reverb.com/api/my/follows/search?category_uuid=d1c7768e-068d-4b0f-8e3d-b4e7be71a751&price_min=800.0"
+  },
+  "listing": {
+   "href": "https://reverb.com/sell"
+  }
+ },
+ "humanized_params": "Trumpets and Cornets over $800",
+ "listings": [
+  {
+   "id": 900000101,
+   "make": "Monette",
+   "model": "Raja Fixture",
+   "finish": "Raw Brass",
+   "year": "2018",
+   "title": "Monette Raja Bb Trumpet raw brass FICTIONAL",
+   "created_at": "2026-10-11T19:08:40-05:00",
+   "shop_name": "Fixture Shop 1",
+   "shop": {
+    "slug": "fixture-shop-1",
+    "preferred_seller": false
+   },
+   "description": "<p>FICTIONAL FIXTURE 900000101: Monette Raja Bb Trumpet raw brass FICTIONAL. Professional Bb trumpet with case.</p>",
+   "condition": {
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "display_name": "Excellent",
+    "slug": "excellent"
+   },
+   "price": {
+    "tax_included": false,
+    "amount": "9800.00",
+    "amount_cents": 980000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$9,800"
+   },
+   "buyer_price": {
+    "tax_included": false,
+    "amount": "9800.00",
+    "amount_cents": 980000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$9,800"
+   },
+   "original_price": {
+    "tax_included": false,
+    "amount": "9800.00",
+    "amount_cents": 980000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$9,800"
+   },
+   "inventory": 1,
+   "has_inventory": false,
+   "offers_enabled": true,
+   "categories": [
+    {
+     "uuid": "d1c7768e-068d-4b0f-8e3d-b4e7be71a751",
+     "full_name": "Band and Orchestra / Brass / Trumpets"
+    }
+   ],
+   "listing_currency": "USD",
+   "published_at": "2026-10-11T19:20:12-05:00",
+   "state": {
+    "slug": "live",
+    "description": "Live"
+   },
+   "auction": false,
+   "shop_id": 1,
+   "shipping": {
+    "free_expedited_shipping": false,
+    "local": false,
+    "rates": [
+     {
+      "region_code": "US_CON",
+      "rate": {
+       "tax_included": false,
+       "amount": "45.00",
+       "amount_cents": 4500,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$45"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     },
+     {
+      "region_code": "XX",
+      "rate": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     }
+    ],
+    "initial_offer_rate": {
+     "region_code": "XX",
+     "rate": {
+      "original": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "display": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      }
+     },
+     "carrier_calculated": false,
+     "regional": false,
+     "destination_postal_code_needed": false
+    }
+   },
+   "us_outlet": false,
+   "original_price_description": "Original price",
+   "_links": {
+    "photo": {
+     "href": "https://fixtures.invalid/reverb/900000101.jpg"
+    },
+    "self": {
+     "href": "https://api.reverb.com/api/listings/900000101-fictional-fixture-900000101"
+    },
+    "edit": {
+     "href": "https://api.reverb.com/api/listings/900000101-fictional-fixture-900000101/edit"
+    },
+    "web": {
+     "href": "https://reverb.com/item/900000101-fictional-fixture-900000101"
+    },
+    "cart": {
+     "href": "https://api.reverb.com/api/cart/900000101"
+    },
+    "watchlist": {
+     "href": "https://api.reverb.com/api/wants/900000101-fictional-fixture-900000101"
+    }
+   },
+   "photos": [
+    {
+     "_links": {
+      "large_crop": {
+       "href": "https://fixtures.invalid/reverb/900000101.jpg"
+      },
+      "small_crop": {
+       "href": "https://fixtures.invalid/reverb/900000101.jpg"
+      },
+      "full": {
+       "href": "https://fixtures.invalid/reverb/900000101.jpg"
+      },
+      "thumbnail": {
+       "href": "https://fixtures.invalid/reverb/900000101.jpg"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": 900000102,
+   "make": "Schilke",
+   "model": "Fixture B6",
+   "finish": "Raw Brass",
+   "year": "2018",
+   "title": "Schilke Fixture Custom Bb Trumpet gold plate",
+   "created_at": "2026-10-11T19:08:40-05:00",
+   "shop_name": "Fixture Shop 2",
+   "shop": {
+    "slug": "fixture-shop-2",
+    "preferred_seller": false
+   },
+   "description": "<p>FICTIONAL FIXTURE 900000102: Schilke Fixture Custom Bb Trumpet gold plate. Professional Bb trumpet with case.</p>",
+   "condition": {
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "display_name": "Excellent",
+    "slug": "excellent"
+   },
+   "price": {
+    "tax_included": false,
+    "amount": "4200.00",
+    "amount_cents": 420000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$4,200"
+   },
+   "buyer_price": {
+    "tax_included": false,
+    "amount": "4200.00",
+    "amount_cents": 420000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$4,200"
+   },
+   "original_price": {
+    "tax_included": false,
+    "amount": "4200.00",
+    "amount_cents": 420000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$4,200"
+   },
+   "inventory": 1,
+   "has_inventory": false,
+   "offers_enabled": true,
+   "categories": [
+    {
+     "uuid": "d1c7768e-068d-4b0f-8e3d-b4e7be71a751",
+     "full_name": "Band and Orchestra / Brass / Trumpets"
+    }
+   ],
+   "listing_currency": "EUR",
+   "published_at": "2026-10-11T19:20:12-05:00",
+   "state": {
+    "slug": "live",
+    "description": "Live"
+   },
+   "auction": false,
+   "shop_id": 2,
+   "shipping": {
+    "free_expedited_shipping": false,
+    "local": false,
+    "rates": [
+     {
+      "region_code": "FR",
+      "rate": {
+       "tax_included": false,
+       "amount": "60.00",
+       "amount_cents": 6000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$60"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     }
+    ],
+    "initial_offer_rate": {
+     "region_code": "XX",
+     "rate": {
+      "original": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "display": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      }
+     },
+     "carrier_calculated": false,
+     "regional": false,
+     "destination_postal_code_needed": false
+    }
+   },
+   "us_outlet": false,
+   "original_price_description": "Original price",
+   "_links": {
+    "photo": {
+     "href": "https://fixtures.invalid/reverb/900000102.jpg"
+    },
+    "self": {
+     "href": "https://api.reverb.com/api/listings/900000102-fictional-fixture-900000102"
+    },
+    "edit": {
+     "href": "https://api.reverb.com/api/listings/900000102-fictional-fixture-900000102/edit"
+    },
+    "web": {
+     "href": "https://reverb.com/item/900000102-fictional-fixture-900000102"
+    },
+    "cart": {
+     "href": "https://api.reverb.com/api/cart/900000102"
+    },
+    "watchlist": {
+     "href": "https://api.reverb.com/api/wants/900000102-fictional-fixture-900000102"
+    }
+   },
+   "photos": [
+    {
+     "_links": {
+      "large_crop": {
+       "href": "https://fixtures.invalid/reverb/900000102.jpg"
+      },
+      "small_crop": {
+       "href": "https://fixtures.invalid/reverb/900000102.jpg"
+      },
+      "full": {
+       "href": "https://fixtures.invalid/reverb/900000102.jpg"
+      },
+      "thumbnail": {
+       "href": "https://fixtures.invalid/reverb/900000102.jpg"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": 900000103,
+   "make": "Bach",
+   "model": "Stradivarius 37 Fixture",
+   "finish": "Raw Brass",
+   "year": "2018",
+   "title": "Bach Stradivarius 37 Bb Trumpet silver FICTIONAL",
+   "created_at": "2026-10-11T19:08:40-05:00",
+   "shop_name": "Fixture Shop 3",
+   "shop": {
+    "slug": "fixture-shop-3",
+    "preferred_seller": false
+   },
+   "description": "<p>FICTIONAL FIXTURE 900000103: Bach Stradivarius 37 Bb Trumpet silver FICTIONAL. Professional Bb trumpet with case.</p>",
+   "condition": {
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "display_name": "Excellent",
+    "slug": "excellent"
+   },
+   "price": {
+    "tax_included": false,
+    "amount": "1900.00",
+    "amount_cents": 190000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$1,900"
+   },
+   "buyer_price": {
+    "tax_included": false,
+    "amount": "1900.00",
+    "amount_cents": 190000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$1,900"
+   },
+   "original_price": {
+    "tax_included": false,
+    "amount": "1900.00",
+    "amount_cents": 190000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$1,900"
+   },
+   "inventory": 1,
+   "has_inventory": false,
+   "offers_enabled": true,
+   "categories": [
+    {
+     "uuid": "d1c7768e-068d-4b0f-8e3d-b4e7be71a751",
+     "full_name": "Band and Orchestra / Brass / Trumpets"
+    }
+   ],
+   "listing_currency": "USD",
+   "published_at": "2026-10-11T19:20:12-05:00",
+   "state": {
+    "slug": "live",
+    "description": "Live"
+   },
+   "auction": false,
+   "shop_id": 3,
+   "shipping": {
+    "free_expedited_shipping": false,
+    "local": false,
+    "rates": [
+     {
+      "region_code": "US_CON",
+      "rate": {
+       "tax_included": false,
+       "amount": "45.00",
+       "amount_cents": 4500,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$45"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     },
+     {
+      "region_code": "XX",
+      "rate": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     }
+    ],
+    "initial_offer_rate": {
+     "region_code": "XX",
+     "rate": {
+      "original": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "display": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      }
+     },
+     "carrier_calculated": false,
+     "regional": false,
+     "destination_postal_code_needed": false
+    }
+   },
+   "us_outlet": false,
+   "original_price_description": "Original price",
+   "_links": {
+    "photo": {
+     "href": "https://fixtures.invalid/reverb/900000103.jpg"
+    },
+    "self": {
+     "href": "https://api.reverb.com/api/listings/900000103-fictional-fixture-900000103"
+    },
+    "edit": {
+     "href": "https://api.reverb.com/api/listings/900000103-fictional-fixture-900000103/edit"
+    },
+    "web": {
+     "href": "https://reverb.com/item/900000103-fictional-fixture-900000103"
+    },
+    "cart": {
+     "href": "https://api.reverb.com/api/cart/900000103"
+    },
+    "watchlist": {
+     "href": "https://api.reverb.com/api/wants/900000103-fictional-fixture-900000103"
+    }
+   },
+   "photos": [
+    {
+     "_links": {
+      "large_crop": {
+       "href": "https://fixtures.invalid/reverb/900000103.jpg"
+      },
+      "small_crop": {
+       "href": "https://fixtures.invalid/reverb/900000103.jpg"
+      },
+      "full": {
+       "href": "https://fixtures.invalid/reverb/900000103.jpg"
+      },
+      "thumbnail": {
+       "href": "https://fixtures.invalid/reverb/900000103.jpg"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": 900000104,
+   "make": "Selmer",
+   "model": "Fixture Flugel",
+   "finish": "Raw Brass",
+   "year": "2018",
+   "title": "Selmer Fixture Flugelhorn FICTIONAL",
+   "created_at": "2026-10-11T19:08:40-05:00",
+   "shop_name": "Fixture Shop 4",
+   "shop": {
+    "slug": "fixture-shop-4",
+    "preferred_seller": false
+   },
+   "description": "<p>FICTIONAL FIXTURE 900000104: Selmer Fixture Flugelhorn FICTIONAL. Professional Bb trumpet with case.</p>",
+   "condition": {
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "display_name": "Excellent",
+    "slug": "excellent"
+   },
+   "price": {
+    "tax_included": false,
+    "amount": "1500.00",
+    "amount_cents": 150000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$1,500"
+   },
+   "buyer_price": {
+    "tax_included": false,
+    "amount": "1500.00",
+    "amount_cents": 150000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$1,500"
+   },
+   "original_price": {
+    "tax_included": false,
+    "amount": "1500.00",
+    "amount_cents": 150000,
+    "currency": "USD",
+    "symbol": "$",
+    "display": "$1,500"
+   },
+   "inventory": 1,
+   "has_inventory": false,
+   "offers_enabled": true,
+   "categories": [
+    {
+     "uuid": "d1c7768e-068d-4b0f-8e3d-b4e7be71a751",
+     "full_name": "Band and Orchestra / Brass / Trumpets"
+    }
+   ],
+   "listing_currency": "USD",
+   "published_at": "2026-10-11T19:20:12-05:00",
+   "state": {
+    "slug": "live",
+    "description": "Live"
+   },
+   "auction": false,
+   "shop_id": 4,
+   "shipping": {
+    "free_expedited_shipping": false,
+    "local": false,
+    "rates": [
+     {
+      "region_code": "US_CON",
+      "rate": {
+       "tax_included": false,
+       "amount": "45.00",
+       "amount_cents": 4500,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$45"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     },
+     {
+      "region_code": "XX",
+      "rate": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "carrier_calculated": false,
+      "regional": false,
+      "destination_postal_code_needed": false
+     }
+    ],
+    "initial_offer_rate": {
+     "region_code": "XX",
+     "rate": {
+      "original": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      },
+      "display": {
+       "tax_included": false,
+       "amount": "120.00",
+       "amount_cents": 12000,
+       "currency": "USD",
+       "symbol": "$",
+       "display": "$120"
+      }
+     },
+     "carrier_calculated": false,
+     "regional": false,
+     "destination_postal_code_needed": false
+    }
+   },
+   "us_outlet": false,
+   "original_price_description": "Original price",
+   "_links": {
+    "photo": {
+     "href": "https://fixtures.invalid/reverb/900000104.jpg"
+    },
+    "self": {
+     "href": "https://api.reverb.com/api/listings/900000104-fictional-fixture-900000104"
+    },
+    "edit": {
+     "href": "https://api.reverb.com/api/listings/900000104-fictional-fixture-900000104/edit"
+    },
+    "web": {
+     "href": "https://reverb.com/item/900000104-fictional-fixture-900000104"
+    },
+    "cart": {
+     "href": "https://api.reverb.com/api/cart/900000104"
+    },
+    "watchlist": {
+     "href": "https://api.reverb.com/api/wants/900000104-fictional-fixture-900000104"
+    }
+   },
+   "photos": [
+    {
+     "_links": {
+      "large_crop": {
+       "href": "https://fixtures.invalid/reverb/900000104.jpg"
+      },
+      "small_crop": {
+       "href": "https://fixtures.invalid/reverb/900000104.jpg"
+      },
+      "full": {
+       "href": "https://fixtures.invalid/reverb/900000104.jpg"
+      },
+      "thumbnail": {
+       "href": "https://fixtures.invalid/reverb/900000104.jpg"
+      }
+     }
+    }
+   ]
+  }
+ ],
+ "ships_to": "Everywhere Else"
+}

@@ -208,6 +208,7 @@ Machine endpoints under the Cloud Run base URL, using `Authorization: Bearer …
 | `GET /v1/trumpets/machine/listings` | All tracked offers/history, today's meaningful events, latest coverage and successful runs        |
 | `GET /v1/trumpets/machine/due`      | Active/stale offers not verified that UTC day; acquired instruments excluded                      |
 | `POST /v1/trumpets/machine/runs`    | Atomic verified findings/rechecks and source coverage; idempotent external ID                     |
+| `GET /v1/trumpets/machine/runs?externalId=…` | `{found, runId, status, completedAt}`: whether that run was stored (after a submit timeout) |
 
 Browser endpoints use the existing gateway auth under `/trumpets/api/v1/trumpets/`:
 `GET listings`, `GET profile`, `POST seed` with `{}`, and
@@ -542,8 +543,16 @@ and steers the daily search. It is phone-first and works by touch, mouse, button
 or keyboard.
 
 - **Swipe:** one horn at a time. Right (or →) is "cool", left (←) "not for me",
-  up (↑) "must see"; **Undo** (Z) takes the last reaction back. Short drags spring
-  back. The queue shows unseen horns first (active offers, newest first), then
+  up (↑) "must see"; **Undo** (Z) takes the last reaction back, and every reaction
+  shows a four-second toast with a one-tap **Undo**. A drag commits only when it is
+  deliberate: sideways past 40% of the card width (140 px at most), or a fast fling
+  (over 0.6 px/ms in the last ~80 ms, same direction, past 60 px). The drag's axis
+  locks after ~10 px, the matching stamp (COOL / NOT FOR ME / MUST SEE) fades in with
+  progress and is solid once releasing would commit; anything less springs back.
+  Up by drag needs more than 160 px with |dy| > 2|dx|, from a mouse or pen, or by
+  touch only once the card was grabbed sideways: the card is `touch-action: pan-y`,
+  so vertical touch drags scroll the page (a cancelled pointer never commits) and
+  touch uses the **Must see** button. Head to head has no drag gestures. The queue shows unseen horns first (active offers, newest first), then
   horns not swiped in two weeks, least certain first. Acquired and passed horns
   are left out.
 - **Head to head:** two horns; tap the one you'd rather own, or **Both** (↑) /
@@ -644,7 +653,13 @@ observations; direct page checks have no label.
   links wrapped in a query parameter. Discovery runs every day: newest first in the
   Trumpets category (`category_uuid` `d1c7768e-…`), price ≥ 800, one search per term
   from the taste model's plan (its three best makers, two rotating makers, liked
-  traits, and one search for everything newest). API 404/410 → removed. Rate limits
+  traits, and one search for everything newest). Discovery runs right after the
+  rechecks and **before** the general web search, with its own budget of 40 API
+  requests (searches plus currency refetches): behind the web search it shared the
+  240-page and 35-minute budgets and could be skipped entirely. Its coverage note
+  counts results and why each was not kept (already tracked, low score, not a
+  verifiable Bb trumpet offer). US shipping is Reverb's `US_CON` (contiguous US)
+  rate. API 404/410 → removed. Rate limits
   and 5xx get at most three attempts with backoff (`Retry-After` honoured, ≤ 30 s).
 - **eBay (search provider, no developer key).** eBay pages always refuse the VM, and
   there are no eBay developer keys, so OpenAI web search is the primary path: every
@@ -679,7 +694,11 @@ observations; direct page checks have no label.
   marks it sold/removed. Model: `TRUMPETS_VERIFY_MODEL`
   (default: `TRUMPETS_SEARCH_MODEL`, itself `gpt-4.1-mini`). At most
   `TRUMPETS_VERIFY_LIMIT` calls per run (default 60), spent on active, high-score
-  tracked offers first, then on new eBay results. Logs and run notes hold counts only.
+  tracked offers. New eBay results have their own `TRUMPETS_EBAY_VERIFY_LIMIT`
+  (default 12), so rechecking tracked eBay offers can no longer use up discovery.
+  The general web search stops at 30 minutes, leaving eBay discovery time before
+  the 35-minute budget. Logs and run notes hold counts only; the run log's
+  `marketplace APIs` line carries both coverage notes.
 - **Coverage.** "Reverb API" and "eBay via web search" (or "eBay Browse API") appear in
   source coverage with their searches, records inspected and verified offers, under
   the `reverb.com` and `ebay.com` domains. A failed Reverb/eBay search makes the run
@@ -696,7 +715,7 @@ Tests use a fake Responses endpoint and fictional recorded fixtures in
 **Runner environment** (`/etc/trumpets/runner.env`, root-owned, mode 0600; unchanged
 path): `TRUMPETS_API_URL`, `TRUMPETS_MACHINE_TOKEN`, `OPENAI_API_KEY` (already there)
 and/or `BRAVE_SEARCH_API_KEY`. Optional: `TRUMPETS_SEARCH_MODEL`,
-`TRUMPETS_VERIFY_MODEL`, `TRUMPETS_VERIFY_LIMIT`. Reverb needs no key. Only if eBay
+`TRUMPETS_VERIFY_MODEL`, `TRUMPETS_VERIFY_LIMIT`, `TRUMPETS_EBAY_VERIFY_LIMIT`. Reverb needs no key. Only if eBay
 developer keys are ever created: `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET` (an eBay
 developer *production* keyset; the application token uses the public
 `https://api.ebay.com/oauth/api_scope`) and optionally `EBAY_TRUMPET_CATEGORY_ID`
@@ -724,3 +743,37 @@ and env file path are unchanged; it now also reaches `api.reverb.com`, and
 [Taste on desktop](screenshots/taste-desktop.png) ·
 [Swipe on a phone](screenshots/taste-swipe-mobile.png) ·
 [Head to head on a phone](screenshots/taste-pair-mobile.png) (synthetic fixtures)
+
+## Fast ingest and a runner that survives slow responses (migration 033)
+
+The first taste-training run was stored, but the runner crashed: `POST
+/machine/runs` took 26.6 s and the runner's 25 s read timeout fired first.
+
+- **Ingest.** Upserting ~150 listings made one database round trip per statement,
+  ~1,700 in all (~15 ms each from Cloud Run to Cloud SQL). The run's writes are
+  now pipelined (`trumpets_pipe.go`): writes whose results are not needed are queued
+  and sent with the next read in the same transaction, so every read still sees
+  every earlier write. The owner's listings and latest snapshots are prefetched
+  once, so rechecking a tracked offer needs no lookup; a listing this run already
+  wrote is looked up live. Failed checks are one statement. A run of 150 listings
+  and 150 failures over a 300-listing board takes ~46 round trips instead of ~1,700
+  (`TestTrumpetIngestRoundTrips` bounds it at 60 and at 3 s with a simulated 5 ms
+  round trip; it was 10.3 s). The API has Cloud Run concurrency 1, so this also
+  stops runs from blocking board loads.
+- **Board and taste reads.** JSON responses are gzip-compressed for clients that
+  accept it; `priceHistory` sends an observation's snapshot only when it differs
+  from the previous one (`null` otherwise; the detail lists each version once);
+  `trumpet_events(listing_id, occurred_at)` is indexed for the per-listing
+  history; the taste endpoints skip loading the histories they never use.
+- **Runner.** The submit gets 180 s. If the response still never arrives (or the
+  API answers 429, 502, 503 or 504), the runner
+  asks `GET /machine/runs?externalId=` (after 15, 30 and 60 s) whether the run was
+  stored, and submits again only if not. That is safe: a run is stored once per
+  `externalId` under the owner's lock, and a repeat replays it. Against an API
+  without the lookup it relies on that replay. Any failure exits non-zero with one
+  JSON line on stderr (`{"error": "trumpet runner failed: …"}`), never a traceback.
+
+**Deploy.** API first (migration 033 adds one index, `IF NOT EXISTS`). Then copy
+`tools/trumpets/runner.py` to `/opt/trumpets/runner.py` on the VM; the service,
+timer and env file are unchanged. The new runner against an older API still works
+(the lookup answers 404, so it falls back to the idempotent resubmit).

@@ -5,6 +5,7 @@ import json
 import os
 import unittest
 import urllib.error
+import urllib.parse
 from unittest.mock import patch
 import runner
 from test_runner import PRODUCT, PROFILE, page
@@ -324,6 +325,163 @@ class OldApiCompatibilityTests(unittest.TestCase):
                 raise urllib.error.HTTPError('https://api.fixture.invalid/runs', 400, 'Bad Request', {}, io.BytesIO(b'{"error":"listing identity conflict"}'))
         with self.assertRaises(urllib.error.HTTPError):
             runner.submit_run(Broken(), report)
+
+
+class RecordedReverbSearchTests(unittest.TestCase):
+    """A sanitized recording of the real search response (structure only;
+    every value is fictional): the runner's own request, parsing and keep rules."""
+    def fake_reverb(self, requests):
+        search, eur = fixture('reverb_search_trumpets.json'), fixture('reverb_listing_eur_native.json')
+        shown = copy.deepcopy(next(l for l in search['listings'] if l['id'] == 900000102))
+        def fetch(url, headers=None, data=None, timeout=25):
+            requests.append((url, dict(headers or {})))
+            if url.startswith(runner.REVERB_SEARCH + '?'): return json.dumps(search)
+            if url == runner.REVERB_API + '900000102':
+                return json.dumps(eur if (headers or {}).get('X-Display-Currency') == 'EUR' else shown)
+            raise AssertionError('unexpected fetch ' + url)
+        return fetch
+
+    def run_daily(self, monotonic=None):
+        client = Client(); requests = []
+        patches = [patch.dict('os.environ', {'BRAVE_SEARCH_API_KEY': '', 'OPENAI_API_KEY': '', 'EBAY_CLIENT_ID': ''}),
+                   patch.object(runner, 'fetch', side_effect=self.fake_reverb(requests)), patch('builtins.print')]
+        if monotonic: patches.append(patch.object(runner.time, 'monotonic', side_effect=monotonic))
+        for p in patches: p.start()
+        try: runner.daily(client)
+        finally:
+            for p in reversed(patches): p.stop()
+        return client, requests
+
+    def test_search_request_and_parse(self):
+        requests = []
+        listings = runner.reverb_search('Monette', self.fake_reverb(requests))
+        self.assertEqual([l['id'] for l in listings], [900000101, 900000102, 900000103, 900000104])
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(requests[0][0]).query)
+        self.assertEqual(query, {'category_uuid': [runner.REVERB_TRUMPETS], 'price_min': ['800'], 'sort': ['published_at|desc'], 'per_page': ['24'], 'query': ['Monette']})
+        c = runner.reverb_offer_from(listings[0], runner.reverb_web_url(listings[0]), 'Reverb', MONETTE)
+        # US_CON is Reverb's domestic US shipping region.
+        self.assertEqual((c['maker'], c['price'], c['currency'], c['shipping'], c['status']), ('Monette', 9800, 'USD', 45, 'active'))
+        self.assertEqual(c['url'], 'https://reverb.com/item/900000101-fictional-fixture-900000101')
+
+    def test_daily_keeps_verified_offers_and_explains_the_rest(self):
+        client, requests = self.run_daily()
+        kept = {l['sourceListingId']: l for l in client.report['listings'] if l.get('source') == 'Reverb'}
+        self.assertEqual(set(kept), {'900000101', '900000102'})
+        # The EUR listing shown in USD was refetched and stored in EUR.
+        self.assertEqual((kept['900000102']['price'], kept['900000102']['currency']), (3900, 'EUR'))
+        # One request per refetch: the native currency is known from the search.
+        self.assertEqual([h for u, h in requests if u == 'https://api.reverb.com/api/listings/900000102'], [dict(runner.REVERB_HEADERS, **{'X-Display-Currency': 'EUR'})])
+        reverb = next(s for s in client.report['sources'] if s['source'] == 'Reverb API')
+        self.assertEqual((reverb['status'], reverb['candidates']), ('checked', 2))
+        self.assertIn('not a verifiable Bb trumpet offer', reverb['note'])  # Bach without traits, flugelhorn
+        self.assertIn('tracked', reverb['note'])  # later terms return the same listings
+
+    def test_reverb_runs_even_after_the_search_budgets_are_spent(self):
+        # Production 0: discovery ran after the web search had used the run's
+        # time (and page) budget and stopped before its first request.
+        clock = iter([0.0] + [10.0 ** 6] * 10000)
+        client, requests = self.run_daily(monotonic=lambda: next(clock))
+        self.assertTrue(any(u.startswith(runner.REVERB_SEARCH + '?') for u, _ in requests))
+        self.assertEqual(len([l for l in client.report['listings'] if l.get('source') == 'Reverb']), 2)
+
+
+class SubmitTimeoutTests(unittest.TestCase):
+    """The production crash: the API stored the run (26.6 s) but the runner's
+    read timed out first and exited with a traceback."""
+    REPORT = {'externalId': 'adaptive-watch-fixture', 'status': 'succeeded', 'listings': []}
+
+    class Api:
+        def __init__(self, posts, lookups):
+            self.posts = list(posts); self.lookups = list(lookups); self.calls = []
+        def call(self, path, body=None):
+            self.calls.append(path)
+            reply = (self.posts if body is not None else self.lookups).pop(0)
+            if isinstance(reply, Exception): raise reply
+            return reply
+
+    def submit(self, api):
+        sleeps = []
+        with patch('builtins.print'):
+            result = runner.submit_run(api, self.REPORT, sleep=sleeps.append)
+        return result, sleeps
+
+    def test_timeout_then_found_does_not_resubmit(self):
+        api = self.Api([TimeoutError('The read operation timed out')], [{'found': True, 'runId': 'r1', 'status': 'succeeded'}])
+        result, sleeps = self.submit(api)
+        self.assertEqual((result['runId'], result['status'], result['recovered']), ('r1', 'succeeded', True))
+        self.assertEqual(api.calls, ['/runs', '/runs?externalId=adaptive-watch-fixture'])
+        self.assertEqual(sleeps, [15])
+
+    def test_timeout_wrapped_in_urlerror_then_found_later(self):
+        api = self.Api([urllib.error.URLError(TimeoutError('timed out'))], [{'found': False}, {'found': True, 'runId': 'r1', 'status': 'partial'}])
+        result, sleeps = self.submit(api)
+        self.assertEqual(result['status'], 'partial'); self.assertEqual(sleeps, [15, 30])
+
+    def test_not_stored_resubmits_with_the_same_external_id(self):
+        api = self.Api([TimeoutError(), {'runId': 'r2', 'status': 'succeeded'}], [{'found': False}] * 3)
+        result, sleeps = self.submit(api)
+        self.assertEqual(result['runId'], 'r2'); self.assertEqual(api.calls.count('/runs'), 2); self.assertEqual(sleeps, [15, 30, 60])
+
+    def test_api_without_lookup_relies_on_the_idempotent_replay(self):
+        api = self.Api([TimeoutError(), {'runId': 'r1', 'status': 'succeeded', 'replayed': True}], [http_error(404)])
+        result, _ = self.submit(api)
+        self.assertTrue(result['replayed']); self.assertEqual(api.calls.count('/runs'), 2)
+
+    def test_overload_and_gateway_errors_check_whether_the_run_landed(self):
+        for code in (429, 502, 503, 504):
+            api = self.Api([http_error(code)], [{'found': True, 'runId': 'r1', 'status': 'succeeded'}])
+            result, _ = self.submit(api)
+            self.assertTrue(result['recovered'], code)
+            self.assertEqual(api.calls.count('/runs'), 1, code)
+        api = self.Api([http_error(503), {'runId': 'r2', 'status': 'succeeded'}], [http_error(503), {'found': False}, {'found': False}])
+        result, sleeps = self.submit(api)
+        self.assertEqual(result['runId'], 'r2'); self.assertEqual(api.calls.count('/runs'), 2); self.assertEqual(sleeps, [15, 30, 60])
+
+    def test_other_errors_are_not_retried(self):
+        api = self.Api([http_error(500)], [])
+        with self.assertRaises(urllib.error.HTTPError): self.submit(api)
+        self.assertEqual(api.calls, ['/runs'])
+
+    def test_main_exits_non_zero_with_one_line_and_no_traceback(self):
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with patch.object(runner, 'run', side_effect=TimeoutError('The read operation timed out')), redirect_stderr(err):
+            self.assertEqual(runner.main(), 1)
+        self.assertEqual(err.getvalue().count('\n'), 1)
+        self.assertNotIn('Traceback', err.getvalue())
+        self.assertEqual(json.loads(err.getvalue()), {'error': 'trumpet runner failed: timed out waiting for the API'})
+        err = io.StringIO()
+        with patch.dict('os.environ', {}, clear=True), patch('sys.argv', ['runner.py']), redirect_stderr(err):
+            self.assertEqual(runner.main(), 1)
+        self.assertIn('missing environment variable TRUMPETS_API_URL', err.getvalue())
+
+    def test_real_client_gives_the_submit_a_long_timeout(self):
+        seen = []
+        with patch.dict('os.environ', {'TRUMPETS_API_URL': 'https://api.fixture.invalid', 'TRUMPETS_MACHINE_TOKEN': 'fixture'}), \
+                patch.object(runner, 'fetch', side_effect=lambda url, headers, data, timeout: seen.append((url, timeout)) or '{}'):
+            client = runner.Client(); client.call('/runs', {}); client.call('/profile')
+        self.assertEqual(seen, [('https://api.fixture.invalid/v1/trumpets/machine/runs', 180), ('https://api.fixture.invalid/v1/trumpets/machine/profile', 60)])
+
+
+class EbayDiscoveryBudgetTests(unittest.TestCase):
+    def test_rechecks_spending_the_verify_budget_do_not_starve_ebay_discovery(self):
+        # Production 0: tracked eBay offers (no eBay keys) are rechecked through
+        # the same search-provider budget, which left none for new leads.
+        client = Client()
+        searches = []
+        def search_openai(query, key):
+            searches.append(query)
+            return [{'url': 'https://www.ebay.com/itm/monette-raja-trumpet/900000000077', 'title': 'Monette Raja Bb trumpet FICTIONAL'}]
+        available = {'url': 'https://ebay.com/itm/900000000077', 'title': 'Monette Raja Bb trumpet FICTIONAL', 'state': 'available', 'price': None, 'currency': None, 'shipping': None, 'evidence': 'fixture'}
+        with patch.dict('os.environ', {'BRAVE_SEARCH_API_KEY': '', 'OPENAI_API_KEY': 'fixture-key', 'EBAY_CLIENT_ID': '', 'TRUMPETS_VERIFY_LIMIT': '0'}), \
+                patch.object(runner, 'search_plan', return_value=[]), patch.object(runner, 'reverb_search', return_value=[]), \
+                patch.object(runner, 'search_openai', side_effect=search_openai), patch.object(runner, 'verify_via_search', return_value=available), patch('builtins.print'):
+            runner.daily(client)
+        self.assertTrue(any(q.startswith('site:ebay.com') for q in searches))
+        ebay = next(s for s in client.report['sources'] if s['source'] == 'eBay via web search')
+        self.assertEqual((ebay['status'], ebay['candidates']), ('checked', 1))
+        self.assertIn('1 items checked', ebay['note'])
 
 
 if __name__ == '__main__':
