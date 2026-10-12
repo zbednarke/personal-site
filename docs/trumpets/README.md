@@ -931,45 +931,56 @@ What changed (all in `tools/trumpets/runner.py`):
   in the new title, so a reused URL ("Phat Boy" where a "Chicago" was) or a
   generic title ("Used professional Bb trumpet") is never matched; the stored
   title follows an accepted retitle. A listing URL that now redirects to another
-  page verifies nothing. Japanese and European accessory/other-instrument
+  page verifies nothing: an item page is its host, whole path and identifying
+  query (`product_id=`, `id=`, `route=`…), so `/trumpets/x` is not `/cornets/x`
+  and `item.php?id=1` is not `?id=2`. Japanese and European accessory/other-instrument
   words (マウスピース, ケース, ピッコロ, C管, mondstuk, Trompetenmundstück…) are
   rejected; "Trompete" and "trubka" count as horn words. A shop "brand" that is
   only a category ("Bb-trumpet") is ignored; a recheck may fall back to the
   tracked listing's own maker, a new find never is.
-- **LLM page reading** (`PageLLM`), last: only for a page the runner fetched
-  itself (HTTP 200, and not redirected away from the listing's page) that no
-  extractor could read, only for rechecks, and never on a page the extractors
-  found ambiguous (several products, disagreeing copies) or excluded (accessory,
-  other instrument, maker rule). The page is cleaned (no scripts, styles,
-  navigation, header, footer, forms, hidden, screen-reader-only, struck-through
-  `<del>`/`<s>` or related-product sections; title, main text and JSON-LD kept;
+- **LLM page reading** (`PageLLM`), last. It may only *confirm* an
+  unambiguous price for a tracked, previously verified offer; it never chooses
+  between competing prices and never verifies a queued lead (for a lead the
+  reading is only a hint on its failed check). It runs only for a page the
+  runner fetched itself (HTTP 200, not redirected away from the listing's page)
+  that no extractor could read, and never on a page the extractors found
+  ambiguous (several products, disagreeing copies) or excluded (accessory,
+  other instrument, maker rule). The page is cleaned line by line (no scripts,
+  styles, navigation, header, footer, forms, hidden or screen-reader text,
+  related products, `<del>`/`<s>`/line-through text, or compare-at, was, old,
+  regular, list, RRP/MSRP price elements; title, main text and JSON-LD kept;
   about 12,000 characters) and sent as untrusted data inside a random
   per-request delimiter to the Responses API (`TRUMPETS_VERIFY_MODEL`, else
   `TRUMPETS_SEARCH_MODEL`; strict JSON schema; no tools). A reading is accepted
   only when all of these hold:
-  - the model's title is on the page, and it says this is a single Bb trumpet
-    product page with a known availability ("unknown" never verifies and never
-    marks anything sold);
-  - the quoted price text is a money amount in the cleaned page text, with digit
-    and separator boundaries on both sides ("4.990" is not inside "14.990 EUR"),
-    and parses to the stated price;
-  - the price is at least 100 USD-equivalent, is not in a sentence about
-    shipping, deposits, monthly payments, "from", "save", "was" or old/list
-    prices, and is the page's main price: its only money amount, or the one
-    nearest the main heading;
-  - the currency is the amount's own ISO code or unambiguous symbol; for "$",
-    "¥" or "kr" it is the single currency the page declares for its product (its
-    OpenGraph/product meta or microdata, the JSON-LD offer, or its own
-    `view_item` event), never a code mentioned elsewhere ("we accept CAD");
-  - the page says it is this listing's URL (canonical, og:url or product url);
-    a page that names no URL does not bind a reading, for leads either;
-  - for a tracked offer, the price moved at most 30% and kept its currency;
+  - the model's whole title is on the page at word boundaries, or every word of
+    it (at least three) is in the main heading; it says this is a single Bb
+    trumpet product page with a known availability ("unknown" never verifies
+    and never marks anything sold);
+  - the quoted price text is a money amount in the cleaned text, with digit and
+    separator boundaries on both sides, parses to the stated price and is at
+    least 100 USD-equivalent;
+  - it is an asking price: the few words just before it (back to the previous
+    amount) are not about shipping, deposits, instalments, "from", "was",
+    compare-at/regular/list/RRP prices or "save", the words just after it are
+    not "/mo", "deposit" or "shipping", and it is not the 税抜 (pre-tax) price
+    beside a 税込 one. "Free shipping" in the next paragraph or "ships from
+    Japan" say nothing about it;
+  - it is unambiguous: every asking-price amount on the page is that price, or
+    it sits in the page's current-price element (class, id or itemprop "price")
+    and no other current-price element disagrees. Anything else is "ambiguous
+    price";
+  - the currency is the amount's own ISO code or unambiguous symbol; "¥" is yen
+    on a `.jp` host or a `lang="ja"` page; otherwise "$", "¥" or "kr" need the
+    single currency the page declares for its product (OpenGraph/product meta or
+    microdata, the JSON-LD offer, or its own `view_item` event);
+  - the price moved at most 20% from the tracked price and kept its currency;
     otherwise the check fails with "price change needs confirmation".
-  An accepted reading keeps the tracked listing's score, tags and rationale.
-  Budget: `TRUMPETS_PAGE_LLM_LIMIT` pages per run (default 80; 0 turns it off;
-  a non-number logs a warning and uses 80) and 8 minutes including retries,
-  spent in recheck order (active, high-score offers first). It logs counts only.
-  Accepted offers carry `verifiedVia: "page-llm"`.
+  A confirmed reading keeps the tracked listing's title, score, tags and
+  rationale. Budget: `TRUMPETS_PAGE_LLM_LIMIT` pages per run (default 80; 0
+  turns it off; a non-number logs a warning and uses 80) and 8 minutes including
+  retries, spent in recheck order (active, high-score offers first). It logs
+  counts only. Confirmed offers carry `verifiedVia: "page-llm"`.
 - **Discovery page budget.** Pages were spent on results another query had
   already returned (only kept results were remembered), on images/PDFs,
   category/search/tag/blog pages, further result pages, cart/account pages,

@@ -399,6 +399,7 @@ def identify_maker(text):
     for maker in MAKERS:
         match=re.search(r'\b'+re.escape(maker.lower())+r'\b',text.lower())
         if match:matches.append((match.start(),maker))
+    if re.search(r'\bstradivarius\b',text.lower()):matches.append((text.lower().index('stradivarius'),'Bach'))
     for spelling,maker in MAKER_KATAKANA.items():
         # Not inside a longer katakana word ("バックボア" is a backbore).
         match=re.search(r'(?<![ァ-ヶー])'+spelling+r'(?![ァ-ヶー])',text)
@@ -759,7 +760,7 @@ def identity_urls(page, metadata=None, structured=None):
             if isinstance(value,str) and value.startswith(('https://','http://')):urls.append(value.split('#')[0])
     out=set()
     for value in urls:
-        try:out.add(canonical_url(value.strip()).split('?')[0])
+        try:host,path,query=item_key(value.strip());out.add('https://'+host+path+('?'+query if query else ''))
         except ValueError:pass
     return out
 
@@ -1618,13 +1619,25 @@ def same_title(a, b):
     return bool(norm_title(a)) and norm_title(a)==norm_title(b)
 
 
+# Query keys that choose a view of the same item, not the item.
+VIEW_PARAMS={'variant','currency','lang','language','locale','view','tab','sort','color','colour','size','quantity','qty','image','img'}
+
+
+def item_key(url):
+    """(host, path, identifying query) of an item page: www., tracking and
+    view parameters dropped; Shopify's /collections/x/products/y is /products/y;
+    an id in the query (product_id=, id=, route=…) stays part of it."""
+    p=urllib.parse.urlsplit(canonical_url(url))
+    path=re.sub(r'^/collections/[^/]+/products/','/products/',p.path) or '/'
+    query=urllib.parse.urlencode([(k,v) for k,v in urllib.parse.parse_qsl(p.query) if k.lower() not in VIEW_PARAMS])
+    return p.netloc,path,query
+
+
 def same_item_url(a, b):
-    """The same page: same host (apart from www.) and the same last path
-    segment (a Shopify /collections/x/products/y is /products/y)."""
-    try:pa,pb=urllib.parse.urlsplit(canonical_url(a)),urllib.parse.urlsplit(canonical_url(b))
+    """The same item page: same host (apart from www.), the same whole path and,
+    when either has one, the same identifying query."""
+    try:return item_key(a)==item_key(b)
     except ValueError:return False
-    last=lambda p:p.path.rstrip('/').rsplit('/',1)[-1]
-    return pa.netloc==pb.netloc and bool(last(pa)) and last(pa)==last(pb)
 
 
 def page_is_listing(page, url):
@@ -1753,7 +1766,8 @@ def recheck_page(c, get_page, profile, found=None, page_llm=None):
     # A model's reading carries no description to score; the tracked listing
     # keeps its score, tags and rationale.
     if via!='page-llm':c.update(searchScore=p['searchScore'],searchRationale=p['searchRationale'],tags=p['tags'])
-    if retitled:c['title']=p['title'];c['evidence']+=' / dealer retitled the listing'
+    # A model's title is never stored: only a dealer's own structured title is.
+    if retitled and via!='page-llm':c['title']=p['title'];c['evidence']+=' / dealer retitled the listing'
     if p['price'] is not None:
         c.update(price=p['price'],currency=p['currency'])
         if p['currency']!=old_currency: c['shipping']=None
@@ -2179,6 +2193,8 @@ def verify_via_search(url, key, get=None, sleep=None):
 # page, or the page's own currency metadata), and it is a single Bb trumpet
 # product page. "unknown" availability never verifies (nor marks anything sold).
 PAGE_LLM_LIMIT=80
+# The most a model's reading may move a tracked offer's price on its own.
+MAX_LLM_MOVE=0.20
 # Wall-clock share of the 35-minute run the page reader may use (rechecks run
 # before discovery, so this bounds what it can take from the search budget).
 PAGE_LLM_SECONDS=8*60
@@ -2198,48 +2214,77 @@ PAGE_LLM_INSTRUCTIONS=('You read one web page that a research tool fetched. The 
 LLM_AVAILABILITY={'in_stock':'InStock','sold':'SoldOut','on_hold':'Reserved'}
 
 
+# An element that shows a price that is not the current one ("price--compare",
+# "was-price", "old-price", "price__regular", "list-price", RRP/MSRP, struck
+# through). Generic words ("list-unstyled", "fw-regular") only count next to
+# "price"/"amount", so ordinary layout classes keep their text.
+NOT_CURRENT=re.compile(r'line-?through',re.I)
+NOT_CURRENT_ALONE={'strike','strikethrough','rrp','msrp','uvp'}
+NOT_CURRENT_WITH_PRICE={'compare','was','old','regular','list','original','before'}
+
+
+def not_current_price(a):
+    label=(a.get('class','')+' '+a.get('id','')).lower()
+    tokens=set(re.split(r'[^a-z]+',label))-{''}
+    return (bool(tokens&NOT_CURRENT_ALONE) or bool(NOT_CURRENT.search(label)) or bool(re.search(r'text-decoration\s*:\s*line-through',a.get('style',''),re.I))
+            or (bool(tokens&NOT_CURRENT_WITH_PRICE) and bool(tokens&{'price','prices','amount','pricing'})))
+
+
 class PageText(HTMLParser):
-    """The page's readable text: title, headings and main content, plus its
-    JSON-LD; without scripts, styles, navigation, header, footer, forms,
-    hidden elements and related/recommended product sections."""
+    """The page's readable text, line by line (block elements and <br> end a
+    line): title, headings and main content, plus its JSON-LD; without
+    scripts, styles, navigation, header, footer, forms, hidden or
+    screen-reader-only text, struck-through or compare-at/was/old/regular/list
+    prices, and related/recommended product sections. Text inside a current
+    price element (class, id or itemprop "price") is marked as price-labelled."""
     VOID=StockStatement.VOID
-    BLOCK=('p','div','li','tr','h1','h2','h3','h4','h5','h6','section','article','dd','dt','table','ul','ol','td','th')
+    BLOCK=('p','div','li','tr','h1','h2','h3','h4','h5','h6','section','article','dd','dt','table','ul','ol','td','th','main','header','figure','blockquote')
     def __init__(self):
-        super().__init__();self.stack=[];self.parts=[];self.title=[];self.jsonld=[];self.ld=None;self.heading_at=None;self.h1=[]
-    def skipping(self):return any(s for _,s in self.stack)
-    def skipping_parent(self):return any(s for _,s in self.stack[:-1])
+        super().__init__();self.stack=[];self.lines=[[]];self.title=[];self.jsonld=[];self.ld=None;self.h1=[]
+    def skipping(self):return any(e[1] for e in self.stack)
+    def newline(self):
+        if self.lines[-1]:self.lines.append([])
     def handle_starttag(self,tag,attrs):
         a={k:(v or '') for k,v in attrs}
         if tag=='script' and a.get('type','').lower().strip()=='application/ld+json':self.ld=[]
         if tag in self.VOID:
-            if tag=='br':self.parts.append('\n')
+            if tag=='br':self.newline()
             return
         label=a.get('class','')+' '+a.get('id','')
-        # Struck-through old prices and text for screen readers or no one are
-        # not what the page shows as its price.
         hidden=('hidden' in a or a.get('aria-hidden','').lower()=='true' or re.search(r'display\s*:\s*none|visibility\s*:\s*hidden',a.get('style',''),re.I)
                 or re.search(r'(?:^|\s)(?:d-none|hidden|sr-only|screen-reader-text|visually-?hidden|visuallyhidden|u-hidden)(?:\s|$)',a.get('class','')))
         other=bool(PageImages.OTHERS.search(a.get('class',''))) or bool(NOT_THIS_PRODUCT.search(label)) or (tag=='ul' and re.search(r'(?:^|\s)products(?:\s|$)',a.get('class','')) is not None)
-        in_content=any(t in ('main','article') for t,_ in self.stack)
-        skip=tag in ('script','style','noscript','nav','footer','template','svg','form','select','iframe','aside','del','s','strike') or (tag=='header' and not in_content) or bool(hidden) or other
-        self.stack.append((tag,skip))
-        if tag=='h1' and not skip and not self.skipping_parent():self.heading_at=len(''.join(self.parts))
-        if tag in self.BLOCK:self.parts.append('\n')
+        in_content=any(e[0] in ('main','article') for e in self.stack)
+        skip=(tag in ('script','style','noscript','nav','footer','template','svg','form','select','iframe','aside','del','s','strike')
+              or (tag=='header' and not in_content) or bool(hidden) or other or not_current_price(a))
+        priced=bool(re.search(r'price',label+' '+a.get('itemprop',''),re.I))
+        self.stack.append((tag,skip,priced))
+        if tag in self.BLOCK:self.newline()
     def handle_endtag(self,tag):
         if tag=='script' and self.ld is not None:
             self.jsonld.append(' '.join(''.join(self.ld).split()));self.ld=None
         for i in range(len(self.stack)-1,-1,-1):
             if self.stack[i][0]==tag:del self.stack[i:];break
-        if tag in self.BLOCK:self.parts.append('\n')
+        if tag in self.BLOCK:self.newline()
     def handle_data(self,data):
         if self.ld is not None:self.ld.append(data);return
         if self.stack and self.stack[-1][0]=='title':self.title.append(data);return
         if not self.skipping() and data.strip():
-            self.parts.append(' '.join(data.split())+' ')
-            if any(t=='h1' for t,_ in self.stack):self.h1.append(data)
-    def body(self):
-        return '\n'.join(line.strip() for line in html.unescape(''.join(self.parts)).split('\n') if line.strip())
-    def heading(self):return ' '.join(html.unescape(''.join(self.h1)).split())
+            text=' '.join(html.unescape(data).split())
+            self.lines[-1].append((text,any(e[2] for e in self.stack)))
+            if any(e[0]=='h1' for e in self.stack):self.h1.append(text)
+    def line_texts(self):
+        """[(line text, [(start, end, price-labelled)])], each line flattened on its own."""
+        out=[]
+        for chunks in self.lines:
+            text='';marks=[]
+            for chunk,priced in chunks:
+                if text:text+=' '
+                marks.append((len(text),len(text)+len(chunk),priced));text+=chunk
+            if text:out.append((text,marks))
+        return out
+    def body(self):return '\n'.join(t for t,_ in self.line_texts())
+    def heading(self):return ' '.join(' '.join(self.h1).split())
     def text(self, limit=PAGE_TEXT_LIMIT):
         title=' '.join(html.unescape(''.join(self.title)).split())
         ld=html.unescape(' '.join(self.jsonld))[:3000]
@@ -2263,33 +2308,51 @@ def flat(text):
     return ' '.join(str(text or '').split())
 
 
-# A money amount in page text: a currency marker before or after a number.
-MONEY=re.compile(r"(?P<pre>US\$|CA\$|AU\$|NZ\$|C\$|A\$|[$€£¥￥]|(?<![A-Za-z])[Kk]r\.?(?![A-Za-z])|(?<![A-Za-z])[A-Z]{3}(?![A-Za-z]))\s?(?P<a>\d(?:[\d.,']|\s(?=\d{3}(?!\d)))*)(?:\s?(?P<code>(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])))?"
-                 r"|(?P<b>\d(?:[\d.,']|\s(?=\d{3}(?!\d)))*)\s?(?P<post>€|£|円|kr\.?(?![a-z])|Kč|zł|(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])|\$)")
-# A sentence about something other than the asking price.
-NOT_ASKING_PRICE=re.compile(r'shipping|postage|delivery|freight|versand|porto|frakt|verzend|送料|deposit|down ?payment|anzahlung|aanbetaling|'
-                            r'per month|a month|/\s?mo\b|/\s?month|monthly|monatlich|per maand|月々|finance|financing|klarna|affirm|afterpay|instal(?:l)?ments?|'
-                            r'\bfrom\b|\bab\b|\bvanaf\b|starting at|\bsave\b|\bsaving\b|\bwas\b|old price|regular price|original price|list price|'
-                            r'\brrp\b|\bmsrp\b|\buvp\b|\bstatt\b|instead of|\bnew price\b|retail value|trade-?in|rental|rent\b|miete',re.I)
+# A money amount in page text: a currency marker before or after a number
+# ("$4,350.00 USD", "1.690 €", "4.990,- €", "kr 45 000", "¥128,000").
+NUMBER=r"\d(?:[\d.,']|\s(?=\d{3}(?!\d)))*"
+MONEY=re.compile(r"(?P<pre>US\$|CA\$|AU\$|NZ\$|C\$|A\$|[$€£¥￥]|(?<![A-Za-z])[Kk]r\.?(?![A-Za-z])|(?<![A-Za-z])[A-Z]{3}(?![A-Za-z]))\s?(?P<a>"+NUMBER+r")(?:[.,]-)?(?:\s?(?P<code>(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])))?"
+                 r"|(?P<b>"+NUMBER+r")(?:[.,]-)?\s?(?P<post>€|£|円|kr\.?(?![a-z])|Kč|zł|(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])|\$)")
+# What the words just before an amount (back to the previous amount, at most
+# PREFIX_CHARS) or just after it say about it. Only these short windows count:
+# "Free shipping" in the next paragraph, "ships from Japan" or "was played by a
+# pro" say nothing about the asking price.
+PREFIX_CHARS=25
+NOT_ASKING_BEFORE=re.compile(r'shipping|postage|delivery|freight|versand|porto|frakt|verzend|送料|deposit|down ?payment|anzahlung|aanbetaling|'
+                             r'financ|klarna|affirm|afterpay|instal(?:l)?ments?|as low as|payments? of|monthly|per month|monatlich|月々|'
+                             r'trade-?in|rental|\brent\b|miete',re.I)
+NOT_ASKING_LABEL=re.compile(r'(?:\bfrom|\bstarting at|\bab|\bvanaf|à partir de|\bdès|\bwas|\bold price|\bregular price|\boriginal price|\blist price|'
+                            r'\bcompare at|\bcompare|\brrp|\bmsrp|\buvp|\bstatt|\binstead of|\bsave|\byou save|\bretail value|\breg\.?|\bnormally|\bvalued at)\s*[:\-]?\s*$',re.I)
+NOT_ASKING_AFTER=re.compile(r'^\s*(?:/\s?mo\b|/\s?month|per month|a month|monthly|/\s?mes|deposit|down payment|shipping|postage|delivery|s&h|versand|送料|off\b)',re.I)
+TAX_EXCLUDED=re.compile(r'税抜|税別|tax excl|excl\.? (?:vat|tax)|zzgl\.? mwst|ohne mwst|ex\.? vat',re.I)
+# "¥450,000（税抜）": a bracketed note belongs to the amount before it; an
+# unbracketed label ("税抜価格 ¥450,000") to the amount after it.
+TAX_NOTE_AFTER=re.compile(r'^\s*[（(]\s*(?:税抜|税別|tax excl|excl\.? (?:vat|tax)|zzgl\.? mwst|ohne mwst|ex\.? vat)|^\s*(?:税抜|税別)',re.I)
+TAX_LABEL_BEFORE=re.compile(r'(?<![（(])(?:税抜|税別|tax excl\.?|excl\.? (?:vat|tax)|ohne mwst)[^（()）\d]{0,8}$',re.I)
+TAX_INCLUDED=re.compile(r'税込|tax incl|incl\.? (?:vat|tax)|inkl\.? mwst',re.I)
 
 
-def money_spans(body):
-    """(start, end, marker, value) of the money amounts in page text."""
+def money_spans(view_or_body):
+    """Money amounts of the page text: dicts with line, start, end, marker,
+    value, labelled (inside a current-price element) and why the amount is not
+    an asking price ('' when it is one)."""
+    lines=view_or_body.line_texts() if hasattr(view_or_body,'line_texts') else [(t,[]) for t in str(view_or_body).split('\n')]
+    both_taxes=any(TAX_EXCLUDED.search(t) for t,_ in lines) and any(TAX_INCLUDED.search(t) for t,_ in lines)
     spans=[]
-    for m in MONEY.finditer(body):
-        # "$4,350.00 USD": the code after the amount names its currency.
-        marker=(m['code'] if m['code'] and m['code'] in ISO_CURRENCIES else m['pre']) or m['post'];number=(m['a'] or m['b']).rstrip('.,')
-        code=marker.upper() if re.fullmatch('[A-Za-z]{3}',marker) else ''
-        if code and code not in ISO_CURRENCIES:continue
-        spans.append((m.start(),m.end(),marker,parse_price(number,code or symbol_currency(marker))))
+    for n,(text,marks) in enumerate(lines):
+        found=list(MONEY.finditer(text))
+        for i,m in enumerate(found):
+            marker=(m['code'] if m['code'] and m['code'] in ISO_CURRENCIES else m['pre']) or m['post'];number=(m['a'] or m['b']).rstrip('.,')
+            code=marker.upper() if re.fullmatch('[A-Za-z]{3}',marker) else ''
+            if code and code not in ISO_CURRENCIES:continue
+            previous=found[i-1].end() if i else 0
+            following=found[i+1].start() if i+1<len(found) else len(text)
+            before=text[max(previous,m.start()-PREFIX_CHARS):m.start()];after=text[m.end():min(following,m.end()+20)]
+            why=('not an asking price' if NOT_ASKING_BEFORE.search(before) or NOT_ASKING_LABEL.search(before) or NOT_ASKING_AFTER.search(after) else
+                 'price before tax' if both_taxes and (TAX_NOTE_AFTER.search(after) or TAX_LABEL_BEFORE.search(before)) else '')
+            labelled=any(a<m.end() and m.start()<b and priced for a,b,priced in marks)
+            spans.append(dict(line=n,start=m.start(),end=m.end(),marker=marker,value=parse_price(number,code or symbol_currency(marker)),labelled=labelled,why=why))
     return spans
-
-
-def sentence_at(body, start, end):
-    """The sentence (or line) of body holding body[start:end]."""
-    left=max(body.rfind('\n',0,start),*(body.rfind(p,0,start) for p in ('. ','! ','? ','; ','。')))
-    right=[i for i in (body.find('\n',end),*(body.find(p,end) for p in ('. ','! ','? ','; ','。'))) if i!=-1]
-    return body[left+1:min(right) if right else len(body)]
 
 
 def declared_currencies(page):
@@ -2314,27 +2377,55 @@ def declared_currencies(page):
     return found
 
 
-def money_currency(marker, currency, page):
+def japanese_page(page, url):
+    host=(urllib.parse.urlsplit(url or '').hostname or '').lower()
+    return host.endswith('.jp') or bool(re.search(r'<html[^>]*\blang\s*=\s*["\']?ja\b',page[:5000],re.I))
+
+
+def money_currency(marker, currency, page, url=''):
     """Why the marker next to the amount does not state this currency, or None."""
     marker=marker.strip()
     if re.fullmatch('[A-Za-z]{3}',marker):return None if marker.upper()==currency else 'currency differs from the page'
     named=symbol_currency(marker)
     if named:return None if named==currency else 'currency differs from the page'
+    # "¥" on a Japanese shop (a .jp host or a lang="ja" page) is yen.
+    if marker in ('¥','￥') and currency=='JPY' and japanese_page(page,url):return None
     options=AMBIGUOUS_SYMBOLS.get(marker.lower().rstrip('.'),set())
     declared=declared_currencies(page)
     if currency in options and declared=={currency}:return None
     return 'currency not stated on the page'
 
 
-def grounded(data, view, page):
+def title_on_page(title, view):
+    """The model's title is on the page: the whole title at word boundaries
+    (in the heading or a line of text), or every one of its words (at least
+    three) in the main heading."""
+    title=flat(title).lower()
+    if not title:return False
+    heading=flat(view.heading()).lower()
+    word=lambda w,text:re.search(r'(?<!\w)'+re.escape(w)+r'(?!\w)',text) is not None
+    if any(word(title,line.lower()) for line in [heading]+view.body().split('\n')):return True
+    # Otherwise every word of it (at least three) must be in the heading:
+    # "Taylor Chicago Bb trumpet (fixture)" is, "… Chicago 46 …" is not.
+    tokens={w for w in re.findall(r'\w+',title) if len(w)>=2}
+    return len(tokens)>=3 and all(word(w,heading) for w in tokens)
+
+
+def grounded(data, view, page, url=''):
     """Why an LLM reading is not grounded in the page's own text, or None.
 
-    The quoted price text must be a money amount in the page text (digit and
-    separator boundaries on both sides), parse to the stated price, be at least
-    the plausibility floor, not sit in a sentence about shipping, deposits,
-    instalments, "from" or old prices, and be the page's main price: the only
-    money amount, or the one nearest the main heading. The currency must be
-    the amount's own code or unambiguous symbol, or for "$", "¥" or "kr" the one
+    The page reader may only confirm a price the page states unambiguously:
+    every asking-price amount in the page's own text must be that price, or
+    the price sits in the page's current-price element and no other
+    current-price element disagrees. Anything else is "ambiguous price". An
+    amount is no asking price when the words just before it are about
+    shipping, deposits, instalments, "from", "was", compare-at/regular/list
+    prices or "save", when the words just after it are "/mo", "deposit" or
+    "shipping", or when it is the pre-tax price beside a tax-inclusive one.
+    The quoted text must be one of the amounts (digit and separator boundaries
+    on both sides), parse to the stated price and be at least the plausibility
+    floor. The currency must be the amount's own code or unambiguous symbol;
+    "¥" is yen on a Japanese shop; otherwise "$", "¥" or "kr" need the one
     currency the page declares for its product. The model's title must be on
     the page."""
     if not data.get('is_single_product_page'):return 'not a single product page'
@@ -2342,27 +2433,24 @@ def grounded(data, view, page):
     if data.get('availability') not in LLM_AVAILABILITY:return 'availability unknown'
     price_text=flat(data.get('price_text'));price=data.get('price');currency=str(data.get('currency') or '').upper()
     if price is None or not price_text or isinstance(price,bool) or not isinstance(price,(int,float)):return 'no price'
-    body=flat(view.body());low=body.lower()
-    title=flat(data.get('title')).lower()
-    if not title or (title not in low and title not in flat(view.heading()).lower()):return 'title not on the page'
-    if parse_price(price_text,currency)!=round(float(price),2):return 'price text does not match the price'
-    if below_floor(float(price),currency):return 'price below the plausibility floor'
-    at=[m.span() for m in re.finditer(r'(?<![\d.,])'+re.escape(price_text)+r'(?![\d]|[.,]\d)',body)]
+    if not title_on_page(data.get('title'),view):return 'title not on the page'
+    price=round(float(price),2)
+    if parse_price(price_text,currency)!=price:return 'price text does not match the price'
+    if below_floor(price,currency):return 'price below the plausibility floor'
+    lines=view.body().split('\n')
+    at=[(n,m.start(),m.end()) for n,line in enumerate(lines) for m in re.finditer(r'(?<![\d.,])'+re.escape(price_text)+r'(?![\d]|[.,]\d)',line)]
     if not at:return 'price text not on the page'
-    spans=money_spans(body)
-    asking=[s for s in spans if not NOT_ASKING_PRICE.search(sentence_at(body,s[0],s[1]))]
-    hits=[s for s in spans if any(s[0]<b and a<s[1] for a,b in at)]
+    spans=money_spans(view)
+    hits=[s for s in spans if any(n==s['line'] and s['start']<b and a<s['end'] for n,a,b in at)]
     if not hits:return 'price text is not a money amount'
-    hits=[s for s in hits if s in asking]
-    if not hits:return 'price is shipping, a deposit, an instalment or an old price'
-    heading=flat(view.heading()).lower()
-    anchor=low.find(heading) if heading else -1
-    if len({s[3] for s in asking})>1:
-        if anchor<0:return 'price is not the main offer'
-        nearest=min(asking,key=lambda s:abs(s[0]-(anchor+len(heading))))
-        if nearest not in hits:return 'price is not the main offer'
-        hits=[nearest]
-    return money_currency(hits[0][2],currency,page)
+    hits=[s for s in hits if not s['why']]
+    if not hits:return 'not the asking price (shipping, deposit, instalment, old or pre-tax price)'
+    asking=[s for s in spans if not s['why']]
+    if any(s['value']!=price for s in asking):
+        labelled=[s for s in asking if s['labelled']]
+        if not any(s['labelled'] for s in hits) or any(s['value']!=price for s in labelled):return 'ambiguous price'
+        hits=[s for s in hits if s['labelled']]
+    return money_currency(hits[0]['marker'],currency,page,url)
 
 
 class PageLLM:
@@ -2414,22 +2502,29 @@ class PageLLM:
         finally:self.spent+=self.clock()-started
         if not data:
             self.counts['failed']+=1;return None,'page reading gave no answer'
-        why=grounded(data,view,page)
+        why=grounded(data,view,page,listing.get('url',''))
         currency=str(data.get('currency') or '').upper()
         old=listing.get('price')
         if not why and listing.get('verificationState')!='candidate' and isinstance(old,(int,float)) and old>0:
             # A model's reading never moves a tracked price far or changes its
             # currency on its own: that needs a confirming check.
-            if currency!=str(listing.get('currency') or '').upper() or abs(float(data['price'])-old)/old>0.30:why='price change needs confirmation'
+            if currency!=str(listing.get('currency') or '').upper() or abs(float(data['price'])-old)/old>MAX_LLM_MOVE:why='price change needs confirmation'
         if why:
             self.counts['rejected']+=1;self.counts['rejected: '+why]+=1;return None,'page reading rejected: '+why
-        p={'name':data.get('title') or '','description':'','image':page_images(page,listing['url']),
+        # The page's own heading (never model text) is the description the
+        # maker, horn-word and accessory rules read besides the title.
+        p={'name':data.get('title') or '','description':view.heading(),'image':page_images(page,listing['url']),
            'offers':{'price':data.get('price'),'priceCurrency':currency,'availability':LLM_AVAILABILITY[data['availability']]}}
         c=normalize_product(p,listing['url'],listing.get('source',''),profile)
         if not c:
             self.counts['rejected']+=1;self.counts['rejected: not a tracked-horn offer']+=1;return None,'page reading rejected: not a tracked-horn offer'
-        self.counts['accepted']+=1
         quoted=' '.join(str(data.get('price_text') or '').split())[:60]
+        if listing.get('verificationState')=='candidate':
+            # A queued lead is never verified by a model's reading alone; the
+            # reading is kept as a hint on its check (counts only are logged).
+            self.counts['lead hints']+=1
+            return None,f'page reading hint (unverified): "{quoted}" {currency}, {data["availability"].replace("_"," ")}'
+        self.counts['accepted']+=1
         c['evidence']='LLM page reading, grounded in the fetched page'+(f' (price text "{quoted}")' if quoted else ' (price unpublished)')+' / '+data['availability']
         return c,'accepted'
     def summary(self):
@@ -2437,6 +2532,7 @@ class PageLLM:
         c=self.counts
         reasons=', '.join(f'{n} {k[10:]}' for k,n in sorted(c.items()) if k.startswith('rejected: '))
         return (f"Page reading (LLM): {c['calls']} pages read, {c['accepted']} grounded offers accepted, {c['rejected']} rejected"
+                +(f", {c['lead hints']} lead hints (never verified)" if c['lead hints'] else '')
                 +(f' ({reasons})' if reasons else '')+(f", {c['failed']} failed" if c['failed'] else '')+(f", {c['over budget']} skipped (per-run cap of {self.limit} pages or {self.seconds//60} minutes)" if c['over budget'] else ''))
 
 

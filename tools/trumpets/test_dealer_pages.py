@@ -255,11 +255,12 @@ class RetitledListingTests(unittest.TestCase):
 
 # ---- LLM page reading ------------------------------------------------------------
 LLM_URL = 'https://horns.fixtures.invalid/taylor-fixture-chicago'
+NOT_ASKING = 'not the asking price (shipping, deposit, instalment, old or pre-tax price)'
 LLM_PAGE = ('<html><head><title>Fixture Horns: Taylor Fixture Chicago Bb Trumpet</title>'
             '<link rel="canonical" href="https://horns.fixtures.invalid/taylor-fixture-chicago">'
             '<script>window.shop={"currency":"CAD","alt":{"currency_code":"EUR"}}</script></head><body>'
             '<nav>Trumpets from $999</nav><main><h1>Taylor Fixture Chicago Bb Trumpet</h1>'
-            '<p class="price"><del>$4,900.00</del> Asking price: $4,350.00 USD</p>'
+            '<p><del>$4,900.00</del> <span class="price">Asking price: $4,350.00 USD</span></p>'
             '<p>Raw brass, fictional fixture. Status: available, ships from Fixtureville.</p>'
             '<p>International shipping $145. Reserve it with a $500 deposit. Finance from $199/mo with Fixture Pay.</p>'
             '<p><span class="sr-only">Regular price $5,100.00</span>We accept CAD and EUR.</p>'
@@ -287,9 +288,10 @@ def reading(**kw):
     return dict(base, **kw)
 
 
-def simple_page(price_html, head='', canonical=LLM_URL, title='Taylor Fixture Chicago Bb Trumpet'):
+def simple_page(price_html, head='', canonical=LLM_URL, title='Taylor Fixture Chicago Bb Trumpet', extra='', html_attrs=''):
     link = f'<link rel="canonical" href="{canonical}">' if canonical else ''
-    return f'<html><head><title>{title}</title>{link}{head}</head><body><main><h1>{title}</h1><p>{price_html}</p><p>Available now.</p></main></body></html>'
+    return (f'<html{html_attrs}><head><title>{title}</title>{link}{head}</head><body><main><h1>{title}</h1>'
+            f'<p>{price_html}</p>{extra}<p>Available now.</p></main></body></html>')
 
 
 class PageLLMTests(unittest.TestCase):
@@ -304,22 +306,26 @@ class PageLLMTests(unittest.TestCase):
                                    title='Taylor Fixture Chicago Bb Trumpet', model='Chicago', searchScore=77, tags=['raw brass'],
                                    searchRationale='Owner favourite'), **kw})
 
-    def check(self, page, *readings, limit=80, listing=None, url=None):
+    def check(self, page, *readings, limit=80, listing=None):
         fake = FakeResponses(*readings)
         llm = runner.PageLLM('test-only', limit=limit, model='fixture-model', post=fake, sleep=lambda _: None)
         found = {}
-        target = listing or self.lead()
-        if url: target = dict(target, url=url)
-        result = runner.recheck(target, lambda _: page, PROFILE, found=found, page_llm=llm)
+        result = runner.recheck(listing or self.tracked(), lambda _: page, PROFILE, found=found, page_llm=llm)
         return result, found, llm, fake
+
+    def accepted(self, page, data, listing=None):
+        result, found, _, _ = self.check(page, data, listing=listing)
+        self.assertIsNotNone(result, found.get('llm'))
+        self.assertEqual(result['verifiedVia'], 'page-llm')
+        return result
 
     def rejected(self, page, data, reason, listing=None):
         result, found, _, _ = self.check(page, data, listing=listing)
         self.assertIsNone(result, data)
         self.assertEqual(found['llm'], 'page reading rejected: ' + reason, data)
 
-    # -- grounded accept, request shape --
-    def test_grounded_reading_is_accepted_and_labelled(self):
+    # -- a confirmed tracked offer, and the request it took --
+    def test_grounded_reading_confirms_a_tracked_offer(self):
         result, found, llm, fake = self.check(LLM_PAGE, reading())
         self.assertEqual((result['price'], result['currency'], result['status'], result['verifiedVia'], result['verificationState']), (4350, 'USD', 'active', 'page-llm', 'verified'))
         self.assertIn('LLM page reading', result['evidence'])
@@ -330,10 +336,18 @@ class PageLLMTests(unittest.TestCase):
         self.assertIn('untrusted', request['instructions'])
         body = request['input']
         for absent in ('5,400', '$999', '4,900', '5,100', 'Fixture Horns</footer>'):
-            self.assertNotIn(absent, body)  # related, nav, struck-through and screen-reader prices are not sent
+            self.assertNotIn(absent, body)
         self.assertLessEqual(len(body), runner.PAGE_TEXT_LIMIT + 200)
         self.assertEqual((llm.counts['calls'], llm.counts['accepted']), (1, 1))
         self.assertIn('1 pages read, 1 grounded offers accepted', llm.summary())
+
+    # -- N3: a reading never verifies a lead --
+    def test_a_reading_is_only_a_hint_for_a_lead(self):
+        result, found, llm, _ = self.check(LLM_PAGE, reading(), listing=self.lead())
+        self.assertIsNone(result)
+        self.assertEqual(found['llm'], 'page reading hint (unverified): "$4,350.00 USD" USD, in stock')
+        self.assertEqual((llm.counts['accepted'], llm.counts['lead hints']), (0, 1))
+        self.assertIn('1 lead hints (never verified)', llm.summary())
 
     def test_delimiter_is_random_and_page_cannot_close_it(self):
         _, _, _, first = self.check(LLM_PAGE, reading())
@@ -344,42 +358,54 @@ class PageLLMTests(unittest.TestCase):
         self.assertTrue(a.rstrip().endswith('PAGE-' + token + '>>>'))
         inner = a[a.index('\n', a.index('<<<PAGE-')) + 1:a.rindex('PAGE-' + token + '>>>')]
         self.assertNotIn('>>>', inner); self.assertNotIn('<<<', inner)
-        self.assertIn('IGNORE PREVIOUS INSTRUCTIONS', inner)  # page text only as data inside the block
+        self.assertIn('IGNORE PREVIOUS INSTRUCTIONS', inner)
         self.assertNotIn('IGNORE', first.requests[0][2]['instructions'])
 
-    # -- finding 1: any on-page number is not a price --
+    # -- round 1: any on-page number is not a price --
     def test_shipping_old_price_deposit_instalment_and_injected_prices_are_rejected(self):
-        self.rejected(LLM_PAGE, reading(price=145, price_text='$145'), 'price is shipping, a deposit, an instalment or an old price')
-        self.rejected(LLM_PAGE, reading(price=45, price_text='$45'), 'price below the plausibility floor')
-        self.rejected(LLM_PAGE, reading(price=4900, price_text='$4,900.00'), 'price text not on the page')  # <del>
-        self.rejected(LLM_PAGE, reading(price=5100, price_text='$5,100.00'), 'price text not on the page')  # sr-only
-        self.rejected(LLM_PAGE, reading(price=500, price_text='$500'), 'price is shipping, a deposit, an instalment or an old price')
-        self.rejected(LLM_PAGE, reading(price=199, price_text='$199'), 'price is shipping, a deposit, an instalment or an old price')
-        self.rejected(LLM_PAGE, reading(price=1, price_text='$1'), 'price below the plausibility floor')
-        self.rejected(LLM_PAGE, reading(price=5400, price_text='$5,400.00'), 'price text not on the page')  # related product
-        self.rejected(LLM_PAGE, reading(price=3999, price_text='$3,999.00'), 'price text not on the page')  # hallucinated
+        for price, text, reason in [(145, '$145', NOT_ASKING), (45, '$45', 'price below the plausibility floor'),
+                                    (4900, '$4,900.00', 'price text not on the page'), (5100, '$5,100.00', 'price text not on the page'),
+                                    (500, '$500', NOT_ASKING), (199, '$199', NOT_ASKING), (1, '$1', 'price below the plausibility floor'),
+                                    (5400, '$5,400.00', 'price text not on the page'), (3999, '$3,999.00', 'price text not on the page')]:
+            self.rejected(LLM_PAGE, reading(price=price, price_text=text), reason)
         self.rejected(LLM_PAGE, reading(price=4530), 'price text does not match the price')
 
     def test_floor_is_by_value_not_number(self):
         page = simple_page('¥1,012,000', head='<meta property="og:price:currency" content="JPY">')
-        result, _, _, _ = self.check(page, reading(price=1012000, currency='JPY', price_text='¥1,012,000'))
-        self.assertEqual(result['price'], 1012000)  # about 6,900 USD: above the floor
+        result = self.accepted(page, reading(price=1012000, currency='JPY', price_text='¥1,012,000'), listing=self.tracked(price=1000000.0, currency='JPY'))
+        self.assertEqual(result['price'], 1012000)
         page = simple_page('¥9,800', head='<meta property="og:price:currency" content="JPY">')
-        self.rejected(page, reading(price=9800, currency='JPY', price_text='¥9,800'), 'price below the plausibility floor')
+        self.rejected(page, reading(price=9800, currency='JPY', price_text='¥9,800'), 'price below the plausibility floor', listing=self.tracked(price=9800.0, currency='JPY'))
 
-    def test_the_price_must_be_the_main_offer(self):
-        page = simple_page('$4,350.00 USD</p><p>Fictional description. I paid $6,000.00 USD for it new in 2019.')
-        result, _, _, _ = self.check(page, reading())
-        self.assertEqual(result['price'], 4350)  # nearest the heading
-        self.rejected(page, reading(price=6000, price_text='$6,000.00 USD'), 'price is not the main offer')
+    # -- N1: never choose between competing prices --
+    def test_a_competing_price_is_ambiguous_unless_the_price_element_settles_it(self):
+        under_h1 = ('<div class="card"><a href="/phat-boy">Taylor Fixture Phat Boy trumpet $5,400.00 USD</a></div>'
+                    '<p><span class="product-price">$4,350.00 USD</span></p>')
+        page = simple_page('Fictional description.', extra=under_h1)
+        self.rejected(page, reading(price=5400, price_text='$5,400.00 USD', title='Taylor Fixture Chicago Bb Trumpet'), 'ambiguous price', listing=self.tracked(price=5000.0))
+        self.accepted(page, reading())  # in the product's current-price element; no other price element disagrees
+        unlabelled = simple_page('Fictional description.', extra='<div>Taylor Fixture Phat Boy trumpet $5,400.00 USD</div><p>$4,350.00 USD</p>')
+        self.rejected(unlabelled, reading(), 'ambiguous price')  # nearest the heading no longer decides
+        two_labels = simple_page('<span class="price">$4,350.00 USD</span>', extra='<p><span class="price">$5,400.00 USD</span></p>')
+        self.rejected(two_labels, reading(), 'ambiguous price')
+        paid = simple_page('$4,350.00 USD', extra='<p>Fictional description. I paid $6,000.00 USD for it new in 2019.</p>')
+        self.rejected(paid, reading(), 'ambiguous price')
 
-    def test_tracked_price_moves_need_confirmation(self):
-        listing = self.tracked(price=3000.0)  # 4,350 is 45% above it
-        self.rejected(LLM_PAGE, reading(), 'price change needs confirmation', listing=listing)
-        listing = self.tracked(currency='EUR')
-        self.rejected(LLM_PAGE, reading(), 'price change needs confirmation', listing=listing)
-        result, _, _, _ = self.check(LLM_PAGE, reading(), listing=self.tracked(price=4000.0))
-        self.assertEqual(result['price'], 4350)  # within 30%
+    # -- N2: compare-at prices, and a 20% move rule --
+    def test_compare_at_prices_are_not_page_text_and_moves_are_capped_at_20_percent(self):
+        for strike in ('<span class="price--compare">$4,900.00 USD</span>', '<span class="was-price">$4,900.00 USD</span>',
+                       '<span class="price-old">$4,900.00 USD</span>', '<span class="price__regular">$4,900.00 USD</span>',
+                       '<span class="list-price">$4,900.00 USD</span>', '<span class="rrp">$4,900.00 USD</span>',
+                       '<span style="text-decoration: line-through">$4,900.00 USD</span>', '<span class="line-through">$4,900.00 USD</span>'):
+            page = simple_page(strike + ' <span class="price">$4,350.00 USD</span>')
+            self.assertNotIn('4,900', runner.page_text(page), strike)
+            self.accepted(page, reading())
+        # Layout classes that merely contain those words keep their text.
+        self.assertIn('Spec sheet', runner.page_text(simple_page('<ul class="list-unstyled"><li>Spec sheet</li></ul>')))
+        self.assertIn('Bold', runner.page_text(simple_page('<span class="fw-regular">Bold</span>')))
+        self.rejected(LLM_PAGE, reading(), 'price change needs confirmation', listing=self.tracked(price=3600.0))  # +20.8%
+        self.accepted(LLM_PAGE, reading(), listing=self.tracked(price=3700.0))  # +17.6%
+        self.rejected(LLM_PAGE, reading(), 'price change needs confirmation', listing=self.tracked(currency='EUR'))
 
     def test_daily_records_the_reason_as_a_check_failure(self):
         listing = dict(self.tracked(price=3000.0), acquired=False, feedback={'interestState': 'watch'})
@@ -397,54 +423,77 @@ class PageLLMTests(unittest.TestCase):
                 patch.object(runner, 'reverb_search', return_value=[]), patch.object(runner, 'fetch', return_value=LLM_PAGE), \
                 patch.object(runner.PageLLM, 'from_env', classmethod(lambda cls: cls('test-only', post=fake, sleep=lambda _: None))), patch('builtins.print'):
             runner.daily(client)
-        reason = client.report['checkFailures'][0]['reason']
-        self.assertIn('page reading rejected: price change needs confirmation', reason)
+        self.assertIn('page reading rejected: price change needs confirmation', client.report['checkFailures'][0]['reason'])
         self.assertIn('Page reading (LLM): 1 pages read, 0 grounded offers accepted, 1 rejected (1 price change needs confirmation)', client.report['error'])
 
-    # -- finding 2: digit and separator boundaries --
+    # -- N4: lines and paragraphs are kept --
+    def test_neighbouring_paragraphs_do_not_disqualify_the_price(self):
+        for extra in ('<p>Free shipping</p>', '<div class="affirm">Pay over time with Affirm financing.</div>', '<p>Ships from Japan.</p>',
+                      '<p>This horn was played by a pro.</p>', '<span class="badge">Save 10%</span>'):
+            self.accepted(simple_page('<span class="price">$4,350.00 USD</span>', extra=extra), reading())
+            self.accepted(simple_page('$4,350.00 USD', extra=extra), reading())
+
+    # -- N5: the words right before (or after) an amount --
+    def test_was_now_regular_sale_and_other_price_wording(self):
+        tracked = self.tracked(price=4300.0)
+        for line in ('Was $5,000 Now $4,200', 'Regular price $5,000.00 USD Sale price $4,200.00 USD'):
+            page = simple_page(line, head='<meta property="og:price:currency" content="USD">')
+            text = '$4,200.00 USD' if 'USD' in line else '$4,200'
+            self.assertEqual(self.accepted(page, reading(price=4200, price_text=text), listing=tracked)['price'], 4200)
+            self.rejected(page, reading(price=5000, price_text=text.replace('4,200', '5,000')), NOT_ASKING, listing=self.tracked(price=5000.0))
+        self.accepted(simple_page('$4,350.00 USD, ships from Chicago'), reading())
+        self.rejected(simple_page('From $4,350.00 USD'), reading(), NOT_ASKING)
+        euro = simple_page('Preis: 4.990,- €')
+        self.assertEqual(self.accepted(euro, reading(price=4990, currency='EUR', price_text='4.990,- €'), listing=self.tracked(price=5000.0, currency='EUR'))['price'], 4990)
+        yen = self.tracked(url='https://shop.fixtures.jp/taylor-fixture-chicago', price=480000.0, currency='JPY')
+        jp = simple_page('¥498,000', canonical='https://shop.fixtures.jp/taylor-fixture-chicago')
+        self.accepted(jp, reading(price=498000, currency='JPY', price_text='¥498,000'), listing=yen)
+        ja = simple_page('¥498,000', html_attrs=' lang="ja"')
+        self.accepted(ja, reading(price=498000, currency='JPY', price_text='¥498,000'), listing=self.tracked(price=480000.0, currency='JPY'))
+        plain = simple_page('¥498,000')
+        self.rejected(plain, reading(price=498000, currency='JPY', price_text='¥498,000'), 'currency not stated on the page', listing=self.tracked(price=480000.0, currency='JPY'))
+        tax = simple_page('¥450,000（税抜） ¥495,000（税込）', canonical='https://shop.fixtures.jp/taylor-fixture-chicago')
+        self.accepted(tax, reading(price=495000, currency='JPY', price_text='¥495,000'), listing=yen)
+        self.rejected(tax, reading(price=450000, currency='JPY', price_text='¥450,000'), NOT_ASKING, listing=dict(yen, price=450000.0))
+
+    def test_tracked_price_moves_need_confirmation(self):
+        self.rejected(LLM_PAGE, reading(), 'price change needs confirmation', listing=self.tracked(price=3000.0))
+        self.assertEqual(self.accepted(LLM_PAGE, reading(), listing=self.tracked(price=4000.0))['price'], 4350)
+
+    # -- round 1: digit and separator boundaries --
     def test_price_text_inside_a_longer_number_is_not_on_the_page(self):
         page = simple_page('Preis: 14.990 EUR')
-        self.rejected(page, reading(price=4990, currency='EUR', price_text='4.990'), 'price text not on the page')
-        result, _, _, _ = self.check(page, reading(price=14990, currency='EUR', price_text='14.990 EUR'))
-        self.assertEqual(result['price'], 14990)
+        euro = self.tracked(price=15000.0, currency='EUR')
+        self.rejected(page, reading(price=4990, currency='EUR', price_text='4.990'), 'price text not on the page', listing=dict(euro, price=5000.0))
+        self.assertEqual(self.accepted(page, reading(price=14990, currency='EUR', price_text='14.990 EUR'), listing=euro)['price'], 14990)
 
-    # -- finding 3: currency --
+    # -- round 1: currency --
     def test_currency_comes_from_the_amount_or_one_authoritative_declaration(self):
-        # "$" alone: the page says "we accept CAD" and a script has currency fields: neither states it.
         dollars = LLM_PAGE.replace('$4,350.00 USD', '$4,350.00')
         self.rejected(dollars, reading(price_text='$4,350.00'), 'currency not stated on the page')
-        self.rejected(dollars, reading(price_text='$4,350.00', currency='CAD'), 'currency not stated on the page')
+        self.rejected(dollars, reading(price_text='$4,350.00', currency='CAD'), 'currency not stated on the page', listing=self.tracked(currency='CAD'))
         declared = dollars.replace('<head>', '<head><meta property="og:price:currency" content="USD">')
-        result, _, _, _ = self.check(declared, reading(price_text='$4,350.00'))
-        self.assertEqual(result['currency'], 'USD')
-        self.rejected(declared, reading(price_text='$4,350.00', currency='CAD'), 'currency not stated on the page')
-        # The amount's own code wins over anything else.
-        self.rejected(LLM_PAGE, reading(currency='EUR'), 'currency differs from the page')
-        # ¥ on a CNY page is not JPY; kr needs a declaration.
+        self.assertEqual(self.accepted(declared, reading(price_text='$4,350.00'))['currency'], 'USD')
+        self.rejected(declared, reading(price_text='$4,350.00', currency='CAD'), 'currency not stated on the page', listing=self.tracked(currency='CAD'))
+        self.rejected(LLM_PAGE, reading(currency='EUR'), 'currency differs from the page', listing=self.tracked(currency='EUR'))
         yuan = simple_page('¥128,000', head='<meta property="og:price:currency" content="CNY">')
-        self.rejected(yuan, reading(price=128000, currency='JPY', price_text='¥128,000'), 'currency not stated on the page')
-        self.assertEqual(self.check(yuan, reading(price=128000, currency='CNY', price_text='¥128,000'))[0]['currency'], 'CNY')
-        kroner = simple_page('kr 45 000')
-        self.rejected(kroner, reading(price=45000, currency='NOK', price_text='kr 45 000'), 'currency not stated on the page')
+        self.rejected(yuan, reading(price=128000, currency='JPY', price_text='¥128,000'), 'currency not stated on the page', listing=self.tracked(price=128000.0, currency='JPY'))
+        self.assertEqual(self.accepted(yuan, reading(price=128000, currency='CNY', price_text='¥128,000'), listing=self.tracked(price=128000.0, currency='CNY'))['currency'], 'CNY')
+        nok = self.tracked(price=45000.0, currency='NOK')
+        self.rejected(simple_page('kr 45 000'), reading(price=45000, currency='NOK', price_text='kr 45 000'), 'currency not stated on the page', listing=nok)
         kroner = simple_page('kr 45 000', head='<meta property="product:price:currency" content="NOK">')
-        self.assertEqual(self.check(kroner, reading(price=45000, currency='NOK', price_text='kr 45 000'))[0]['currency'], 'NOK')
-        # Two declared currencies are no declaration.
+        self.assertEqual(self.accepted(kroner, reading(price=45000, currency='NOK', price_text='kr 45 000'), listing=nok)['currency'], 'NOK')
         both = simple_page('$4,350.00', head='<meta property="og:price:currency" content="USD">'
                            + ld(dict(BASE, name='Taylor Fixture Chicago Bb Trumpet', offers={'priceCurrency': 'CAD'})))
         self.rejected(both, reading(price_text='$4,350.00'), 'currency not stated on the page')
 
-    # -- finding 6: identity, redirects, title --
-    def test_a_page_that_names_no_url_does_not_bind_a_reading(self):
+    # -- round 1: identity, redirects --
+    def test_a_page_that_names_no_url_does_not_bind_a_retitled_reading(self):
         page = simple_page('$4,350.00 USD', canonical='')
-        result, found, _, _ = self.check(page, reading())
-        self.assertIsNone(result)
-        self.assertEqual(found['llm'], 'page reading rejected: page does not say it is this listing')
-        tracked = self.tracked(title='Taylor Chicago (old title)')
-        result, found, _, _ = self.check(page, reading(), listing=tracked)
+        result, found, _, _ = self.check(page, reading(), listing=self.tracked(title='Taylor Chicago (old title)'))
         self.assertIsNone(result)
         self.assertEqual(found['llm'], 'page reading rejected: not confirmed as the tracked horn')
-        other = simple_page('$4,350.00 USD', canonical='https://horns.fixtures.invalid/another-horn')
-        self.assertIsNone(self.check(other, reading())[0])
+        self.accepted(page, reading())  # the same title on the listing's own URL still confirms
 
     def test_a_redirected_listing_url_is_not_verified(self):
         page = runner.FetchedPage(LLM_PAGE, 'https://horns.fixtures.invalid/collections/trumpets')
@@ -454,16 +503,20 @@ class PageLLMTests(unittest.TestCase):
         self.assertEqual(fake.requests, [])
         same = runner.FetchedPage(LLM_PAGE, 'https://www.horns.fixtures.invalid/taylor-fixture-chicago/')
         self.assertEqual(self.check(same, reading())[0]['price'], 4350)
-        # Deterministic leads too.
         product = ld(dict(BASE, offers={'price': '2400', 'priceCurrency': 'USD', 'availability': 'InStock'}))
         self.assertIsNone(runner.recheck(self.lead(), lambda _: runner.FetchedPage(product, 'https://horns.fixtures.invalid/'), PROFILE))
         elsewhere = product + '<link rel="canonical" href="https://horns.fixtures.invalid/another-horn">'
         self.assertIsNone(runner.recheck(self.lead(), lambda _: elsewhere, PROFILE))
 
+    # -- N8: the model's title, on word boundaries --
     def test_the_models_title_must_be_on_the_page(self):
         self.rejected(LLM_PAGE, reading(title='Taylor Fixture Chicago 46 Bb Trumpet'), 'title not on the page')
+        self.rejected(LLM_PAGE, reading(title='Chicag'), 'title not on the page')  # a raw substring is not enough
+        self.rejected(LLM_PAGE, reading(title='Taylor Chicago'), 'title not on the page')  # two words
+        self.accepted(LLM_PAGE, reading(title='Fixture Chicago Bb'))
+        self.accepted(LLM_PAGE, reading(title='Taylor Chicago Bb trumpet (fixture)'))
 
-    # -- finding 7: no reading on pages the extractors found ambiguous or excluded --
+    # -- round 1: no reading on ambiguous or excluded pages --
     def test_no_reading_on_ambiguous_or_excluded_pages(self):
         two = LLM_PAGE + ld(dict(BASE, name='Taylor Fixture Chicago Bb Trumpet'), dict(BASE, name='Harrelson Fixture Summit trumpet', brand={'name': 'Harrelson'}))
         accessory = LLM_PAGE + ld(dict(BASE, name='Taylor Fixture Chicago trumpet mouthpiece'))
@@ -476,40 +529,36 @@ class PageLLMTests(unittest.TestCase):
             self.assertIsNone(result); self.assertEqual(fake.requests, [])
             self.assertEqual(found['llm'], 'page reading skipped: ' + why)
 
-    # -- finding 8: the tracked listing keeps its score, tags and rationale --
     def test_a_reading_keeps_the_tracked_score_tags_and_rationale(self):
-        result, _, _, _ = self.check(LLM_PAGE, reading(), listing=self.tracked())
-        self.assertEqual((result['price'], result['verifiedVia']), (4350, 'page-llm'))
+        result = self.accepted(LLM_PAGE, reading())
         self.assertEqual((result['searchScore'], result['tags'], result['searchRationale']), (77, ['raw brass'], 'Owner favourite'))
 
     def test_unknown_availability_keeps_the_listing_and_never_marks_sold(self):
-        result, found, _, _ = self.check(LLM_PAGE, reading(availability='unknown'), listing=self.tracked())
+        result, found, _, _ = self.check(LLM_PAGE, reading(availability='unknown'))
         self.assertIsNone(result)
         self.assertIn('availability unknown', found['llm'])
 
-    # -- budget, deadline, env --
     def test_budget_cap_and_deterministic_pages_cost_nothing(self):
         result, found, llm, fake = self.check(LLM_PAGE, limit=0)
         self.assertIsNone(result)
         self.assertEqual(fake.requests, [])
         self.assertEqual(found['llm'], 'page-reading budget reached')
         product = dict(BASE, offers={'price': '2400', 'priceCurrency': 'USD', 'availability': 'InStock'})
-        result, _, llm, fake = self.check(ld(product))
+        result, _, llm, fake = self.check(ld(product), listing=self.lead())
         self.assertEqual((result['verifiedVia'], fake.requests), ('direct', []))
 
     def test_time_budget_includes_retries(self):
         now = [0.0]
         fake = FakeResponses(reading(), reading(), on_call=lambda: now.__setitem__(0, now[0] + 500))
         llm = runner.PageLLM('test-only', limit=80, post=fake, sleep=lambda _: None, seconds=400, clock=lambda: now[0])
-        self.assertIsNotNone(llm.offer(LLM_PAGE, self.lead(), PROFILE)[0])
-        self.assertEqual(llm.offer(LLM_PAGE, self.lead(), PROFILE), (None, 'page-reading budget reached'))
+        self.assertIsNotNone(llm.offer(LLM_PAGE, self.tracked(), PROFILE)[0])
+        self.assertEqual(llm.offer(LLM_PAGE, self.tracked(), PROFILE), (None, 'page-reading budget reached'))
         self.assertEqual(len(fake.requests), 1)
-        # A retry wait that would run past the budget is not taken.
         now[0] = 0.0; waits = []
         busy = urllib.error.HTTPError(runner.OPENAI_RESPONSES, 503, 'busy', {'Retry-After': '20'}, None)
         fake = FakeResponses(busy, reading(), on_call=lambda: now.__setitem__(0, now[0] + 5))
         llm = runner.PageLLM('test-only', post=fake, sleep=waits.append, seconds=10, clock=lambda: now[0])
-        self.assertEqual(llm.offer(LLM_PAGE, self.lead(), PROFILE), (None, 'page reading failed (HTTPError)'))
+        self.assertEqual(llm.offer(LLM_PAGE, self.tracked(), PROFILE), (None, 'page reading failed (HTTPError)'))
         self.assertEqual((waits, len(fake.requests)), ([], 1))
 
     def test_from_env(self):
@@ -536,6 +585,31 @@ class PageLLMTests(unittest.TestCase):
         with patch('builtins.print'):
             runner.post_run(Client(), {'externalId': 'x', 'listings': [{'id': 'a', 'verifiedVia': 'page-llm'}, {'id': 'b', 'verifiedVia': 'api'}]})
         self.assertEqual([l['verifiedVia'] for l in calls[1]['listings']], ['direct', 'api'])
+
+
+# ---- N7: item URLs with an identifying query or a different path ----------------
+class ItemUrlTests(unittest.TestCase):
+    def test_query_and_whole_path_identify_the_item(self):
+        oc = 'https://shop.test/index.php?route=product/product&product_id=42'
+        self.assertTrue(runner.same_item_url(oc, oc + '&utm_source=x'))
+        self.assertFalse(runner.same_item_url(oc, oc.replace('42', '43')))
+        self.assertFalse(runner.same_item_url('https://shop.test/item.php?id=1', 'https://shop.test/item.php?id=2'))
+        self.assertFalse(runner.same_item_url('https://shop.test/item.php?id=1', 'https://shop.test/item.php'))
+        self.assertFalse(runner.same_item_url('https://shop.test/trumpets/fixture-1', 'https://shop.test/cornets/fixture-1'))
+        self.assertTrue(runner.same_item_url('https://shop.test/collections/trumpets/products/fixture', 'https://www.shop.test/products/fixture/'))
+        self.assertTrue(runner.same_item_url('https://shop.test/products/fixture?variant=1', 'https://shop.test/products/fixture'))
+
+    def test_a_redirect_to_another_item_id_is_not_verified(self):
+        url = 'https://shop.test/item.php?id=1'
+        product = ld(dict(BASE, offers={'price': '2400', 'priceCurrency': 'USD', 'availability': 'InStock'}))
+        lead = {'id': 'lead', 'url': url, 'title': 'Taylor', 'source': 'Dealer', 'verificationState': 'candidate', 'status': 'stale', 'maker': 'Taylor', 'model': '?', 'currency': 'USD', 'price': None}
+        found = {}
+        self.assertIsNone(runner.recheck(lead, lambda _: runner.FetchedPage(product, 'https://shop.test/item.php?id=2'), PROFILE, found=found))
+        self.assertEqual(found['llm'], 'listing URL redirected to another page')
+        self.assertEqual(runner.recheck(lead, lambda _: runner.FetchedPage(product, url), PROFILE)['price'], 2400)
+        # A canonical link to a different item id is "elsewhere".
+        other = product + '<link rel="canonical" href="https://shop.test/item.php?id=2">'
+        self.assertIsNone(runner.recheck(lead, lambda _: other, PROFILE))
 
 
 class FakeBody:
@@ -743,6 +817,8 @@ class ReviewFindingTests(unittest.TestCase):
         self.assertEqual(runner.discovery_skip('https://shop.test/trumpets?page=12'), 'pagination')
         self.assertEqual(runner.discovery_skip('https://shop.test/catalog/'), 'category or search page')
         self.assertEqual(runner.identify_maker('【中古】シルキー トランペット'), 'Schilke')
+        self.assertIsNone(runner.discovery_skip('https://shop.test/view/900002', 'Stradivarius 180S37 | Dealer'))  # a Bach model line
+        self.assertEqual(runner.discovery_skip('https://shop.test/view/900003', 'Stradivarius violin 4/4 | Dealer'), 'not about trumpets')
         self.assertIsNone(runner.identify_maker('バックボア 24'))  # a backbore, not Bach
 
     # LOW: a shop naming itself as the brand does not hide the maker
