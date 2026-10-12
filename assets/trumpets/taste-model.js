@@ -78,6 +78,21 @@
   function nextPairs(pairs, done) {
     return (pairs || []).filter((p) => !done.has(pairKey(p)));
   }
+  // After an undo: the undone card (or pair) goes first, wherever the server
+  // listed it. The server's order among equally ranked horns (for example all
+  // horns found in one run share a first-seen time) is not a promise, so
+  // "back in front" cannot rely on it. Keeps the server's item when present.
+  function cardToFront(queue, listingId) {
+    const list = queue || [];
+    const item = list.find((q) => q.listingId === listingId) || { listingId, reason: "new", taste: 50, sd: 1 };
+    return [item, ...list.filter((q) => q.listingId !== listingId)];
+  }
+  function pairToFront(pairs, key) {
+    const list = pairs || [];
+    const [a, b] = key.split("|");
+    const item = list.find((p) => pairKey(p) === key) || { a, b, p: 0.5, sd: 1 };
+    return [item, ...list.filter((p) => pairKey(p) !== key)];
+  }
   const kindLabels = {
     maker: "maker",
     family: "model",
@@ -147,5 +162,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });

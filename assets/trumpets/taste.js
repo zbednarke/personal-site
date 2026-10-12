@@ -13,6 +13,10 @@
   const doneCards = new Set(),
     donePairs = new Set(),
     undoStack = [];
+  // The card (or pair) an undo brought back stays in front until it gets a
+  // new reaction, whatever order later server responses list the queue in.
+  let frontCard = null,
+    frontPair = null;
   const tagState = new Map(); // listingId -> Set of chips (optimistic)
 
   function el(tag, className, text) {
@@ -72,6 +76,8 @@
   }
   function accept(next) {
     data = next;
+    if (frontCard && data.queue?.some((q) => q.listingId === frontCard)) data.queue = T.cardToFront(data.queue, frontCard);
+    if (frontPair && data.pairs?.some((p) => T.pairKey(p) === frontPair)) data.pairs = T.pairToFront(data.pairs, frontPair);
     for (const [id, chips] of Object.entries(next.tags || {})) tagState.set(id, new Set(chips));
     render();
   }
@@ -318,13 +324,15 @@
       if (!q) return;
       body = { kind: "swipe", mode: "swipe", listingId: q.listingId, action: r.action, meta: { hadPhoto: photoShown($("#swipe-deck")) } };
       doneCards.add(q.listingId);
-      entry = { kind: "swipe", listingId: q.listingId };
+      entry = { kind: "swipe", listingId: q.listingId, front: q.listingId === frontCard };
+      if (entry.front) frontCard = null;
     } else {
       const p = currentPair();
       if (!p) return;
       body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action, meta: { hadPhoto: photoShown($("#pair-cards")) } };
       donePairs.add(T.pairKey(p));
-      entry = { kind: "pair", key: T.pairKey(p) };
+      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair };
+      if (entry.front) frontPair = null;
     }
     $("#taste-note").value = "";
     entry.pending = post(body);
@@ -344,6 +352,9 @@
       hideUndoToast(entry);
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
+      // A failed reaction to a card an undo brought back leaves it in front.
+      if (entry.front && entry.kind === "swipe") data.queue = T.cardToFront(data.queue, (frontCard = entry.listingId));
+      if (entry.front && entry.kind === "pair") data.pairs = T.pairToFront(data.pairs, (frontPair = entry.key));
       status(e.message, true);
       render();
     }
@@ -358,13 +369,13 @@
       const out = await post({ kind: "undo", undoes: entry.eventId });
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
+      // Put the undone card or pair back in front, even when the server's
+      // queue lists it further down (or not at all).
+      if (entry.kind === "swipe") frontCard = entry.listingId;
+      else frontPair = entry.key;
       accept(out);
-      // Put the undone card or pair back in front.
-      if (entry.kind === "swipe" && !data.queue.some((q) => q.listingId === entry.listingId)) data.queue.unshift({ listingId: entry.listingId, reason: "new", taste: 50, sd: 1 });
-      if (entry.kind === "pair") {
-        const [a, b] = entry.key.split("|");
-        if (!data.pairs.some((p) => T.pairKey(p) === entry.key)) data.pairs.unshift({ a, b, p: 0.5, sd: 1 });
-      }
+      if (entry.kind === "swipe") data.queue = T.cardToFront(data.queue, entry.listingId);
+      else data.pairs = T.pairToFront(data.pairs, entry.key);
       status("Undone.");
       render();
     } catch (e) {

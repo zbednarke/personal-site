@@ -99,6 +99,13 @@ function syntheticPng(width, height) {
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1450 },
     });
+    // TRUMPETS_CPU_THROTTLE=4 slows the page's CPU like a busy CI runner
+    // (for reproducing timing-dependent failures locally).
+    const throttle = async (p) => {
+      const rate = Number(process.env.TRUMPETS_CPU_THROTTLE || 1);
+      if (rate > 1) await (await p.context().newCDPSession(p)).send("Emulation.setCPUThrottlingRate", { rate });
+    };
+    await throttle(page);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     // Never request external photos in tests. The SVG is an instrument-study
@@ -738,6 +745,7 @@ function syntheticPng(width, height) {
     // Phones: touch screen, 16px fields, 44px targets, no overflow at 375/390/401.
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const mobile = await phone.newPage();
+    await throttle(mobile);
     mobile.on("pageerror", (e) => errors.push(e.message));
     await mobile.route("https://fixtures.invalid/horn.svg", (r) => r.fulfill({ contentType: "image/svg+xml", body: fs.readFileSync(path.join(root, "assets/trumpets/horn.svg")) }));
     await mobile.goto(base + "/trumpets/#taste");
@@ -830,8 +838,33 @@ function syntheticPng(width, height) {
     await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, partialId);
     assert.equal(tastePostCount, 1);
     assert.match(await mobile.locator("#taste-toast").innerText(), /Cool\./);
+    // The server's queue after an undo lists the horn again, but not
+    // necessarily first (horns found in one run share first_seen). Undo must
+    // still bring back the card that was just swiped, and keep it in front
+    // through later responses (a chip tap): here those responses list it last.
+    const lastInQueue = async (route) => {
+      if (route.request().method() !== "POST" || !["undo", "tag"].includes(JSON.parse(route.request().postData() || "{}").kind)) return route.continue();
+      const response = await route.fetch();
+      const body = await response.json();
+      const i = body.queue.findIndex((q) => q.listingId === partialId);
+      assert.ok(i >= 0, "the undone horn is back in the server's queue");
+      body.queue.push(...body.queue.splice(i, 1));
+      return route.fulfill({ response, json: body });
+    };
+    await mobile.route("**/taste/events", lastInQueue);
     await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), mobile.locator("#taste-toast").getByRole("button", { name: "Undo" }).tap()]);
-    await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, partialId);
+    await mobile.waitForFunction(() => document.querySelector("#taste-status").textContent === "Undone.");
+    assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "undo brings back the card just swiped, wherever the server lists it");
+    const chip = mobile.locator("#taste-chips .chip").first();
+    for (const pressed of ["true", "false"]) {
+      await chip.evaluate((c) => (c.dataset.before = "1"));
+      await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), chip.tap()]);
+      // The response re-renders the chips (and the card).
+      await mobile.waitForFunction(() => !document.querySelector("#taste-chips .chip")?.dataset.before);
+      assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "the card an undo brought back stays in front after a chip tap");
+      assert.equal(await chip.getAttribute("aria-pressed"), pressed);
+    }
+    await mobile.unroute("**/taste/events", lastInQueue);
     assert.equal(await mobile.locator("#taste-toast").count(), 0, "the toast closes on undo");
     // Review fixes: a reaction whose POST fails after it was already undone
     // must not remove another reaction from the undo stack, and must not hide
@@ -939,7 +972,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, chips, text and voice notes, head to head, photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front, chips, text and voice notes, head to head, photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

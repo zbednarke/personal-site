@@ -703,6 +703,10 @@ func (app *application) loadTrumpetsForTaste(ctx context.Context, user uuid.UUID
 	return app.loadTrumpetListings(ctx, user, false)
 }
 
+// Newest first. Listings stored by one run share first_seen (the
+// transaction's now()), so l.id breaks the tie: without it Postgres may return
+// them in a different order from one request to the next, and the taste queue (built in
+// this order) would reshuffle between reactions.
 func (app *application) loadTrumpetListings(ctx context.Context, user uuid.UUID, histories bool) ([]trumpetListing, error) {
 	rows, err := app.db.Query(ctx, `SELECT l.id::text,l.horn_id::text,h.maker,h.model,h.serial_number,h.details,l.title,l.description,
  COALESCE(l.canonical_url,''),l.source,COALESCE(l.source_listing_id,''),l.seller,l.location,l.price,l.currency,l.shipping,l.posted_at,
@@ -713,7 +717,7 @@ func (app *application) loadTrumpetListings(ctx context.Context, user uuid.UUID,
  (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL),
  l.check_failures,l.last_check_attempt,l.last_check_error,
  COALESCE((SELECT o.verified_via FROM trumpet_observations o WHERE o.listing_id=l.id ORDER BY o.checked_at DESC,o.id DESC LIMIT 1),'')
- FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 ORDER BY l.first_seen DESC`, user)
+ FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 ORDER BY l.first_seen DESC,l.id`, user)
 	if err != nil {
 		return nil, err
 	}

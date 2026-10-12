@@ -86,6 +86,27 @@ test("local answers leave the server queue and pairs", () => {
   assert.deepEqual(T.nextPairs(pairs, new Set([T.pairKey({ a: "a", b: "b" })])), [{ a: "a", b: "c" }]);
 });
 
+test("an undone card or pair goes back in front wherever the server lists it", () => {
+  const queue = [
+    { listingId: "x", reason: "new" },
+    { listingId: "y", reason: "new" },
+    { listingId: "undone", reason: "uncertain", taste: 61 },
+  ];
+  // Listed further down: moved to the front, keeping the server's item.
+  assert.deepEqual(T.cardToFront(queue, "undone"), [queue[2], queue[0], queue[1]]);
+  assert.equal(queue[0].listingId, "x", "the server's queue is not mutated");
+  // Already first: unchanged. Missing: added in front.
+  assert.deepEqual(T.cardToFront(queue, "x"), queue);
+  assert.deepEqual(T.cardToFront([{ listingId: "x" }], "gone").map((q) => q.listingId), ["gone", "x"]);
+  assert.deepEqual(T.cardToFront(undefined, "gone"), [{ listingId: "gone", reason: "new", taste: 50, sd: 1 }]);
+  const pairs = [
+    { a: "a", b: "c", p: 0.4 },
+    { a: "b", b: "a", p: 0.7 },
+  ];
+  assert.deepEqual(T.pairToFront(pairs, T.pairKey({ a: "a", b: "b" })), [pairs[1], pairs[0]]);
+  assert.deepEqual(T.pairToFront([], "a|b"), [{ a: "a", b: "b", p: 0.5, sd: 1 }]);
+});
+
 test("learned panel lists strongest liked and disliked traits", () => {
   const weights = [
     { feature: "finish:raw brass", kind: "finish", label: "Raw brass", weight: 0.9, sd: 0.4 },
