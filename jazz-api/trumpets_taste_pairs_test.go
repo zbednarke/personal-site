@@ -1,0 +1,263 @@
+package main
+
+import (
+	"fmt"
+	"math/rand"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Fictional fixtures only.
+func comparableHorns(now time.Time, prefix string, n int) []trumpetListing {
+	finishes := []string{"raw brass", "lacquer", "silver", "gold plate", "satin", "patina"}
+	out := []trumpetListing{}
+	for i := 0; i < n; i++ {
+		out = append(out, tasteListing(fmt.Sprintf("%s%02d", prefix, i), fmt.Sprintf("Maker%d", i%7), fmt.Sprintf("M%d", i), finishes[i%len(finishes)], float64(1500+50*i), comparable(now)))
+	}
+	return out
+}
+
+func pairEvent(id int64, a, b, action string, at time.Time) tasteEvent {
+	return tasteEvent{ID: id, Kind: "pair", ListingID: a, OtherListingID: b, Action: action, CreatedAt: at}
+}
+
+func TestTasteUnionFind(t *testing.T) {
+	u := newTasteUnionFind([]string{"a", "b", "c", "d", "e"})
+	if !u.union("a", "b") || !u.union("c", "d") || !u.union("b", "d") {
+		t.Fatal("unions of separate sets")
+	}
+	if u.union("a", "c") {
+		t.Fatal("a and c are already one set")
+	}
+	if u.find("a") != u.find("d") || u.find("e") == u.find("a") || u.size[u.find("a")] != 4 {
+		t.Fatalf("sets: %v %v", u.parent, u.size)
+	}
+}
+
+func TestTastePairGraphEdges(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 6)
+	// A second listing of horn h00 is the same node.
+	listings = append(listings, tasteListing("h00-relist", "Maker0", "M0", "raw brass", 1500, comparable(now), func(l *trumpetListing) { l.HornID = "horn-h00" }))
+	// And a weak listing is not a node at all.
+	listings = append(listings, tasteListing("weak", "Weak", "W", "lacquer", 1500))
+	undone := pairEvent(5, "h04", "h05", "a", now)
+	events := markUndone([]tasteEvent{
+		pairEvent(1, "h00-relist", "h01", "both", now), // both: an edge, through the horn
+		pairEvent(2, "h02", "h03", "neither", now),     // neither: an edge
+		pairEvent(3, "h01", "weak", "a", now),          // a weak side: no edge
+		pairEvent(4, "h03", "h04", "b", now),
+		undone,
+		{ID: 6, Kind: "undo", Undoes: &undone.ID, CreatedAt: now}, // undone: no edge
+	})
+	_, d := buildTasteModel(listings, events, now)
+	g := newTastePairGraph(d, events, now)
+	if len(g.nodes) != 6 {
+		t.Fatalf("nodes %v", g.nodes)
+	}
+	got := []string{}
+	for _, c := range g.components() {
+		got = append(got, strings.Join(c, ","))
+	}
+	want := "[horn-h02,horn-h03,horn-h04 horn-h00,horn-h01 horn-h05]"
+	if fmt.Sprint(got) != want {
+		t.Fatalf("components %v, want %s", got, want)
+	}
+	if s := g.stats(); s.Eligible != 6 || s.Components != 3 || s.Largest != 3 || s.Share != 0.5 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+func TestTastePairsBridgeIslandsFirst(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 10)
+	// A well-compared main group h00..h05, an island h06-h07, and two
+	// never-compared horns h08 and h09.
+	events := []tasteEvent{}
+	id := int64(1)
+	for _, p := range [][2]string{{"h00", "h01"}, {"h01", "h02"}, {"h02", "h03"}, {"h03", "h04"}, {"h04", "h05"}, {"h00", "h03"}, {"h06", "h07"}} {
+		events = append(events, pairEvent(id, p[0], p[1], "a", now.Add(-30*24*time.Hour)))
+		id++
+	}
+	m, d := buildTasteModel(listings, markUndone(events), now)
+	main := map[string]bool{"h00": true, "h01": true, "h02": true, "h03": true, "h04": true, "h05": true}
+	pairs := tastePairs(m, d, events, now)
+	if len(pairs) < 3 {
+		t.Fatalf("pairs %+v", pairs)
+	}
+	// Singletons first, then the island; every one of them against the main
+	// group.
+	firstThree := map[string]bool{}
+	for _, p := range pairs[:3] {
+		inMain, other := p.A, p.B
+		if !main[inMain] {
+			inMain, other = other, inMain
+		}
+		if !main[inMain] || main[other] {
+			t.Fatalf("pair %+v does not bridge the main group and an island (%+v)", p, pairs[:3])
+		}
+		firstThree[other] = true
+	}
+	if !firstThree["h08"] || !firstThree["h09"] || !(firstThree["h06"] || firstThree["h07"]) {
+		t.Fatalf("first pairs %+v", pairs[:3])
+	}
+	if !(pairs[0].A == "h08" || pairs[0].B == "h08" || pairs[0].A == "h09" || pairs[0].B == "h09") {
+		t.Fatalf("a singleton is bridged first: %+v", pairs[0])
+	}
+}
+
+func TestTastePairsStrengthenAConnectedGraph(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 8)
+	// A path h00 - h01 - ... - h07: connected, but long and thin.
+	events := []tasteEvent{}
+	for i := 0; i < 7; i++ {
+		events = append(events, pairEvent(int64(i+1), fmt.Sprintf("h%02d", i), fmt.Sprintf("h%02d", i+1), "a", now.Add(-30*24*time.Hour)))
+	}
+	// The page shows the first pair of each answer: answering it 20 times,
+	// about one top pair in five strengthens the graph.
+	structures := 0
+	for round := 0; round < 20; round++ {
+		m, d := buildTasteModel(listings, markUndone(events), now)
+		g := newTastePairGraph(d, events, now)
+		if len(g.components()) != 1 {
+			t.Fatal("the path should stay connected")
+		}
+		pairs := tastePairs(m, d, events, now)
+		if len(pairs) == 0 {
+			t.Fatal("no pairs")
+		}
+		top := pairs[0]
+		if top.Reason == "structure" {
+			structures++
+			a, b := "horn-"+top.A, "horn-"+top.B
+			minDegree := len(g.nodes)
+			for _, h := range g.nodes {
+				minDegree = min(minDegree, len(g.adj[h]))
+			}
+			if g.adj[a][b] || (len(g.adj[a]) != minDegree && len(g.adj[b]) != minDegree) {
+				t.Fatalf("round %d: structure pair %+v is not a least-compared horn against a horn not yet next to it", round, top)
+			}
+		}
+		for _, p := range pairs[1:] {
+			if p.Reason == "structure" {
+				t.Fatalf("a structure pair below the top: %+v", pairs)
+			}
+		}
+		events = append(events, pairEvent(int64(len(events)+1), top.A, top.B, "a", now))
+	}
+	if structures < 3 || structures > 5 {
+		t.Fatalf("%d structure pairs at the top in 20 answers, want about 4", structures)
+	}
+}
+
+// A horn that is no longer comparable (sold) still connects the horns it
+// was compared with; components count comparable horns only.
+func TestTastePairGraphKeepsPathsThroughIneligibleHorns(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 7)
+	listings[6].Status = "sold" // h06
+	events := []tasteEvent{
+		pairEvent(1, "h00", "h06", "a", now), // h00 > h06
+		pairEvent(2, "h06", "h01", "a", now), // h06 > h01
+	}
+	_, d := buildTasteModel([]trumpetListing{listings[0], listings[1], listings[6]}, markUndone(events), now)
+	g := newTastePairGraph(d, events, now)
+	if len(g.nodes) != 2 || len(g.components()) != 1 {
+		t.Fatalf("nodes %v, components %v", g.nodes, g.components())
+	}
+	if s := g.stats(); s.Components != 1 || s.Largest != 2 || s.Share != 1 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+// A horn whose primary listing is not comparable is still a node when another
+// of its listings is, and that listing is the one compared.
+func TestTastePairsUseAHornsComparableListing(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 6)
+	// Same horn as h00, listed first and ranked as high, but without a price.
+	stale := tasteListing("h00-unpriced", "Maker0", "M0", "raw brass", 1500, comparable(now), func(l *trumpetListing) {
+		l.HornID = "horn-h00"
+		l.Price = nil
+	})
+	listings = append([]trumpetListing{stale}, listings...)
+	m, d := buildTasteModel(listings, nil, now)
+	if d.horns["horn-h00"].primary.ID != "h00-unpriced" {
+		t.Fatalf("fixture: the unpriced listing should be the primary, got %s", d.horns["horn-h00"].primary.ID)
+	}
+	g := newTastePairGraph(d, nil, now)
+	if len(g.nodes) != 6 || g.listed["horn-h00"].ID != "h00" {
+		t.Fatalf("nodes %v, horn-h00 listed as %q", g.nodes, g.listed["horn-h00"].ID)
+	}
+	seen := false
+	for _, p := range tastePairs(m, d, nil, now) {
+		if p.A == "h00-unpriced" || p.B == "h00-unpriced" {
+			t.Fatalf("pair with the unpriced listing: %+v", p)
+		}
+		seen = seen || p.A == "h00" || p.B == "h00"
+	}
+	if !seen {
+		t.Fatal("horn h00 is never compared")
+	}
+}
+
+// Answering the top pair each time connects 40 never-compared horns in about
+// n-1 choices; horns added later are linked within two appearances.
+func TestTastePairsConnectTheGraphQuickly(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	rng := rand.New(rand.NewSource(7))
+	actions := []string{"a", "b", "both", "neither"}
+	listings := comparableHorns(now, "h", 40)
+	events := []tasteEvent{}
+	answer := func() tastePair {
+		t.Helper()
+		m, d := buildTasteModel(listings, markUndone(events), now)
+		pairs := tastePairs(m, d, events, now)
+		if len(pairs) == 0 {
+			t.Fatal("no pairs")
+		}
+		top := pairs[0]
+		events = append(events, pairEvent(int64(len(events)+1), top.A, top.B, actions[rng.Intn(len(actions))], now))
+		return top
+	}
+	components := func() int {
+		_, d := buildTasteModel(listings, markUndone(events), now)
+		return len(newTastePairGraph(d, events, now).components())
+	}
+	choices := 0
+	for components() > 1 {
+		if choices == 45 {
+			t.Fatalf("still %d components after %d choices", components(), choices)
+		}
+		answer()
+		choices++
+	}
+	t.Logf("40 horns connected after %d choices", choices)
+	if choices > 39+6 {
+		t.Fatalf("%d choices to connect 40 horns", choices)
+	}
+	// Three new horns arrive.
+	listings = append(listings, comparableHorns(now, "new", 3)...)
+	appearances := map[string]int{}
+	for round := 0; round < 9 && components() > 1; round++ {
+		top := answer()
+		for _, id := range []string{top.A, top.B} {
+			if strings.HasPrefix(id, "new") {
+				appearances[id]++
+			}
+		}
+	}
+	if components() != 1 {
+		t.Fatal("new horns not connected")
+	}
+	for id, n := range appearances {
+		if n > 2 {
+			t.Fatalf("%s took %d appearances to connect", id, n)
+		}
+	}
+	if len(appearances) != 3 {
+		t.Fatalf("appearances %v", appearances)
+	}
+}

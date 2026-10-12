@@ -420,6 +420,15 @@ func lockTrumpetOwner(ctx context.Context, tx pgx.Tx, user uuid.UUID) error {
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, user.String())
 	return err
 }
+
+// trumpetIdentityLookup finds the listing a candidate updates: by id, else by
+// canonical URL, source listing id or seed key. When several match, the oldest
+// wins, and l.id breaks a first_seen tie (listings stored by one run share it),
+// so the same candidate always updates the same listing.
+const trumpetIdentityLookup = `SELECT l.id,l.horn_id,l.price,l.status,l.currency,h.acquired,l.verification_state,l.description FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id
+ WHERE l.user_id=$1 AND (($2::uuid IS NOT NULL AND l.id=$2) OR ($2::uuid IS NULL AND (($3::text IS NOT NULL AND l.canonical_url=$3) OR ($4::text IS NOT NULL AND l.source=$5 AND l.source_listing_id=$4) OR ($6::text IS NOT NULL AND l.seed_key=$6))))
+ ORDER BY l.first_seen,l.id LIMIT 1 FOR UPDATE OF l`
+
 func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCandidate, run *uuid.UUID) (uuid.UUID, error) {
 	if err := normalizeTrumpet(&c); err != nil {
 		return uuid.Nil, err
@@ -445,9 +454,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 				prior.id, prior.horn, prior.price, prior.status, prior.currency, prior.acquired, prior.verification, prior.description, prior.snapshot
 		}
 	} else {
-		err = tx.QueryRow(ctx, `SELECT l.id,l.horn_id,l.price,l.status,l.currency,h.acquired,l.verification_state,l.description FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id
- WHERE l.user_id=$1 AND (($2::uuid IS NOT NULL AND l.id=$2) OR ($2::uuid IS NULL AND (($3::text IS NOT NULL AND l.canonical_url=$3) OR ($4::text IS NOT NULL AND l.source=$5 AND l.source_listing_id=$4) OR ($6::text IS NOT NULL AND l.seed_key=$6))))
- ORDER BY l.first_seen LIMIT 1 FOR UPDATE OF l`, user, nullText(c.ID), nullText(c.URL), nullText(c.SourceListingID), c.Source, nullText(c.SeedKey)).Scan(&id, &horn, &oldPrice, &oldStatus, &oldCurrency, &acquired, &oldVerification, &oldDescription)
+		err = tx.QueryRow(ctx, trumpetIdentityLookup, user, nullText(c.ID), nullText(c.URL), nullText(c.SourceListingID), c.Source, nullText(c.SeedKey)).Scan(&id, &horn, &oldPrice, &oldStatus, &oldCurrency, &acquired, &oldVerification, &oldDescription)
 		fresh = errors.Is(err, pgx.ErrNoRows)
 		if err != nil && !fresh {
 			return uuid.Nil, err

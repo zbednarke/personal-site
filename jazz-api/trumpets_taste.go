@@ -118,6 +118,9 @@ type tastePair struct {
 	B  string  `json:"b"`
 	P  float64 `json:"p"`
 	SD float64 `json:"sd"`
+	// Why this pair: "bridge" (joins two islands), "structure" (strengthens a
+	// connected graph) or "uncertain" (the model is least sure of it).
+	Reason string `json:"reason"`
 }
 type tasteChange struct {
 	tasteFeature
@@ -911,6 +914,32 @@ func (d *tasteData) eligible(h *tasteHorn) bool {
 	return !l.Acquired && l.Status != "acquired" && l.Feedback.InterestState != "pass"
 }
 
+// Head to head compares only listings worth comparing, and needs a few.
+const (
+	tasteComparableCheckedWithin = 10 * 24 * time.Hour
+	tastePairMinimum             = 6
+)
+
+// tasteComparable is the one rule for a listing good enough to compare in Head
+// to head (both sides must pass) and to lead the swipe queue: a live offer
+// (status active), verified by the runner, with at least one photo, a price
+// with its currency, checked within the last 10 days, and not acquired or
+// passed. Stale, unverified, photo-less or price-less listings make a
+// comparison meaningless.
+func tasteComparable(l trumpetListing, now time.Time) bool {
+	return l.Status == "active" && l.VerificationState == "verified" && len(l.Images) > 0 &&
+		l.Price != nil && *l.Price > 0 && l.Currency != "" &&
+		l.LastChecked != nil && now.Sub(*l.LastChecked) <= tasteComparableCheckedWithin &&
+		!l.Acquired && l.Feedback.InterestState != "pass"
+}
+
+// tasteLead: a stale or unverified lead (status stale or unverifiable, not
+// verified, or not checked in 10 days). The swipe queue shows these last.
+func tasteLead(l trumpetListing, now time.Time) bool {
+	return l.VerificationState != "verified" || l.Status == "stale" || l.Status == "unverifiable" ||
+		l.LastChecked == nil || now.Sub(*l.LastChecked) > tasteComparableCheckedWithin
+}
+
 // tasteNoPhotoEvery: in the swipe queue at most one card in this many has no
 // photo while cards with photos remain, so photo-less horns still come up
 // (with a "View listing" link) without crowding out the ones that can be
@@ -941,7 +970,8 @@ func preferPhotos[T any](items []T, photo func(T) bool) []T {
 
 // tasteQueue: unseen horns first (active, then newest), then horns not swiped
 // recently, most uncertain first; within each, horns with photos first (see
-// preferPhotos).
+// preferPhotos). Stale or unverified leads (tasteLead) come after all of
+// those, in the same order.
 func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) []tasteQueueItem {
 	lastSwipe := map[string]time.Time{}
 	for _, e := range events {
@@ -956,6 +986,7 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		tasteQueueItem
 		active      bool
 		photo       bool
+		lead        bool
 		first       time.Time
 		uncertainty float64
 	}
@@ -967,7 +998,7 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		}
 		z, v := m.affinity(d.keys(h.primary.ID))
 		p := sigmoid(z)
-		it := item{tasteQueueItem: tasteQueueItem{ListingID: h.primary.ID, Taste: math.Round(1000*p) / 10, SD: math.Round(1000*math.Sqrt(v)) / 1000}, active: h.primary.Status == "active", photo: len(h.primary.Images) > 0, first: h.primary.FirstSeen, uncertainty: math.Sqrt(v) * 4 * p * (1 - p)}
+		it := item{tasteQueueItem: tasteQueueItem{ListingID: h.primary.ID, Taste: math.Round(1000*p) / 10, SD: math.Round(1000*math.Sqrt(v)) / 1000}, active: h.primary.Status == "active", photo: len(h.primary.Images) > 0, lead: tasteLead(h.primary, now), first: h.primary.FirstSeen, uncertainty: math.Sqrt(v) * 4 * p * (1 - p)}
 		last, swiped := lastSwipe[horn]
 		switch {
 		case !swiped:
@@ -986,94 +1017,25 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	})
 	sort.SliceStable(seen, func(i, j int) bool { return seen[i].uncertainty > seen[j].uncertainty })
 	hasPhoto := func(it item) bool { return it.photo }
+	split := func(items []item) (main, leads []item) {
+		for _, it := range items {
+			if it.lead {
+				leads = append(leads, it)
+			} else {
+				main = append(main, it)
+			}
+		}
+		return
+	}
+	unseenMain, unseenLeads := split(unseen)
+	seenMain, seenLeads := split(seen)
+	ordered := append(preferPhotos(unseenMain, hasPhoto), preferPhotos(seenMain, hasPhoto)...)
+	ordered = append(ordered, preferPhotos(unseenLeads, hasPhoto)...)
+	ordered = append(ordered, preferPhotos(seenLeads, hasPhoto)...)
 	out := []tasteQueueItem{}
-	for _, it := range append(preferPhotos(unseen, hasPhoto), preferPhotos(seen, hasPhoto)...) {
+	for _, it := range ordered {
 		out = append(out, it.tasteQueueItem)
 		if len(out) == tasteQueueLimit {
-			break
-		}
-	}
-	return out
-}
-
-// tastePairs picks the comparisons whose outcome the model is least sure of:
-// largest predictive sd of the difference times p(1-p), skipping pairs
-// compared in the last two weeks; each horn appears at most twice.
-func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) []tastePair {
-	recent := map[string]bool{}
-	pairKey := func(a, b string) string {
-		if a > b {
-			a, b = b, a
-		}
-		return a + "|" + b
-	}
-	for _, e := range events {
-		if e.Kind != "pair" || e.undone || now.Sub(e.CreatedAt) > tasteReseeAfter {
-			continue
-		}
-		a, okA := d.byListing[e.ListingID]
-		b, okB := d.byListing[e.OtherListingID]
-		if okA && okB {
-			recent[pairKey(a.HornID, b.HornID)] = true
-		}
-	}
-	type cand struct {
-		horn  string
-		id    string
-		keys  []string
-		z, v  float64
-		score float64
-	}
-	pool := []cand{}
-	for _, horn := range d.order {
-		h := d.horns[horn]
-		if !d.eligible(h) {
-			continue
-		}
-		keys := d.keys(h.primary.ID)
-		z, v := m.affinity(keys)
-		pool = append(pool, cand{horn: horn, id: h.primary.ID, keys: keys, z: z, v: v})
-	}
-	// Bound the O(n²) search to the most uncertain horns.
-	sort.SliceStable(pool, func(i, j int) bool { return pool[i].v > pool[j].v })
-	if len(pool) > 40 {
-		pool = pool[:40]
-	}
-	type option struct {
-		a, b  int
-		score float64
-		p, sd float64
-	}
-	options := []option{}
-	for i := range pool {
-		for j := i + 1; j < len(pool); j++ {
-			if recent[pairKey(pool[i].horn, pool[j].horn)] {
-				continue
-			}
-			v := pool[i].v + pool[j].v - 2*m.covariance(pool[i].keys, pool[j].keys)
-			if v <= 1e-9 {
-				continue
-			}
-			p := sigmoid(pool[i].z - pool[j].z)
-			options = append(options, option{i, j, math.Sqrt(v) * 4 * p * (1 - p), p, math.Sqrt(v)})
-		}
-	}
-	sort.SliceStable(options, func(i, j int) bool {
-		if options[i].score != options[j].score {
-			return options[i].score > options[j].score
-		}
-		return pool[options[i].a].id+pool[options[i].b].id < pool[options[j].a].id+pool[options[j].b].id
-	})
-	used := map[int]int{}
-	out := []tastePair{}
-	for _, o := range options {
-		if used[o.a] >= 2 || used[o.b] >= 2 {
-			continue
-		}
-		used[o.a]++
-		used[o.b]++
-		out = append(out, tastePair{A: pool[o.a].id, B: pool[o.b].id, P: math.Round(1000*o.p) / 1000, SD: math.Round(1000*o.sd) / 1000})
-		if len(out) == tastePairLimit {
 			break
 		}
 	}
@@ -1279,12 +1241,39 @@ func (app *application) tasteResponse(ctx context.Context, user uuid.UUID) (map[
 		}
 	}
 	summary := tasteMachineSummary(m)
+	graph := newTastePairGraph(d, events, now)
 	return map[string]any{
-		"model": summary, "weights": summary["weights"], "changes": tasteChanges(m, tasteCachedWeekAgo(user, m, d, events, now)),
+		"watermark": tasteStateWatermark(events, m.preferences),
+		"model":     summary, "weights": summary["weights"], "changes": tasteChanges(m, tasteCachedWeekAgo(user, m, d, events, now)),
 		"scores": scores, "queue": tasteQueue(m, d, events, now), "pairs": tastePairs(m, d, events, now),
+		"pairEligible": len(graph.nodes), "pairMinimum": tastePairMinimum, "pairGraph": graph.stats(),
 		"tags": tags, "tagCounts": counts, "chips": tasteChips, "recent": recent, "preferences": m.preferences,
 		"noteSignals": trumpetNotePreferences(notes),
 	}, nil
+}
+
+// tasteWatermark says how much of the owner's taste history a response
+// reflects: the newest event it was computed from and the preferences
+// revision, from the same reads as the rest of the response. The page applies
+// a response only if its watermark is not older than the one on screen, so a
+// reply that was computed before another one's write landed cannot hide it,
+// whatever order the requests were sent or answered in.
+type tasteWatermark struct {
+	Events      int64 `json:"events"`
+	Preferences int   `json:"preferences"`
+}
+
+func tasteStateWatermark(events []tasteEvent, prefs *tastePreferences) tasteWatermark {
+	w := tasteWatermark{}
+	for _, e := range events {
+		if e.ID > w.Events {
+			w.Events = e.ID
+		}
+	}
+	if prefs != nil {
+		w.Preferences = prefs.Revision
+	}
+	return w
 }
 
 func (app *application) getTrumpetTaste(w http.ResponseWriter, r *http.Request) {

@@ -130,18 +130,37 @@ func TestTasteModelLearnsFromSwipesAndPairs(t *testing.T) {
 	}
 }
 
+// comparable makes a fixture listing pass tasteComparable (a photo and a
+// recent check on top of tasteListing's active, verified, priced defaults).
+func comparable(now time.Time) func(*trumpetListing) {
+	return func(l *trumpetListing) {
+		checked := now.Add(-24 * time.Hour)
+		l.Images = []string{"https://fixtures.invalid/photo.svg"}
+		l.LastChecked = &checked
+	}
+}
+
 func TestTasteActiveLearning(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	ok := comparable(now)
 	listings := []trumpetListing{
-		tasteListing("known1", "Knowncraft", "K1", "raw brass", 2000),
-		tasteListing("known2", "Knowncraft", "K2", "raw brass", 2000),
-		tasteListing("fresh1", "Newmaker", "N1", "gold plate", 2000, func(l *trumpetListing) { l.FirstSeen = now.Add(-time.Hour) }),
-		tasteListing("fresh2", "Othermaker", "O1", "patina", 2000, func(l *trumpetListing) { l.Status = "sold" }),
-		tasteListing("owned", "Ownedcraft", "X", "raw brass", 2000, func(l *trumpetListing) { l.Acquired = true }),
+		tasteListing("known1", "Knowncraft", "K1", "raw brass", 2000, ok),
+		tasteListing("known2", "Knowncraft", "K2", "raw brass", 2000, ok),
+		tasteListing("fresh1", "Newmaker", "N1", "gold plate", 2000, ok, func(l *trumpetListing) { l.FirstSeen = now.Add(-time.Hour) }),
+		tasteListing("fresh2", "Othermaker", "O1", "patina", 2000, ok, func(l *trumpetListing) { l.Status = "sold" }),
+		tasteListing("owned", "Ownedcraft", "X", "raw brass", 2000, ok, func(l *trumpetListing) { l.Acquired = true }),
+		// Comparable horns swiped recently (so out of the swipe queue): with
+		// known1, known2 and fresh1 they make the six Head to head needs.
+		tasteListing("other1", "Thirdcraft", "T1", "silver", 2000, ok),
+		tasteListing("other2", "Fourthcraft", "F1", "lacquer", 2000, ok),
+		tasteListing("other3", "Fifthcraft", "V1", "satin", 2000, ok),
 	}
 	events := []tasteEvent{}
 	for i := 0; i < 10; i++ {
 		events = append(events, swipe(int64(i+1), "known1", "right", now.Add(-20*24*time.Hour)), swipe(int64(i+100), "known2", "right", now.Add(-time.Hour)))
+	}
+	for i, id := range []string{"other1", "other2", "other3"} {
+		events = append(events, swipe(int64(i+300), id, "left", now.Add(-time.Hour)))
 	}
 	m, d := buildTasteModel(listings, markUndone(events), now)
 	queue := tasteQueue(m, d, events, now)
@@ -169,8 +188,8 @@ func TestTasteActiveLearning(t *testing.T) {
 		t.Fatalf("picked a low-information pair %+v", first)
 	}
 	for _, p := range pairs {
-		if p.A == "owned" || p.B == "owned" {
-			t.Fatal("acquired horn offered for comparison")
+		if p.A == "owned" || p.B == "owned" || p.A == "fresh2" || p.B == "fresh2" {
+			t.Fatalf("acquired or sold horn offered for comparison: %+v", p)
 		}
 	}
 	// A pair compared recently is not offered again.
@@ -512,5 +531,88 @@ func TestValidateTasteEventMeta(t *testing.T) {
 		if err := validateTasteEvent(&in); err == nil {
 			t.Errorf("accepted meta on %s", in.Kind)
 		}
+	}
+}
+
+func TestTasteComparable(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	base := func(extra ...func(*trumpetListing)) trumpetListing {
+		return tasteListing("l", "Fixturecraft", "F", "raw brass", 2000, append([]func(*trumpetListing){comparable(now)}, extra...)...)
+	}
+	if !tasteComparable(base(), now) {
+		t.Fatal("an active, verified, priced, photographed, recently checked listing is comparable")
+	}
+	old := now.Add(-11 * 24 * time.Hour)
+	for name, f := range map[string]func(*trumpetListing){
+		"stale":               func(l *trumpetListing) { l.Status = "stale" },
+		"sold":                func(l *trumpetListing) { l.Status = "sold" },
+		"unverifiable":        func(l *trumpetListing) { l.Status = "unverifiable" },
+		"candidate":           func(l *trumpetListing) { l.VerificationState = "candidate" },
+		"historical":          func(l *trumpetListing) { l.VerificationState = "historical" },
+		"no photo":            func(l *trumpetListing) { l.Images = nil },
+		"no price":            func(l *trumpetListing) { l.Price = nil },
+		"zero price":          func(l *trumpetListing) { z := 0.0; l.Price = &z },
+		"no currency":         func(l *trumpetListing) { l.Currency = "" },
+		"never checked":       func(l *trumpetListing) { l.LastChecked = nil },
+		"checked 11 days ago": func(l *trumpetListing) { l.LastChecked = &old },
+		"acquired":            func(l *trumpetListing) { l.Acquired = true },
+		"passed":              func(l *trumpetListing) { l.Feedback.InterestState = "pass" },
+	} {
+		if tasteComparable(base(f), now) {
+			t.Errorf("%s listing counted as comparable", name)
+		}
+	}
+	if tasteLead(base(), now) || !tasteLead(base(func(l *trumpetListing) { l.VerificationState = "candidate" }), now) || !tasteLead(base(func(l *trumpetListing) { l.LastChecked = &old }), now) {
+		t.Fatal("leads: unverified or not recently checked")
+	}
+}
+
+func TestTastePairsNeedEnoughComparableHorns(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := []trumpetListing{}
+	for i := 0; i < tastePairMinimum-1; i++ {
+		listings = append(listings, tasteListing(fmt.Sprintf("good%d", i), fmt.Sprintf("Maker%d", i), "M", "raw brass", 2000, comparable(now)))
+	}
+	// Plenty of weak listings never make up the numbers.
+	for i := 0; i < 6; i++ {
+		listings = append(listings, tasteListing(fmt.Sprintf("weak%d", i), fmt.Sprintf("Weak%d", i), "W", "lacquer", 2000))
+	}
+	m, d := buildTasteModel(listings, nil, now)
+	if pairs := tastePairs(m, d, nil, now); len(pairs) != 0 {
+		t.Fatalf("pairs with only %d comparable horns: %+v", tastePairMinimum-1, pairs)
+	}
+	if n := len(newTastePairGraph(d, nil, now).nodes); n != tastePairMinimum-1 {
+		t.Fatalf("eligible %d", n)
+	}
+	listings = append(listings, tasteListing("good-last", "MakerLast", "M", "raw brass", 2000, comparable(now)))
+	m, d = buildTasteModel(listings, nil, now)
+	pairs := tastePairs(m, d, nil, now)
+	if len(pairs) == 0 {
+		t.Fatal("no pairs with enough comparable horns")
+	}
+	for _, p := range pairs {
+		if !strings.HasPrefix(p.A, "good") || !strings.HasPrefix(p.B, "good") {
+			t.Fatalf("pair with a weak side: %+v", p)
+		}
+	}
+}
+
+func TestTasteQueuePutsLeadsLast(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := []trumpetListing{
+		// Newest first would put the leads at the front. Among leads, active
+		// before stale as usual.
+		tasteListing("lead-stale", "Leadcraft", "S", "lacquer", 2000, comparable(now), func(l *trumpetListing) { l.Status = "stale"; l.FirstSeen = now }),
+		tasteListing("lead-unverified", "Leadcraft", "U", "lacquer", 2000, comparable(now), func(l *trumpetListing) { l.VerificationState = "candidate"; l.FirstSeen = now }),
+		tasteListing("good-photo", "Goodcraft", "P", "raw brass", 2000, comparable(now)),
+		tasteListing("good-bare", "Goodcraft", "B", "raw brass", 2000, comparable(now), func(l *trumpetListing) { l.Images = nil }),
+	}
+	m, d := buildTasteModel(listings, nil, now)
+	ids := []string{}
+	for _, q := range tasteQueue(m, d, nil, now) {
+		ids = append(ids, q.ListingID)
+	}
+	if want := "[good-photo good-bare lead-unverified lead-stale]"; fmt.Sprint(ids) != want {
+		t.Fatalf("queue %v, want %s", ids, want)
 	}
 }

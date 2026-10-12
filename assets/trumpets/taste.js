@@ -14,9 +14,17 @@
     donePairs = new Set(),
     undoStack = [];
   // The card (or pair) an undo brought back stays in front until it gets a
-  // new reaction, whatever order later server responses list the queue in.
+  // new reaction, whatever order later server responses list the queue in
+  // (or whether they list it at all), while the board still has the horn.
+  // pinGen orders undos: the latest one issued wins the front.
   let frontCard = null,
-    frontPair = null;
+    frontPair = null,
+    pinGen = 0,
+    pinnedGen = 0;
+  // The watermark of the taste state on screen (see TasteModel.newerOrSame):
+  // a reply computed from older history never replaces newer state, whatever
+  // order requests were sent or answered in.
+  let applied = null;
   const tagState = new Map(); // listingId -> Set of chips (optimistic)
 
   function el(tag, className, text) {
@@ -74,12 +82,29 @@
     }
     return payload;
   }
+  // Applies a /taste state reply unless the state on screen is newer.
+  // Returns whether it was applied.
   function accept(next) {
+    if (!T.newerOrSame(next.watermark, applied)) return false;
+    applied = next.watermark || applied;
     data = next;
-    if (frontCard && data.queue?.some((q) => q.listingId === frontCard)) data.queue = T.cardToFront(data.queue, frontCard);
-    if (frontPair && data.pairs?.some((p) => T.pairKey(p) === frontPair)) data.pairs = T.pairToFront(data.pairs, frontPair);
     for (const [id, chips] of Object.entries(next.tags || {})) tagState.set(id, new Set(chips));
     render();
+    return true;
+  }
+  // The queue and pairs as shown: the server's, with an undo's pinned card or
+  // pair in front. data keeps the server's order, so a pin that lets go (its
+  // horn left the board) leaves no trace. Validated on every render.
+  function shown() {
+    const kept = T.keepFront(data, { frontCard, frontPair }, { listing, boardReady: boardState === "ready" });
+    ({ frontCard, frontPair } = kept);
+    return kept;
+  }
+  function pin(entry, gen) {
+    if (gen < pinnedGen) return; // a newer undo already holds the front
+    pinnedGen = gen;
+    if (entry.kind === "swipe") frontCard = entry.listingId;
+    else frontPair = entry.key;
   }
   async function load() {
     if (loading) return loading;
@@ -161,10 +186,10 @@
     return boardState === "failed" ? "Tap Refresh board above to try again." : "";
   }
   function currentCard() {
-    return T.nextCards(data?.queue, doneCards).find((q) => listing(q.listingId)) || null;
+    return T.nextCards(shown().queue, doneCards).find((q) => listing(q.listingId)) || null;
   }
   function currentPair() {
-    return T.nextPairs(data?.pairs, donePairs).find((p) => listing(p.a) && listing(p.b)) || null;
+    return T.nextPairs(shown().pairs, donePairs).find((p) => listing(p.a) && listing(p.b)) || null;
   }
   function renderSwipe() {
     const deck = $("#swipe-deck");
@@ -204,7 +229,13 @@
     for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither"]) $(id).disabled = !p;
     if (!p) {
       const empty = el("div", "taste-empty");
-      empty.append(el("span", "empty-mark", "◎"), el("h3", "", !data ? "Loading…" : boardState !== "ready" && data.pairs?.length ? waitingText() : "No close calls left."), el("p", "", !data ? "" : boardState !== "ready" && data.pairs?.length ? waitingNote() : "The model is sure about every pairing it can make today."));
+      const shortage = T.pairShortage(data);
+      if (shortage) empty.classList.add("pair-shortage");
+      empty.append(
+        el("span", "empty-mark", "◎"),
+        el("h3", "", !data ? "Loading…" : boardState !== "ready" && data.pairs?.length ? waitingText() : shortage ? shortage.title : "No close calls left."),
+        el("p", "", !data ? "" : boardState !== "ready" && data.pairs?.length ? waitingNote() : shortage ? shortage.note : "The model is sure about every pairing it can make today."),
+      );
       box.append(empty);
       return;
     }
@@ -253,6 +284,9 @@
     const conf = T.confidenceLabel(model);
     $("#taste-confidence-text").textContent = conf.text;
     $("#taste-confidence-bar").style.width = conf.percent + "%";
+    const graph = T.graphText(data?.pairGraph);
+    $("#taste-graph").textContent = graph;
+    $("#taste-graph").hidden = !graph;
     const { liked, disliked } = T.learned(data?.weights);
     for (const [id, rows, none] of [
       ["#taste-liked", liked, "Nothing yet — swipe right on horns you like."],
@@ -309,7 +343,7 @@
     renderChips();
     renderLearned();
     $("#taste-undo").disabled = $("#pair-undo").disabled = !undoStack.length;
-    $("#taste-count").textContent = T.nextCards(data?.queue, doneCards).length;
+    $("#taste-count").textContent = T.nextCards(shown().queue, doneCards).length;
   }
 
   // ---- Reactions ------------------------------------------------------------
@@ -324,14 +358,14 @@
       if (!q) return;
       body = { kind: "swipe", mode: "swipe", listingId: q.listingId, action: r.action, meta: { hadPhoto: photoShown($("#swipe-deck")) } };
       doneCards.add(q.listingId);
-      entry = { kind: "swipe", listingId: q.listingId, front: q.listingId === frontCard };
+      entry = { kind: "swipe", listingId: q.listingId, front: q.listingId === frontCard, gen: pinnedGen };
       if (entry.front) frontCard = null;
     } else {
       const p = currentPair();
       if (!p) return;
       body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action, meta: { hadPhoto: photoShown($("#pair-cards")) } };
       donePairs.add(T.pairKey(p));
-      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair };
+      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair, gen: pinnedGen };
       if (entry.front) frontPair = null;
     }
     $("#taste-note").value = "";
@@ -352,9 +386,9 @@
       hideUndoToast(entry);
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
-      // A failed reaction to a card an undo brought back leaves it in front.
-      if (entry.front && entry.kind === "swipe") data.queue = T.cardToFront(data.queue, (frontCard = entry.listingId));
-      if (entry.front && entry.kind === "pair") data.pairs = T.pairToFront(data.pairs, (frontPair = entry.key));
+      // A failed reaction to a card an undo brought back leaves it in front,
+      // unless a newer undo has pinned another card since.
+      if (entry.front && pinnedGen === entry.gen) pin(entry, entry.gen);
       status(e.message, true);
       render();
     }
@@ -364,18 +398,16 @@
     if (!entry) return;
     hideUndoToast();
     render();
+    const gen = ++pinGen;
     try {
       if (!entry.eventId) entry.eventId = (await entry.pending).event.id;
       const out = await post({ kind: "undo", undoes: entry.eventId });
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
       // Put the undone card or pair back in front, even when the server's
-      // queue lists it further down (or not at all).
-      if (entry.kind === "swipe") frontCard = entry.listingId;
-      else frontPair = entry.key;
+      // queue lists it further down (or not at all), or this reply is stale.
       accept(out);
-      if (entry.kind === "swipe") data.queue = T.cardToFront(data.queue, entry.listingId);
-      else data.pairs = T.pairToFront(data.pairs, entry.key);
+      pin(entry, gen);
       status("Undone.");
       render();
     } catch (e) {
@@ -631,7 +663,7 @@
     },
     boardLoaded() {
       boardState = "ready";
-      if (data) render();
+      if (data) render(); // also validates pins against the board just loaded
       else if (active) load();
       else
         api("/taste")

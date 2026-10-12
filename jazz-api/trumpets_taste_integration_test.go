@@ -106,9 +106,92 @@ func TestTrumpetTastePersistence(t *testing.T) {
 		t.Fatal("board listings carry the learned score")
 	}
 
+	// Only stale historical seeds: nothing worth comparing, so no pairs (the
+	// page explains why) rather than weak ones.
+	seedOnly := call("GET", "/v1/trumpets/taste", nil, "owner", 200)
+	if len(seedOnly["queue"].([]any)) == 0 || len(seedOnly["pairs"].([]any)) != 0 || seedOnly["pairEligible"].(float64) != 0 || seedOnly["pairMinimum"].(float64) != tastePairMinimum {
+		t.Fatalf("seed-only queue/pairs: queue %d, pairs %v, eligible %v", len(seedOnly["queue"].([]any)), seedOnly["pairs"], seedOnly["pairEligible"])
+	}
+	// Six comparable fictional listings (active, verified, priced, with a
+	// photo, checked now), plus weak ones that must never be paired: an
+	// unverified lead, a photo-less and a price-less listing.
+	owner, err := app.userID(context.WithValue(ctx, userSubjectKey, "owner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comparableIDs := map[string]bool{}
+	tx, err := isolated.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	for i := 0; i < 9; i++ {
+		c := perfCandidate(i, float64(2500+100*i))
+		switch i {
+		case 6:
+			c.VerificationState, c.Status, c.Price, c.SerialNumber = "candidate", "stale", nil, ""
+		case 7:
+			c.Images = nil
+		case 8:
+			c.Price = nil
+		}
+		lid, err := upsertTrumpet(ctx, tx, owner, c, nil)
+		if err != nil {
+			t.Fatalf("fixture %d: %v", i, err)
+		}
+		if i < 6 {
+			comparableIDs[lid.String()] = true
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	taste := call("GET", "/v1/trumpets/taste", nil, "owner", 200)
 	if len(taste["queue"].([]any)) == 0 || len(taste["pairs"].([]any)) == 0 {
 		t.Fatalf("empty queue/pairs: %v", taste)
+	}
+	if taste["pairEligible"].(float64) != 6 {
+		t.Fatalf("pairEligible %v", taste["pairEligible"])
+	}
+	for _, p := range taste["pairs"].([]any) {
+		pair := p.(map[string]any)
+		if !comparableIDs[pair["a"].(string)] || !comparableIDs[pair["b"].(string)] {
+			t.Fatalf("pair with an ineligible side: %v", pair)
+		}
+	}
+	// The comparison graph: six never-compared horns are six islands. One
+	// choice joins two; the next pair bridges that component to an island;
+	// undoing the choice splits it again.
+	graph := func(state map[string]any) (components, largest float64) {
+		g := state["pairGraph"].(map[string]any)
+		if g["eligible"].(float64) != 6 {
+			t.Fatalf("pairGraph %v", g)
+		}
+		return g["components"].(float64), g["largest"].(float64)
+	}
+	if c, l := graph(taste); c != 6 || l != 1 {
+		t.Fatalf("before any choice: %v components, largest %v", c, l)
+	}
+	top := taste["pairs"].([]any)[0].(map[string]any)
+	chose := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "graph-0001", "kind": "pair", "mode": "pair", "listingId": top["a"], "otherListingId": top["b"], "action": "neither"}, "owner", 201)
+	if c, l := graph(chose); c != 5 || l != 2 {
+		t.Fatalf("after one choice: %v components, largest %v", c, l)
+	}
+	next := chose["pairs"].([]any)[0].(map[string]any)
+	joined := map[any]bool{top["a"]: true, top["b"]: true}
+	if joined[next["a"]] == joined[next["b"]] {
+		t.Fatalf("next pair %v does not bridge the joined pair %v to an island", next, top)
+	}
+	reverted := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "graph-0002", "kind": "undo", "undoes": chose["event"].(map[string]any)["id"]}, "owner", 201)
+	if c, _ := graph(reverted); c != 6 {
+		t.Fatalf("an undone choice still joins horns: %v components", c)
+	}
+	// The watermark is the newest event the response was computed from.
+	watermark := func(state map[string]any) float64 {
+		return state["watermark"].(map[string]any)["events"].(float64)
+	}
+	if watermark(chose) != chose["event"].(map[string]any)["id"].(float64) || watermark(reverted) != reverted["event"].(map[string]any)["id"].(float64) || watermark(reverted) <= watermark(chose) || watermark(taste) >= watermark(chose) {
+		t.Fatalf("watermarks: taste %v, choice %v, undo %v", taste["watermark"], chose["watermark"], reverted["watermark"])
 	}
 	if conf := taste["model"].(map[string]any)["confidence"].(float64); conf != 0 {
 		t.Fatalf("confidence before any reaction = %v", conf)
@@ -216,7 +299,7 @@ func TestTrumpetTastePersistence(t *testing.T) {
 		t.Fatalf("voice leaked: %d", other.Code)
 	}
 	var stored int
-	if err := isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_taste_events WHERE user_id=(SELECT id FROM app_users WHERE auth_subject='owner')`).Scan(&stored); err != nil || stored != 6 {
+	if err := isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_taste_events WHERE user_id=(SELECT id FROM app_users WHERE auth_subject='owner')`).Scan(&stored); err != nil || stored != 8 { // 6 + the graph check's choice and its undo
 		t.Fatalf("stored events = %d, %v", stored, err)
 	}
 
@@ -257,6 +340,9 @@ func TestTrumpetTastePersistence(t *testing.T) {
 	prefs["statements"] = []string{"Cool horn, not dark horn (fixture)", "Unusual engineering (fixture)"}
 	if again := call("PUT", "/v1/trumpets/taste/preferences", prefs, "owner", 200); again["revision"].(float64) != 2 {
 		t.Fatal("second version")
+	}
+	if w := call("GET", "/v1/trumpets/taste", nil, "owner", 200)["watermark"].(map[string]any); w["preferences"].(float64) != 2 {
+		t.Fatalf("watermark after two preference versions: %v", w)
 	}
 	if other := call("GET", "/v1/trumpets/taste/preferences", nil, "intruder", 200); other["revision"].(float64) != 0 {
 		t.Fatal("preferences leaked across owners")
