@@ -32,9 +32,21 @@ type wbPusher interface {
 
 type webPusher struct{ public, private, subject string }
 
+// wbPushOptions (in the context) lowers urgency or lengthens the TTL of one
+// send; approvals and replies keep high urgency and a one-hour TTL.
+type wbPushOptions struct {
+	Urgency webpush.Urgency
+	TTL     int
+}
+type wbPushOptionsKey struct{}
+
 func (p *webPusher) Send(ctx context.Context, sub wbPushSub, payload []byte) (int, error) {
+	opts := wbPushOptions{Urgency: webpush.UrgencyHigh, TTL: 3600}
+	if o, ok := ctx.Value(wbPushOptionsKey{}).(wbPushOptions); ok {
+		opts = o
+	}
 	resp, err := webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{Endpoint: sub.Endpoint, Keys: webpush.Keys{P256dh: sub.P256dh, Auth: sub.Auth}}, &webpush.Options{
-		Subscriber: p.subject, VAPIDPublicKey: p.public, VAPIDPrivateKey: p.private, TTL: 3600, Urgency: webpush.UrgencyHigh,
+		Subscriber: p.subject, VAPIDPublicKey: p.public, VAPIDPrivateKey: p.private, TTL: opts.TTL, Urgency: opts.Urgency,
 	})
 	if err != nil {
 		return 0, err
@@ -44,7 +56,7 @@ func (p *webPusher) Send(ctx context.Context, sub wbPushSub, payload []byte) (in
 }
 
 func (app *application) wbPushKey(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"publicKey": app.wb.cfg.VAPIDPublic, "enabled": app.wb.push != nil})
+	writeJSON(w, 200, map[string]any{"publicKey": app.wb.cfg.VAPIDPublic, "enabled": app.pushService() != nil})
 }
 
 // Only real push services may receive pushes (no internal hosts).
@@ -125,6 +137,9 @@ type wbPushPayload struct {
 	// Actions offers Approve / Not now on the notification itself. Never for
 	// writes to the public repository: those are reviewed on the page.
 	Actions bool `json:"actions,omitempty"`
+	// Quiet shows the notification without sound or vibration (the fix
+	// list's all-clear days).
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // wbApproveFromNotification: may this approval be answered without opening
@@ -140,9 +155,17 @@ func wbApproveFromNotification(a wbApproval) bool {
 }
 
 // wbPushTo sends to the owner's devices (all, or nudge-opted only), skipping
-// one device. Failed endpoints are dropped after repeated failures.
+// one device. Endpoints the push service reports gone (404/410) are dropped.
 func (app *application) wbPushTo(ctx context.Context, user uuid.UUID, nudgesOnly bool, skipDevice string, p wbPushPayload) int {
-	if app.wb.push == nil {
+	payload, _ := json.Marshal(p)
+	return app.wbPushRaw(ctx, user, nudgesOnly, skipDevice, payload)
+}
+
+// wbPushRaw sends an encoded payload (see wbPushTo). It works in either
+// service: Workbench's pusher, or the API's when it has the VAPID keys.
+func (app *application) wbPushRaw(ctx context.Context, user uuid.UUID, nudgesOnly bool, skipDevice string, payload []byte) int {
+	pusher := app.pushService()
+	if pusher == nil {
 		return 0
 	}
 	subs, err := wbCollect(wbRows(app.db.Query(ctx, `SELECT device_id,endpoint,p256dh,auth,nudges FROM wb_push_subscriptions WHERE user_id=$1 AND (NOT $2 OR nudges) AND device_id<>$3`, user, nudgesOnly, skipDevice)), func(row pgx.Row) (wbPushSub, error) {
@@ -153,22 +176,23 @@ func (app *application) wbPushTo(ctx context.Context, user uuid.UUID, nudgesOnly
 		app.logger.Error("workbench push lookup failed", "error", err)
 		return 0
 	}
-	payload, _ := json.Marshal(p)
 	sent := 0
 	for _, s := range subs {
 		sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		status, err := app.wb.push.Send(sendCtx, s, payload)
+		status, err := pusher.Send(sendCtx, s, payload)
 		cancel()
 		switch {
 		case err == nil && (status == 404 || status == 410):
 			_, _ = app.db.Exec(ctx, `DELETE FROM wb_push_subscriptions WHERE user_id=$1 AND device_id=$2`, user, s.DeviceID)
 		case err != nil || status >= 400:
+			// Only the push service saying the subscription is gone (404/410)
+			// drops a device. A timeout or network error (say, on a
+			// CPU-throttled instance) or another status is logged and the
+			// subscription kept, so a slow sender never unsubscribes anyone.
 			if err == nil {
 				err = errors.New(http.StatusText(status))
 			}
 			app.logger.Warn("workbench push failed", "device", s.DeviceID, "error", err)
-			_, _ = app.db.Exec(ctx, `UPDATE wb_push_subscriptions SET failures=failures+1 WHERE user_id=$1 AND device_id=$2`, user, s.DeviceID)
-			_, _ = app.db.Exec(ctx, `DELETE FROM wb_push_subscriptions WHERE user_id=$1 AND device_id=$2 AND failures>=5`, user, s.DeviceID)
 		default:
 			sent++
 		}

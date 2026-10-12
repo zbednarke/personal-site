@@ -618,8 +618,35 @@
     }).catch(() => { /* optional */ });
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data && e.data.type === "workbench-open" && e.data.threadId) { toggle(true); if (!state.thread || state.thread.id !== e.data.threadId) selectThread(e.data.threadId); }
+      if (e.data && e.data.type === "workbench-fixlist") { if (location.hash === "#fixlist") routeFixList(); else location.hash = "#fixlist"; }
     });
   }
+
+  // ---- The daily fix list (#fixlist): loaded on demand ---------------------------------
+
+  let fixListLib = null;
+  function loadFixList() {
+    if (window.WorkbenchFixList) return Promise.resolve(window.WorkbenchFixList);
+    return fixListLib || (fixListLib = new Promise((resolve, reject) => {
+      const s = el("script", { src: "/assets/workbench/fixlist.js" });
+      s.onload = () => resolve(window.WorkbenchFixList);
+      s.onerror = () => { fixListLib = null; reject(new Error("could not load the fix list")); };
+      document.head.append(s);
+    }));
+  }
+  function routeFixList() {
+    if (location.hash !== "#fixlist") {
+      const panel = root.querySelector(".wb-fixlist");
+      if (panel && !panel.hidden) { panel.hidden = true; document.documentElement.classList.remove("wb-fixlist-open"); }
+      return;
+    }
+    loadFixList().then((lib) => lib.show({
+      api, el, mount: root,
+      openThread: (id) => { toggle(true); if (!state.thread || state.thread.id !== id) selectThread(id); },
+      onClose: () => { if (location.hash === "#fixlist") history.replaceState(null, "", location.pathname + location.search); },
+    })).catch((err) => flash(err.message));
+  }
+  addEventListener("hashchange", routeFixList);
 
   // ---- Rendering ---------------------------------------------------------------------------
 
@@ -796,6 +823,7 @@
     refreshThreads();
     flushOutbox();
     if (new URLSearchParams(location.search).get("workbench")) toggle(true);
+    routeFixList();
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshThreads(); flushOutbox(); } });
   }
 

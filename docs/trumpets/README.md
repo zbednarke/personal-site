@@ -174,6 +174,23 @@ the **last complete run**, and flags a run older than about a day as overdue.
 Use `journalctl -u trumpets-research.service` for run ID/status/counts only.
 Enable **one** scheduler; keep `TRUMPETS_DAILY_ENABLED` unset for VM scheduling.
 
+**Daily fix list.** When a run starts, the runner registers it
+(`POST /v1/trumpets/machine/fixlist/start` with its `externalId`), so the fix
+list says the run is under way rather than missing. After submitting a run
+that started between **13:00 and 16:00 UTC** (the timer's 13:17 run), or when
+given `--trigger-fix-list`, it calls `POST /v1/trumpets/machine/fixlist` with
+`{}` (same bearer token); a manual run earlier in the day sends nothing. The API then
+sends the owner's daily fix list: what failed in the last 24 hours (this run's
+status and notes, failed or skipped sources by reason, failed checks by domain
+and reason, listings that became unverifiable, Reverb/eBay/OpenAI budget and
+cap notes, failed Magic Film jobs, the API's own 5xx and slow routes) against
+the 24 hours before, as a Workbench push and a message in the "Fix list"
+thread (see [docs/workbench/README.md](../workbench/README.md#daily-fix-list)).
+The call is idempotent per UTC day. A failed call prints one line and never
+changes the run's exit code. If the run never gets that far, Workbench sends
+the fix list after 16:30 UTC anyway (when it is awake), flagging the run as
+never stored (it started) or missing (no run by 16:30 UTC).
+
 This conservative adapter ingests **unambiguous individual Product JSON-LD offers**.
 It rejects aggregate prices, ordinary Bach/Yamaha without exceptional evidence,
 non-trumpets and obvious non-Bb models; it has no warm/dark sound filter. It scores
@@ -209,6 +226,8 @@ Machine endpoints under the Cloud Run base URL, using `Authorization: Bearer …
 | `GET /v1/trumpets/machine/due`      | Active/stale offers not verified that UTC day; acquired instruments excluded                      |
 | `POST /v1/trumpets/machine/runs`    | Atomic verified findings/rechecks and source coverage; idempotent external ID                     |
 | `GET /v1/trumpets/machine/runs?externalId=…` | `{found, runId, status, completedAt}`: whether that run was stored (after a submit timeout) |
+| `POST /v1/trumpets/machine/fixlist/start` | `{externalId}`: this run has started (the fix list reads "running") |
+| `POST /v1/trumpets/machine/fixlist` | Send today's fix list (once per UTC day; later calls replay `{sent: false, replayed: true}`). The runner calls it after a run started 13:00–16:00 UTC, or with `--trigger-fix-list` |
 
 Browser endpoints use the existing gateway auth under `/trumpets/api/v1/trumpets/`:
 `GET listings`, `GET profile`, `POST seed` with `{}`, and

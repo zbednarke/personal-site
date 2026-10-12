@@ -83,6 +83,12 @@ func TestWorkbenchBrowserPreview(t *testing.T) {
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/__preview_stop":
 			go server.Close()
+		case r.Method == "POST" && r.URL.Path == "/__preview_fixlist":
+			if err := previewFixList(r.Context(), app); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			fmt.Fprint(w, "ok")
 		case r.URL.Path == "/__preview_issues":
 			fmt.Fprint(w, gh.issueCount())
 		case strings.HasPrefix(r.URL.Path, "/__preview_objects/"):

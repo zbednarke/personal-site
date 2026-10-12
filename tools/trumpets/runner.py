@@ -1456,7 +1456,7 @@ def recheck_order(due):
     return verified+leads
 
 
-def daily(client):
+def daily(client, trigger_fix=False):
     profile=client.call('/profile'); due=client.call('/due')['listings']; board=client.call('/listings')
     baseline=board.get('listings',[])
     # Previously tracked sources remain part of the pool even if they predate
@@ -1478,6 +1478,7 @@ def daily(client):
     by_url={canonical_url(l['url']):l for l in baseline if l.get('url')}
     report={'externalId':'adaptive-watch-'+dt.datetime.now(dt.timezone.utc).isoformat(),'startedAt':dt.datetime.now(dt.timezone.utc).isoformat(),
             'kind':'combined','status':'succeeded','sources':[],'listings':[],'checkFailures':[],'error':''}
+    fix_list_call(client,'/fixlist/start',{'externalId':report['externalId']})
     # failures make the run partial (coverage really missing); notes explain
     # bounded or recorded outcomes without hiding them.
     failures=[];notes=[];submitted=set();started=time.monotonic();candidate_checks=0;pages=0;domain_pages=collections.Counter();domain_finds=collections.Counter()
@@ -1759,7 +1760,23 @@ def daily(client):
     report['error']='; '.join(dict.fromkeys(failures+notes))[:10000]
     if failures:report['status']='partial'
     result=submit_run(client,report);print(json.dumps(result),flush=True)
+    if trigger_fix or in_fix_list_window(report['startedAt']):fix_list_call(client,'/fixlist',{})
     return 0 if result.get('status')=='succeeded' else 2
+
+
+def in_fix_list_window(started):
+    """The scheduled run (13:17 UTC timer) starts in 13:00-16:00 UTC; only such a
+    run sends the day's fix list, so a manual run earlier in the day does not
+    use it up (--trigger-fix-list sends regardless)."""
+    return 13<=dt.datetime.fromisoformat(started).astimezone(dt.timezone.utc).hour<16
+
+
+def fix_list_call(client, path, body):
+    """Tell the API this run started (/fixlist/start: the fix list then says
+    'running', not 'missing') or ask it to send today's fix list now that the
+    run is stored (/fixlist: once per UTC day server-side). Never fails the run."""
+    try: print(json.dumps({'fixList':path,'result':client.call(path,body)}),flush=True)
+    except Exception as error: print(json.dumps({'note':'fix list call '+path+' failed: '+run_reason(error)}),flush=True)
 
 
 # ---- One-time photo backfill (--backfill-images) --------------------------------
@@ -1862,6 +1879,7 @@ def run():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report',help='Submit a normalized ChatGPT run JSON; retries use the same externalId.')
     parser.add_argument('--prepare',help='Write a private profile/all-tracked/due snapshot for a search client.')
+    parser.add_argument('--trigger-fix-list',action='store_true',help="After the daily run, send today's fix list even outside the 13:00-16:00 UTC scheduled window (once per UTC day).")
     parser.add_argument('--backfill-images',action='store_true',help='One-time: find photos for tracked listings that have none (Reverb API, then the listing page) and submit them as an images run.')
     args=parser.parse_args();client=Client()
     if args.backfill_images:
@@ -1875,7 +1893,7 @@ def run():
     if args.report:
         with open(args.report) as source: report=json.load(source)
         result=submit_run(client,report);print(json.dumps(result));return 0
-    return daily(client)
+    return daily(client,trigger_fix=args.trigger_fix_list)
 
 if __name__=='__main__':
     raise SystemExit(main())

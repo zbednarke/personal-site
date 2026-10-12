@@ -354,3 +354,47 @@ class VerificationCoverageTests(unittest.TestCase):
         result=runner.recheck(listing,lambda *_:page(p),PROFILE)
         self.assertIsNotNone(result)
         self.assertEqual(result['status'],'active')
+
+class FixListTriggerTests(unittest.TestCase):
+    def test_fix_list_calls_never_fail_the_run(self):
+        calls=[]
+        class Client:
+            def __init__(self,fail):self.fail=fail
+            def call(self,path,body=None):
+                calls.append((path,body))
+                if self.fail:raise urllib.error.HTTPError(path,503,'Unavailable',None,None)
+                return {'day':'2026-10-12','sent':True}
+        with patch('builtins.print') as printed:
+            runner.fix_list_call(Client(False),'/fixlist',{})
+            runner.fix_list_call(Client(True),'/fixlist',{})
+        self.assertEqual(calls,[('/fixlist',{}),('/fixlist',{})])
+        self.assertIn('fix list call /fixlist failed: API returned HTTP 503',printed.call_args_list[-1].args[0])
+    def test_only_the_scheduled_window_or_the_flag_sends_the_fix_list(self):
+        self.assertTrue(runner.in_fix_list_window('2026-10-12T13:17:02+00:00'))
+        self.assertTrue(runner.in_fix_list_window('2026-10-12T15:59:00+00:00'))
+        self.assertFalse(runner.in_fix_list_window('2026-10-12T09:30:00+00:00'))
+        self.assertFalse(runner.in_fix_list_window('2026-10-12T16:00:00+00:00'))
+        self.assertTrue(runner.in_fix_list_window('2026-10-12T15:30:00+02:00'))
+        def watch(hour,flag):
+            calls=[]
+            class Client:
+                def call(self,path,body=None):
+                    calls.append(path)
+                    if path=='/profile':return copy.deepcopy(PROFILE)
+                    if path=='/due':return {'listings':[]}
+                    if path=='/listings':return {'listings':[]}
+                    if path=='/runs':return {'status':body['status'],'runId':'saved'}
+            class Clock(runner.dt.datetime):
+                @classmethod
+                def now(cls,tz=None):return runner.dt.datetime(2026,10,12,hour,17,tzinfo=runner.dt.timezone.utc)
+            with patch.dict('os.environ',{'BRAVE_SEARCH_API_KEY':'test-only','OPENAI_API_KEY':'','EBAY_CLIENT_ID':''}),patch.object(runner,'reverb_search',return_value=[]),patch.object(runner,'search',return_value=[]),patch.object(runner.dt,'datetime',Clock),patch('builtins.print'):
+                runner.daily(Client(),trigger_fix=flag)
+            return calls
+        scheduled=watch(13,False)
+        self.assertIn('/fixlist/start',scheduled)
+        self.assertEqual(scheduled[-1],'/fixlist')
+        self.assertLess(scheduled.index('/runs'),scheduled.index('/fixlist'))
+        manual=watch(9,False)
+        self.assertIn('/fixlist/start',manual)
+        self.assertNotIn('/fixlist',manual)
+        self.assertEqual(watch(9,True)[-1],'/fixlist')

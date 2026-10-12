@@ -234,6 +234,8 @@ type fakePusher struct {
 	mu   sync.Mutex
 	sent []wbPushPayload
 	to   []string
+	// result, when set, answers a send instead (status, error); 201 delivers.
+	result func(wbPushSub) (int, error)
 }
 
 func (p *fakePusher) Send(ctx context.Context, sub wbPushSub, payload []byte) (int, error) {
@@ -241,6 +243,11 @@ func (p *fakePusher) Send(ctx context.Context, sub wbPushSub, payload []byte) (i
 	defer p.mu.Unlock()
 	var v wbPushPayload
 	_ = json.Unmarshal(payload, &v)
+	if p.result != nil {
+		if status, err := p.result(sub); status != 201 || err != nil {
+			return status, err
+		}
+	}
 	p.sent = append(p.sent, v)
 	p.to = append(p.to, sub.DeviceID)
 	return 201, nil
