@@ -895,7 +895,9 @@ What changed (all in `tools/trumpets/runner.py`):
   tries with backoff on timeouts, resets and 502–504 (`Retry-After` up to 30 s; 403,
   404 and 429 are not retried), and when a bare host gives no response at all the
   same URL on `www.`, remembered for the run. A host that never answers gets one
-  try per page for the rest of the run. A same-site redirect to `http://` is
+  try per page for the rest of the run. Only a successful `www.` answer is used:
+  a `www.` HTTP error never stands in for the bare host's own error (so a
+  listing is never marked removed because of the `www.` host). A same-site redirect to `http://` is
   followed over HTTPS; any other `http` redirect is still refused.
 - **Generic extractors, first:** JSON-LD in more shapes (`@graph`/`mainEntity`,
   offer lists normalized before comparing, `AggregateOffer` only with a single
@@ -906,7 +908,9 @@ What changed (all in `tools/trumpets/runner.py`):
   facts agree; OpenGraph `og:availability`/`og:price:*` and grouped amounts; the
   page's analytics `view_item` event (one item, named like the page heading) with
   an explicit stock statement in the buy box (hidden elements, navigation and
-  related sections are ignored). Then the shop platform's own endpoint for this
+  related sections are ignored; "not in stock", "nicht auf Lager", "niet op
+  voorraad", "ej i lager" and "in stock soon"/pre-order/on order are read as not
+  in stock). Then the shop platform's own endpoint for this
   URL: Shopify `.js` + `cart.js`, the WooCommerce Store API
   (`/wp-json/wc/store/v1/products?slug=`, permalink must match, minor units,
   `is_in_stock`; variable products with differing prices are ambiguous) and
@@ -914,32 +918,58 @@ What changed (all in `tools/trumpets/runner.py`):
 - **Site layouts** only where needed: Kleinanzeigen (`#viewad-main-info` offer
   scope, reserved/deleted labels), Bazoš ("Cena:" row with Kč/€/zł), Jamie's
   Trumpet Gallery (heading price plus Inquire, or SOLD!; "$" is USD only because
-  the page's store data gives a US address).
+  the page's store data gives a US address). Classified ads with a symbolic price ("1 Kč", "VB 0") are
+  not verified.
 - **Strictness kept.** Several different products on a page still give none;
   related-product prices are never read (no extractor looks inside related or
   product-loop sections, and platform endpoints are keyed by this URL's slug);
   currency is never taken from a domain. A retitled tracked offer matches only
   when the page says it is the listing's URL (canonical, og:url or product url),
   or comes from a URL-keyed platform endpoint or site layout, with the same maker
-  and no conflicting listing id. Japanese and European accessory/other-instrument
+  and no conflicting listing id; the maker must be the one the page itself names
+  (not the tracked listing's) and every model word of the tracked title must be
+  in the new title, so a reused URL ("Phat Boy" where a "Chicago" was) or a
+  generic title ("Used professional Bb trumpet") is never matched; the stored
+  title follows an accepted retitle. A listing URL that now redirects to another
+  page verifies nothing. Japanese and European accessory/other-instrument
   words (マウスピース, ケース, ピッコロ, C管, mondstuk, Trompetenmundstück…) are
   rejected; "Trompete" and "trubka" count as horn words. A shop "brand" that is
   only a category ("Bb-trumpet") is ignored; a recheck may fall back to the
   tracked listing's own maker, a new find never is.
 - **LLM page reading** (`PageLLM`), last: only for a page the runner fetched
-  itself (HTTP 200) that no extractor could read, and only for rechecks. The page
-  is cleaned (no scripts, styles, navigation, header, footer, forms, hidden or
-  related-product sections; title, main text and JSON-LD kept; about 12,000
-  characters) and sent as delimited, untrusted data to the Responses API
-  (`TRUMPETS_VERIFY_MODEL`, else `TRUMPETS_SEARCH_MODEL`; strict JSON schema; no
-  tools). It is accepted only when the quoted price text appears verbatim in that
-  cleaned text and parses to the stated price, the currency is stated (the price
-  text's code or unambiguous symbol, the ISO code in the page text, or the page's
-  currency metadata; "$" alone is not), and the model says it is a single Bb
-  trumpet product page. "unknown" availability never verifies and never marks
-  anything sold. Budget: `TRUMPETS_PAGE_LLM_LIMIT` pages per run (default 80; 0
-  turns it off) and 8 minutes, spent in recheck order (active, high-score offers
-  first). It logs counts only. Accepted offers carry `verifiedVia: "page-llm"`.
+  itself (HTTP 200, and not redirected away from the listing's page) that no
+  extractor could read, only for rechecks, and never on a page the extractors
+  found ambiguous (several products, disagreeing copies) or excluded (accessory,
+  other instrument, maker rule). The page is cleaned (no scripts, styles,
+  navigation, header, footer, forms, hidden, screen-reader-only, struck-through
+  `<del>`/`<s>` or related-product sections; title, main text and JSON-LD kept;
+  about 12,000 characters) and sent as untrusted data inside a random
+  per-request delimiter to the Responses API (`TRUMPETS_VERIFY_MODEL`, else
+  `TRUMPETS_SEARCH_MODEL`; strict JSON schema; no tools). A reading is accepted
+  only when all of these hold:
+  - the model's title is on the page, and it says this is a single Bb trumpet
+    product page with a known availability ("unknown" never verifies and never
+    marks anything sold);
+  - the quoted price text is a money amount in the cleaned page text, with digit
+    and separator boundaries on both sides ("4.990" is not inside "14.990 EUR"),
+    and parses to the stated price;
+  - the price is at least 100 USD-equivalent, is not in a sentence about
+    shipping, deposits, monthly payments, "from", "save", "was" or old/list
+    prices, and is the page's main price: its only money amount, or the one
+    nearest the main heading;
+  - the currency is the amount's own ISO code or unambiguous symbol; for "$",
+    "¥" or "kr" it is the single currency the page declares for its product (its
+    OpenGraph/product meta or microdata, the JSON-LD offer, or its own
+    `view_item` event), never a code mentioned elsewhere ("we accept CAD");
+  - the page says it is this listing's URL (canonical, og:url or product url);
+    a page that names no URL does not bind a reading, for leads either;
+  - for a tracked offer, the price moved at most 30% and kept its currency;
+    otherwise the check fails with "price change needs confirmation".
+  An accepted reading keeps the tracked listing's score, tags and rationale.
+  Budget: `TRUMPETS_PAGE_LLM_LIMIT` pages per run (default 80; 0 turns it off;
+  a non-number logs a warning and uses 80) and 8 minutes including retries,
+  spent in recheck order (active, high-score offers first). It logs counts only.
+  Accepted offers carry `verifiedVia: "page-llm"`.
 - **Discovery page budget.** Pages were spent on results another query had
   already returned (only kept results were remembered), on images/PDFs,
   category/search/tag/blog pages, further result pages, cart/account pages,
