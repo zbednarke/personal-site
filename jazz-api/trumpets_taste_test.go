@@ -393,3 +393,124 @@ func TestCholeskyInverse(t *testing.T) {
 		}
 	}
 }
+
+func TestTasteNoPhotoReactionsCountHalf(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := []trumpetListing{}
+	for i := 0; i < 6; i++ {
+		listings = append(listings, tasteListing(fmt.Sprintf("raw%d", i), "Brassworks", fmt.Sprintf("R%d", i), "raw brass", 2000))
+		listings = append(listings, tasteListing(fmt.Sprintf("gold%d", i), "Goldsmith", fmt.Sprintf("G%d", i), "gold plate", 2000))
+	}
+	yes, no := true, false
+	reactions := func(meta tasteMeta) []tasteEvent {
+		events := []tasteEvent{}
+		for i := 0; i < 6; i++ {
+			r, l := swipe(int64(2*i+1), fmt.Sprintf("raw%d", i), "right", now), swipe(int64(2*i+2), fmt.Sprintf("gold%d", i), "left", now)
+			r.Meta, l.Meta = meta, meta
+			events = append(events, r, l)
+		}
+		return events
+	}
+	withPhoto, _ := buildTasteModel(listings, reactions(tasteMeta{HadPhoto: &yes}), now)
+	unknown, _ := buildTasteModel(listings, reactions(tasteMeta{}), now)
+	withoutPhoto, _ := buildTasteModel(listings, reactions(tasteMeta{HadPhoto: &no}), now)
+	wp, wpSD := withPhoto.weight("finish:raw brass")
+	un, _ := unknown.weight("finish:raw brass")
+	np, npSD := withoutPhoto.weight("finish:raw brass")
+	// Older events (no metadata) keep full weight, like a reaction with a photo.
+	if math.Abs(wp-un) > 1e-9 {
+		t.Fatalf("unknown photo state changed the weight: %v vs %v", un, wp)
+	}
+	// Without a photo the same reactions move the model less and leave it less sure.
+	if !(np > 0 && np < wp) || npSD <= wpSD {
+		t.Fatalf("no-photo reactions not down-weighted: with=%v±%v without=%v±%v", wp, wpSD, np, npSD)
+	}
+	if math.Abs(withoutPhoto.effective-withPhoto.effective/2) > 1e-9 {
+		t.Fatalf("effective observations: with=%v without=%v", withPhoto.effective, withoutPhoto.effective)
+	}
+	// Exactly half: two photo-less reactions fit like one with a photo.
+	doubled := append(reactions(tasteMeta{HadPhoto: &no}), reactions(tasteMeta{HadPhoto: &no})...)
+	for i := range doubled {
+		doubled[i].ID = int64(i + 1)
+	}
+	twice, _ := buildTasteModel(listings, doubled, now)
+	if tw, _ := twice.weight("finish:raw brass"); math.Abs(tw-wp) > 1e-3 {
+		t.Fatalf("two photo-less reactions = %v, one with a photo = %v", tw, wp)
+	}
+	// A head-to-head choice without photos counts half as well.
+	listings = append(listings, tasteListing("plain0", "Plainhorn", "P0", "lacquer", 2000), tasteListing("plain1", "Plainhorn", "P1", "lacquer", 2000))
+	pairs := func(meta tasteMeta) []tasteEvent {
+		out := []tasteEvent{}
+		for i := 0; i < 8; i++ {
+			out = append(out, tasteEvent{ID: int64(200 + i), Kind: "pair", ListingID: fmt.Sprintf("gold%d", i%6), OtherListingID: fmt.Sprintf("plain%d", i%2), Action: "a", Meta: meta, CreatedAt: now})
+		}
+		return out
+	}
+	pw, _ := buildTasteModel(listings, pairs(tasteMeta{HadPhoto: &yes}), now)
+	pn, _ := buildTasteModel(listings, pairs(tasteMeta{HadPhoto: &no}), now)
+	a, _ := pw.weight("maker:goldsmith")
+	b, _ := pn.weight("maker:goldsmith")
+	if !(b > 0 && b < a) {
+		t.Fatalf("pair without photos not down-weighted: with=%v without=%v", a, b)
+	}
+}
+
+func TestTasteQueuePrefersPhotosButStillShowsPhotoless(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := []trumpetListing{}
+	// Newest first alone would put every photo-less horn at the front.
+	for i := 0; i < 8; i++ {
+		listings = append(listings, tasteListing(fmt.Sprintf("bare%d", i), "Barecraft", fmt.Sprintf("B%d", i), "lacquer", 2000, func(l *trumpetListing) { l.FirstSeen = now.Add(-time.Duration(i) * time.Minute) }))
+	}
+	for i := 0; i < 8; i++ {
+		listings = append(listings, tasteListing(fmt.Sprintf("photo%d", i), "Photocraft", fmt.Sprintf("P%d", i), "raw brass", 2000, func(l *trumpetListing) {
+			l.FirstSeen = now.Add(-time.Duration(24+i) * time.Hour)
+			l.Images = []string{"https://fixtures.invalid/photo.svg"}
+		}))
+	}
+	m, d := buildTasteModel(listings, nil, now)
+	queue := tasteQueue(m, d, nil, now)
+	if len(queue) != 16 {
+		t.Fatalf("queue length %d", len(queue))
+	}
+	got := ""
+	for _, q := range queue {
+		if strings.HasPrefix(q.ListingID, "photo") {
+			got += "P"
+		} else {
+			got += "-"
+		}
+	}
+	// One photo-less card in every five while photo cards remain, then the rest.
+	if got != "PPPP-PPPP-------" {
+		t.Fatalf("queue order %s", got)
+	}
+	if queue[0].ListingID != "photo0" || queue[4].ListingID != "bare0" {
+		t.Fatalf("order within groups changed: %v %v", queue[0], queue[4])
+	}
+	if s := preferPhotos([]int{1, 2, 3}, func(int) bool { return false }); fmt.Sprint(s) != "[1 2 3]" {
+		t.Fatalf("all photo-less: %v", s)
+	}
+}
+
+func TestValidateTasteEventMeta(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	other := "22222222-2222-4222-8222-222222222222"
+	no := false
+	for _, in := range []tasteEventInput{
+		{ClientID: "client-0001", Kind: "swipe", ListingID: id, Action: "left", Meta: &tasteMeta{HadPhoto: &no}},
+		{ClientID: "client-0002", Kind: "pair", ListingID: id, OtherListingID: other, Action: "a", Meta: &tasteMeta{HadPhoto: &no}},
+	} {
+		if err := validateTasteEvent(&in); err != nil {
+			t.Errorf("%+v: %v", in, err)
+		}
+	}
+	for _, in := range []tasteEventInput{
+		{ClientID: "client-0003", Kind: "note", ListingID: id, Note: "x", Meta: &tasteMeta{HadPhoto: &no}},
+		{ClientID: "client-0004", Kind: "undo", Undoes: 3, Meta: &tasteMeta{}},
+	} {
+		if err := validateTasteEvent(&in); err == nil {
+			t.Errorf("accepted meta on %s", in.Kind)
+		}
+	}
+}

@@ -570,6 +570,123 @@ func TestTrumpetPersistence(t *testing.T) {
 		}
 	})
 
+	t.Run("photos fill on re-ingest and are never wiped by a recheck without them", func(t *testing.T) {
+		images := func(id string) []string {
+			t.Helper()
+			var raw []byte
+			if err := isolated.QueryRow(ctx, `SELECT images FROM trumpet_listings WHERE id=$1`, id).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			json.Unmarshal(raw, &out)
+			return out
+		}
+		p := 5100.0
+		horn := trumpetCandidate{Maker: "Monette", Model: "Raja Samadhi", Title: "Monette Raja Samadhi · fixture", URL: "https://photos.test/products/raja", Source: "Photo fixture dealer", Price: &p, Currency: "USD", Status: "active", SearchScore: 80, VerificationState: "verified"}
+		sources := []trumpetSourceCheck{{Source: horn.Source, Status: "checked", Candidates: 1}}
+		r := trumpetRunInput{ExternalID: "photos-1", Kind: "combined", Status: "succeeded", Sources: sources, Listings: []trumpetCandidate{horn}}
+		hornID := ingest(r, 200)["listingIds"].([]any)[0].(string)
+		if got := images(hornID); len(got) != 0 {
+			t.Fatalf("new listing without photos has %v", got)
+		}
+		// A recheck that sees photos fills an empty gallery.
+		horn.Images = []string{"https://photos.test/raja-1.jpg", "https://photos.test/raja-2.jpg"}
+		r.ExternalID, r.Kind, r.Listings = "photos-2", "recheck", []trumpetCandidate{horn}
+		ingest(r, 200)
+		if got := images(hornID); len(got) != 2 || got[0] != "https://photos.test/raja-1.jpg" {
+			t.Fatalf("recheck did not add photos: %v", got)
+		}
+		// A recheck that sees none keeps them.
+		horn.Images = nil
+		r.ExternalID, r.Listings = "photos-3", []trumpetCandidate{horn}
+		ingest(r, 200)
+		if got := images(hornID); len(got) != 2 {
+			t.Fatalf("recheck without photos wiped them: %v", got)
+		}
+		// A search rediscovery as a lead (no photos) never wipes them either.
+		lead := horn
+		lead.VerificationState, lead.Price, lead.Status = "candidate", nil, "stale"
+		r.ExternalID, r.Kind, r.Listings = "photos-4", "search", []trumpetCandidate{lead}
+		ingest(r, 200)
+		if got := images(hornID); len(got) != 2 {
+			t.Fatalf("lead rediscovery wiped photos: %v", got)
+		}
+		// New photos from the source replace the old ones.
+		horn.Images = []string{"https://photos.test/raja-3.jpg"}
+		r.ExternalID, r.Kind, r.Listings = "photos-5", "recheck", []trumpetCandidate{horn}
+		ingest(r, 200)
+		if got := images(hornID); len(got) != 1 || got[0] != "https://photos.test/raja-3.jpg" {
+			t.Fatalf("recheck with new photos did not replace them: %v", got)
+		}
+
+		// The image backfill: an 'images' run only fills empty galleries.
+		bare := horn
+		bare.URL, bare.Title, bare.Images = "https://photos.test/products/bare", "Monette bare · fixture", nil
+		r.ExternalID, r.Kind, r.Listings = "photos-6", "combined", []trumpetCandidate{bare}
+		bareID := ingest(r, 200)["listingIds"].([]any)[0].(string)
+		var checkedBefore string
+		isolated.QueryRow(ctx, `SELECT last_checked::text FROM trumpet_listings WHERE id=$1`, bareID).Scan(&checkedBefore)
+		var observations int
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_observations WHERE listing_id=$1`, bareID).Scan(&observations)
+		backfill := trumpetRunInput{ExternalID: "image-backfill-1", Kind: "images", Status: "succeeded", ImageUpdates: []trumpetImageUpdate{
+			{ID: bareID, Images: []string{"https://photos.test/bare-1.jpg"}},
+			{ID: hornID, Images: []string{"https://photos.test/should-not-replace.jpg"}},
+			{ID: uuid.NewString(), Images: []string{"https://photos.test/not-owned.jpg"}},
+		}}
+		out := ingest(backfill, 200)
+		if out["status"] != "succeeded" || out["imagesAdded"].(float64) != 1 {
+			t.Fatalf("image run %v", out)
+		}
+		if got := images(bareID); len(got) != 1 || got[0] != "https://photos.test/bare-1.jpg" {
+			t.Fatalf("backfill did not fill: %v", got)
+		}
+		if got := images(hornID); len(got) != 1 || got[0] != "https://photos.test/raja-3.jpg" {
+			t.Fatalf("backfill replaced existing photos: %v", got)
+		}
+		// Not an observation: no check, no history, and a retry replays.
+		var checkedAfter string
+		var after int
+		isolated.QueryRow(ctx, `SELECT last_checked::text FROM trumpet_listings WHERE id=$1`, bareID).Scan(&checkedAfter)
+		isolated.QueryRow(ctx, `SELECT count(*) FROM trumpet_observations WHERE listing_id=$1`, bareID).Scan(&after)
+		if checkedAfter != checkedBefore || after != observations {
+			t.Fatalf("image run counted as a check: %s -> %s, %d -> %d observations", checkedBefore, checkedAfter, observations, after)
+		}
+		if ingest(backfill, 200)["replayed"] != true {
+			t.Fatal("image run retry was not idempotent")
+		}
+		// The board's run freshness ignores image runs.
+		var board map[string]any
+		json.Unmarshal(call("GET", "/v1/trumpets/listings", nil, "owner", 200), &board)
+		if latest, _ := board["latestRun"].(map[string]any); latest == nil || latest["kind"] == "images" {
+			t.Fatalf("image run shown as the latest run: %v", board["latestRun"])
+		}
+		if success, _ := board["lastSuccess"].(map[string]any); success["images"] != nil {
+			t.Fatalf("image run counted as a successful run: %v", success)
+		}
+		// Image runs carry image updates only, with HTTPS photos.
+		bad := backfill
+		bad.ExternalID, bad.ImageUpdates = "image-backfill-http", []trumpetImageUpdate{{ID: bareID, Images: []string{"http://photos.test/x.jpg"}}}
+		ingest(bad, 400)
+		bad.ExternalID, bad.ImageUpdates, bad.Listings = "image-backfill-listings", nil, []trumpetCandidate{bare}
+		ingest(bad, 400)
+		// ... and no source coverage either (it searched nothing).
+		bad.ExternalID, bad.Listings, bad.ImageUpdates, bad.Sources = "image-backfill-sources", nil, []trumpetImageUpdate{{ID: bareID, Images: []string{"https://photos.test/c.jpg"}}}, sources
+		ingest(bad, 400)
+		bad.Sources = nil
+		bad.ExternalID, bad.Listings, bad.ImageUpdates = "image-backfill-dup", nil, []trumpetImageUpdate{{ID: bareID, Images: []string{"https://photos.test/a.jpg"}}, {ID: bareID, Images: []string{"https://photos.test/b.jpg"}}}
+		ingest(bad, 400)
+		// A daily run can carry image updates for pages it reached but could
+		// not verify; they fill only empty galleries too.
+		other := horn
+		other.URL, other.Title, other.Images = "https://photos.test/products/other", "Monette other · fixture", nil
+		r.ExternalID, r.Kind, r.Listings = "photos-7", "combined", []trumpetCandidate{other}
+		otherID := ingest(r, 200)["listingIds"].([]any)[0].(string)
+		daily := trumpetRunInput{ExternalID: "photos-8", Kind: "combined", Status: "succeeded", Sources: sources, ImageUpdates: []trumpetImageUpdate{{ID: otherID, Images: []string{"https://photos.test/other-1.jpg"}}}}
+		if out := ingest(daily, 200); out["imagesAdded"].(float64) != 1 {
+			t.Fatalf("daily image update %v", out)
+		}
+	})
+
 	// Reject owner hijacking and roll back the entire report.
 	c.ID = uuid.NewString()
 	run.ExternalID = "bad"

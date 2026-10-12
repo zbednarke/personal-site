@@ -116,6 +116,14 @@ type trumpetRunInput struct {
 	// (blocked, timed out, ambiguous page). Recorded per listing; see
 	// recordTrumpetCheckFailures.
 	CheckFailures []trumpetCheckFailure `json:"checkFailures"`
+	// Photos found for tracked listings that have none (a page that was
+	// reached but did not verify an offer, or the image backfill). They only
+	// fill an empty gallery; they are not observations.
+	ImageUpdates []trumpetImageUpdate `json:"imageUpdates,omitempty"`
+}
+type trumpetImageUpdate struct {
+	ID     string   `json:"id"`
+	Images []string `json:"images"`
 }
 type trumpetCheckFailure struct {
 	ID     string `json:"id"`
@@ -354,17 +362,23 @@ func normalizeTrumpet(c *trumpetCandidate) error {
 	if len(c.Images) > 20 || len(c.Tags) > 40 {
 		return errors.New("too many images or tags")
 	}
-	for _, v := range c.Images {
-		u, e := url.Parse(v)
-		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-			return errors.New("images require HTTPS URLs")
-		}
+	if err := validateTrumpetImages(c.Images); err != nil {
+		return err
 	}
 	if c.Images == nil {
 		c.Images = []string{}
 	}
 	if c.Tags == nil {
 		c.Tags = []string{}
+	}
+	return nil
+}
+func validateTrumpetImages(images []string) error {
+	for _, v := range images {
+		u, e := url.Parse(v)
+		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || len(v) > 2000 {
+			return errors.New("images require HTTPS URLs")
+		}
 	}
 	return nil
 }
@@ -568,7 +582,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 			}
 		}
 		err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET title=$3,description=$4,seller=$5,location=$6,price=$7,currency=$8,shipping=$9,
-   posted_at=COALESCE($10,posted_at),status=$11,search_score=$12,search_rationale=$13,images=$14,tags=$15,last_checked=now(),
+   posted_at=COALESCE($10,posted_at),status=$11,search_score=$12,search_rationale=$13,images=CASE WHEN jsonb_array_length($14::jsonb)>0 THEN $14::jsonb ELSE images END,tags=$15,last_checked=now(),
    changed_at=CASE WHEN price IS DISTINCT FROM $7::numeric OR currency<>$8 OR status<>$11 OR description<>$4 THEN now() ELSE changed_at END,
    discovery_type=CASE WHEN $16<>'' THEN $16 ELSE discovery_type END WHERE id=$1 AND user_id=$2`, id, user, c.Title, c.Description, c.Seller, c.Location, c.Price, c.Currency, c.Shipping, c.PostedAt, c.Status, c.SearchScore, c.SearchRationale, images, tags, discovery)
 		if err != nil {
@@ -777,12 +791,12 @@ func (app *application) trumpetBoard(w http.ResponseWriter, r *http.Request) {
 	var latest, lastSuccess json.RawMessage
 	err = app.db.QueryRow(r.Context(), `SELECT jsonb_build_object('id',r.id,'kind',r.kind,'status',r.status,'startedAt',r.started_at,'completedAt',r.completed_at,'error',r.error,
  'sources',COALESCE((SELECT jsonb_agg(jsonb_build_object('source',s.source,'status',s.status,'candidates',s.candidates,'note',s.note,'domain',s.domain,'query',s.query,'pagesOpened',s.pages_opened,'verifiedOffers',s.verified_offers,'staleResults',s.stale_results) ORDER BY s.source) FROM trumpet_run_sources s WHERE s.run_id=r.id),'[]'))
- FROM trumpet_runs r WHERE user_id=$1 ORDER BY started_at DESC LIMIT 1`, user).Scan(&latest)
+ FROM trumpet_runs r WHERE user_id=$1 AND kind<>'images' ORDER BY started_at DESC LIMIT 1`, user).Scan(&latest)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		app.serverError(w, err)
 		return
 	}
-	err = app.db.QueryRow(r.Context(), `SELECT jsonb_object_agg(kind,completed_at) FROM (SELECT DISTINCT ON(kind) kind,completed_at FROM trumpet_runs WHERE user_id=$1 AND status='succeeded' ORDER BY kind,completed_at DESC) s`, user).Scan(&lastSuccess)
+	err = app.db.QueryRow(r.Context(), `SELECT jsonb_object_agg(kind,completed_at) FROM (SELECT DISTINCT ON(kind) kind,completed_at FROM trumpet_runs WHERE user_id=$1 AND status='succeeded' AND kind<>'images' ORDER BY kind,completed_at DESC) s`, user).Scan(&lastSuccess)
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -998,11 +1012,28 @@ func validateTrumpetRun(input *trumpetRunInput) error {
 	if strings.TrimSpace(input.ExternalID) == "" || len(input.ExternalID) > 200 || len(input.Error) > 10000 {
 		return errors.New("bounded externalId required")
 	}
-	if !containsString([]string{"search", "recheck", "combined"}, input.Kind) || !containsString([]string{"succeeded", "partial", "failed"}, input.Status) {
+	if !containsString([]string{"search", "recheck", "combined", "images"}, input.Kind) || !containsString([]string{"succeeded", "partial", "failed"}, input.Status) {
 		return errors.New("invalid run kind/status")
 	}
-	if len(input.Listings) > 1000 || len(input.Sources) > 200 || len(input.CheckFailures) > 1000 {
+	if len(input.Listings) > 1000 || len(input.Sources) > 200 || len(input.CheckFailures) > 1000 || len(input.ImageUpdates) > 1000 {
 		return errors.New("run too large")
+	}
+	// An image run only fills empty galleries: no offers, checks or coverage.
+	if input.Kind == "images" && (len(input.Listings) > 0 || len(input.CheckFailures) > 0 || len(input.Sources) > 0) {
+		return errors.New("an images run carries image updates only")
+	}
+	seenImages := map[string]bool{}
+	for i, u := range input.ImageUpdates {
+		if _, err := uuid.Parse(u.ID); err != nil || seenImages[u.ID] {
+			return fmt.Errorf("image update %d: one update per listing id", i)
+		}
+		seenImages[u.ID] = true
+		if len(u.Images) == 0 || len(u.Images) > 20 {
+			return fmt.Errorf("image update %d: 1–20 images", i)
+		}
+		if err := validateTrumpetImages(u.Images); err != nil {
+			return fmt.Errorf("image update %d: %w", i, err)
+		}
 	}
 	for i, f := range input.CheckFailures {
 		if _, err := uuid.Parse(f.ID); err != nil {
@@ -1013,7 +1044,7 @@ func validateTrumpetRun(input *trumpetRunInput) error {
 			return fmt.Errorf("check failure %d: bounded reason required", i)
 		}
 	}
-	if input.Status == "succeeded" && len(input.Sources) == 0 {
+	if input.Status == "succeeded" && len(input.Sources) == 0 && input.Kind != "images" {
 		return errors.New("successful run requires source coverage")
 	}
 	if input.StartedAt != nil && (input.StartedAt.After(time.Now().Add(time.Minute)) || input.StartedAt.Before(time.Now().Add(-48*time.Hour))) {
@@ -1109,6 +1140,11 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
+	imagesAdded, err := applyTrumpetImageUpdates(r.Context(), tx, user, input.ImageUpdates)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
 	recorded, unverifiable, err := recordTrumpetCheckFailures(r.Context(), tx, user, input.CheckFailures)
 	if err != nil {
 		app.serverError(w, err)
@@ -1120,7 +1156,7 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 	// An attempted check whose failure was recorded counts as checked for the
 	// day; only listings nobody tried today keep the run partial.
 	remaining := 0
-	if input.Kind != "search" {
+	if input.Kind == "recheck" || input.Kind == "combined" {
 		err = tx.QueryRow(r.Context(), `SELECT count(*) FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 AND NOT h.acquired AND l.status='active'
  AND (l.last_checked IS NULL OR l.last_checked < `+trumpetUTCDay+`) AND (l.last_check_attempt IS NULL OR l.last_check_attempt < `+trumpetUTCDay+`)`, user).Scan(&remaining)
 		if err != nil {
@@ -1141,7 +1177,22 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"runId": run, "listingIds": ids, "status": input.Status, "remainingActive": remaining, "checkFailures": recorded, "markedUnverifiable": unverifiable})
+	writeJSON(w, 200, map[string]any{"runId": run, "listingIds": ids, "status": input.Status, "remainingActive": remaining, "checkFailures": recorded, "markedUnverifiable": unverifiable, "imagesAdded": imagesAdded})
+}
+
+// applyTrumpetImageUpdates fills the photos of the owner's listings that have
+// none; a listing that already has photos (or is not the owner's) is left
+// alone. Returns how many listings gained photos.
+func applyTrumpetImageUpdates(ctx context.Context, tx pgx.Tx, user uuid.UUID, updates []trumpetImageUpdate) (int, error) {
+	if len(updates) == 0 {
+		return 0, nil
+	}
+	payload, _ := json.Marshal(updates)
+	var n int
+	err := tx.QueryRow(ctx, `WITH u AS (SELECT * FROM jsonb_to_recordset($2::jsonb) AS x(id uuid, images jsonb)),
+ filled AS (UPDATE trumpet_listings l SET images=u.images FROM u WHERE l.id=u.id AND l.user_id=$1 AND jsonb_array_length(l.images)=0 RETURNING 1)
+ SELECT count(*) FROM filled`, user, payload).Scan(&n)
+	return n, err
 }
 
 // lookupTrumpetRun answers whether a run with ?externalId= was stored, so a

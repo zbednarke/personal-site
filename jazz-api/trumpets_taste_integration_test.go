@@ -127,7 +127,19 @@ func TestTrumpetTastePersistence(t *testing.T) {
 			t.Fatal("just-swiped horn is still at the front of the queue")
 		}
 	}
-	call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "pair-0001", "kind": "pair", "mode": "pair", "listingId": id(1), "otherListingId": id(2), "action": "b"}, "owner", 201)
+	if meta := first["event"].(map[string]any)["meta"].(map[string]any); len(meta) != 0 {
+		t.Fatalf("a swipe without metadata stored %v", meta)
+	}
+	// Whether the card showed a photo is stored with the reaction and returned.
+	paired := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "pair-0001", "kind": "pair", "mode": "pair", "listingId": id(1), "otherListingId": id(2), "action": "b", "meta": map[string]any{"hadPhoto": false}}, "owner", 201)
+	if meta := paired["event"].(map[string]any)["meta"].(map[string]any); meta["hadPhoto"] != false {
+		t.Fatalf("pair meta %v", meta)
+	}
+	var storedMeta string
+	if err := isolated.QueryRow(ctx, `SELECT meta::text FROM trumpet_taste_events WHERE client_id='pair-0001'`).Scan(&storedMeta); err != nil || storedMeta != `{"hadPhoto": false}` {
+		t.Fatalf("stored meta %q %v", storedMeta, err)
+	}
+	call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "meta-bad-1", "kind": "swipe", "mode": "swipe", "listingId": id(3), "action": "left", "meta": map[string]any{"hadPhoto": false, "url": "https://x.invalid"}}, "owner", 400)
 	call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "tag-00001", "kind": "tag", "listingId": id(1), "tag": "raw brass", "action": "add"}, "owner", 201)
 	noted := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "note-0001", "kind": "note", "listingId": id(1), "note": "Love the raw brass, but too expensive"}, "owner", 201)
 	if tags := noted["tags"].(map[string]any)[id(1)].([]any); len(tags) != 1 || tags[0] != "raw brass" {

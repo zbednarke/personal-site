@@ -613,6 +613,110 @@ function syntheticPng(width, height) {
     await page.getByRole("button", { name: "Swipe", exact: true }).click();
     await page.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 20));
     await page.screenshot({ path: path.join(out, "taste-desktop.png") });
+    // ---- No photo: an obvious "View listing" link (new tab) that is never a
+    // reaction; reactions record whether the card showed a photo. ----
+    {
+      const noPhoto = await fetch(base + "/trumpets/api/v1/trumpets/machine/runs", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          externalId: "visual-fixture-no-photo",
+          kind: "combined",
+          status: "succeeded",
+          sources: [{ source: "Independent dealer · TEST FIXTURE", status: "checked", candidates: 1 }],
+          listings: [
+            {
+              maker: "Benge",
+              model: "3X no-photo fixture",
+              title: "Benge 3X · NO PHOTO · TEST FIXTURE",
+              url: "https://fixtures.invalid/products/benge-3x",
+              source: "Independent dealer · TEST FIXTURE",
+              price: 2100,
+              currency: "USD",
+              status: "active",
+              searchScore: 70,
+              searchRationale: "TEST FIXTURE · A listing whose source shows no photo.",
+              tags: ["TEST FIXTURE"],
+            },
+          ],
+        }),
+      });
+      assert.equal(noPhoto.status, 200, await noPhoto.text());
+      // The source page opens in a new tab (served locally, never fetched).
+      await page.context().route("https://fixtures.invalid/products/**", (r) => r.fulfill({ contentType: "text/html", body: "<title>Listing page · TEST FIXTURE</title>" }));
+      const posted = [];
+      const record = (r) => r.method() === "POST" && r.url().includes("/taste/events") && posted.push(JSON.parse(r.postData()));
+      page.on("request", record);
+      await page.reload();
+      await page.waitForSelector(".swipe-card");
+      // Cards with photos come first; react until a photo-less card with a link.
+      for (let i = 0; i < 30 && !(await page.locator(".swipe-card .taste-view-listing").count()); i++) {
+        const id = await swipeId();
+        const hadPhoto = (await page.locator(".swipe-card .swipe-visual:not(.no-photo)").count()) === 1;
+        assert.equal(await page.locator(".swipe-card .swipe-visual.no-photo").count(), hadPhoto ? 0 : 1);
+        await Promise.all([tastePosts(), page.keyboard.press("ArrowLeft")]);
+        await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, id);
+        assert.deepEqual(posted.at(-1).meta, { hadPhoto }, "each swipe records whether its card had a photo");
+      }
+      const link = page.locator(".swipe-card .taste-view-listing");
+      assert.equal(await link.count(), 1, "a photo-less card shows a View listing link");
+      assert.equal(await link.innerText(), "View listing ↗");
+      assert.equal(await link.getAttribute("target"), "_blank");
+      assert.match(await link.getAttribute("rel"), /noopener/);
+      assert.match(await link.getAttribute("href"), /^https:\/\/fixtures\.invalid\/products\//);
+      assert.equal(await page.locator(".swipe-card .swipe-visual.no-photo").count(), 1);
+      const linkedId = await swipeId();
+      const before = posted.length;
+      const [tab] = await Promise.all([page.context().waitForEvent("page"), link.click()]);
+      await tab.waitForLoadState();
+      assert.match(tab.url(), /^https:\/\/fixtures\.invalid\/products\//);
+      await tab.close();
+      // A touch-style press and release on the link is not a swipe either.
+      const lb = await link.boundingBox();
+      await page.mouse.move(lb.x + lb.width / 2, lb.y + lb.height / 2);
+      const [tab2] = await Promise.all([
+        page.context().waitForEvent("page"),
+        (async () => {
+          await page.mouse.down();
+          await page.mouse.up();
+        })(),
+      ]);
+      await tab2.close();
+      await page.waitForTimeout(500);
+      assert.equal(posted.length, before, "opening the listing POSTs no reaction");
+      assert.equal(await swipeId(), linkedId, "opening the listing keeps the card");
+      await Promise.all([tastePosts(), page.keyboard.press("ArrowLeft")]);
+      assert.deepEqual(posted.at(-1).meta, { hadPhoto: false }, "a reaction without a photo says so");
+      // Head to head: the same link beside a photo-less side, never a choice.
+      const photoId = await page.evaluate(async () => (await (await fetch("/trumpets/api/v1/trumpets/listings")).json()).listings.find((l) => l.images.length && !l.acquired).id);
+      await page.route("**/trumpets/api/v1/trumpets/taste", async (route) => {
+        const response = await route.fetch();
+        const json = await response.json();
+        json.pairs = [{ a: photoId, b: linkedId, p: 0.5, sd: 1 }, ...json.pairs.filter((p) => p.a !== linkedId && p.b !== linkedId)];
+        await route.fulfill({ response, json });
+      });
+      await page.reload();
+      await page.waitForSelector(".swipe-card, .taste-empty");
+      await page.getByRole("button", { name: "Head to head" }).click();
+      await page.waitForFunction(() => document.querySelectorAll(".pair-card").length === 2);
+      const pairLink = page.locator(".pair-slot .taste-view-listing");
+      assert.equal(await pairLink.count(), 1, "only the photo-less side has the link");
+      assert.equal(await page.locator(".pair-slot").nth(1).locator(".taste-view-listing").count(), 1);
+      assert.equal(await page.locator(".pair-card .taste-view-listing").count(), 0, "the link is not inside the choice button");
+      const pairBefore = await page.locator(".pair-card").evaluateAll((n) => n.map((c) => c.getAttribute("aria-label")).join("|"));
+      const pairPosts = posted.length;
+      const [tab3] = await Promise.all([page.context().waitForEvent("page"), pairLink.click()]);
+      await tab3.close();
+      await page.waitForTimeout(500);
+      assert.equal(posted.length, pairPosts, "opening a listing from head to head is not a choice");
+      assert.equal(await page.locator(".pair-card").evaluateAll((n) => n.map((c) => c.getAttribute("aria-label")).join("|")), pairBefore);
+      await Promise.all([tastePosts(), page.locator(".pair-card").first().click()]);
+      assert.deepEqual(posted.at(-1).meta, { hadPhoto: false }, "a choice with a photo-less side says so");
+      assert.equal(posted.at(-1).listingId, photoId);
+      await page.unroute("**/trumpets/api/v1/trumpets/taste");
+      page.off("request", record);
+      await page.getByRole("button", { name: "Swipe", exact: true }).click();
+    }
     await page.getByRole("button", { name: "Head to head" }).click();
     // Owner-stated preferences save as a new version and survive a reload.
     await page.locator("#taste-prefs-box > summary").click();
@@ -835,7 +939,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, chips, text and voice notes, head to head, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, chips, text and voice notes, head to head, photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

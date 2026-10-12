@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -69,8 +70,26 @@ type tasteEvent struct {
 	Undoes         *int64    `json:"undoes,omitempty"`
 	HasAudio       bool      `json:"hasAudio"`
 	AudioMs        *int      `json:"audioDurationMs,omitempty"`
+	Meta           tasteMeta `json:"meta"`
 	CreatedAt      time.Time `json:"createdAt"`
 	undone         bool
+}
+
+// tasteMeta is a reaction's small metadata. HadPhoto is whether the card (for
+// a pair: both cards) showed a listing photo; nil for older events (unknown).
+type tasteMeta struct {
+	HadPhoto *bool `json:"hadPhoto,omitempty"`
+}
+
+// tasteNoPhotoWeight scales a swipe or head-to-head choice made without a
+// photo: the owner judged from the text (or the source page) alone.
+const tasteNoPhotoWeight = 0.5
+
+func (m tasteMeta) weight() float64 {
+	if m.HadPhoto != nil && !*m.HadPhoto {
+		return tasteNoPhotoWeight
+	}
+	return 1
 }
 
 type tasteWeight struct {
@@ -747,7 +766,8 @@ func (d *tasteData) observations(events []tasteEvent, now time.Time, before *tim
 		if _, ok := d.byListing[e.ListingID]; !ok {
 			continue
 		}
-		w := decay(e.CreatedAt)
+		// Reactions made without a photo count half (see tasteMeta).
+		w := decay(e.CreatedAt) * e.Meta.weight()
 		switch e.Kind {
 		case "swipe":
 			switch e.Action {
@@ -891,8 +911,37 @@ func (d *tasteData) eligible(h *tasteHorn) bool {
 	return !l.Acquired && l.Status != "acquired" && l.Feedback.InterestState != "pass"
 }
 
+// tasteNoPhotoEvery: in the swipe queue at most one card in this many has no
+// photo while cards with photos remain, so photo-less horns still come up
+// (with a "View listing" link) without crowding out the ones that can be
+// judged at a glance.
+const tasteNoPhotoEvery = 5
+
+// preferPhotos keeps each group's order but puts cards with photos first,
+// letting one photo-less card through every tasteNoPhotoEvery slots.
+func preferPhotos[T any](items []T, photo func(T) bool) []T {
+	with, without := []T{}, []T{}
+	for _, it := range items {
+		if photo(it) {
+			with = append(with, it)
+		} else {
+			without = append(without, it)
+		}
+	}
+	out := make([]T, 0, len(items))
+	for len(with) > 0 || len(without) > 0 {
+		if len(without) > 0 && (len(with) == 0 || len(out)%tasteNoPhotoEvery == tasteNoPhotoEvery-1) {
+			out, without = append(out, without[0]), without[1:]
+		} else {
+			out, with = append(out, with[0]), with[1:]
+		}
+	}
+	return out
+}
+
 // tasteQueue: unseen horns first (active, then newest), then horns not swiped
-// recently, most uncertain first.
+// recently, most uncertain first; within each, horns with photos first (see
+// preferPhotos).
 func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) []tasteQueueItem {
 	lastSwipe := map[string]time.Time{}
 	for _, e := range events {
@@ -906,6 +955,7 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	type item struct {
 		tasteQueueItem
 		active      bool
+		photo       bool
 		first       time.Time
 		uncertainty float64
 	}
@@ -917,7 +967,7 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		}
 		z, v := m.affinity(d.keys(h.primary.ID))
 		p := sigmoid(z)
-		it := item{tasteQueueItem: tasteQueueItem{ListingID: h.primary.ID, Taste: math.Round(1000*p) / 10, SD: math.Round(1000*math.Sqrt(v)) / 1000}, active: h.primary.Status == "active", first: h.primary.FirstSeen, uncertainty: math.Sqrt(v) * 4 * p * (1 - p)}
+		it := item{tasteQueueItem: tasteQueueItem{ListingID: h.primary.ID, Taste: math.Round(1000*p) / 10, SD: math.Round(1000*math.Sqrt(v)) / 1000}, active: h.primary.Status == "active", photo: len(h.primary.Images) > 0, first: h.primary.FirstSeen, uncertainty: math.Sqrt(v) * 4 * p * (1 - p)}
 		last, swiped := lastSwipe[horn]
 		switch {
 		case !swiped:
@@ -935,8 +985,9 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		return unseen[i].first.After(unseen[j].first)
 	})
 	sort.SliceStable(seen, func(i, j int) bool { return seen[i].uncertainty > seen[j].uncertainty })
+	hasPhoto := func(it item) bool { return it.photo }
 	out := []tasteQueueItem{}
-	for _, it := range append(unseen, seen...) {
+	for _, it := range append(preferPhotos(unseen, hasPhoto), preferPhotos(seen, hasPhoto)...) {
 		out = append(out, it.tasteQueueItem)
 		if len(out) == tasteQueueLimit {
 			break
@@ -1066,11 +1117,15 @@ func tasteMachineSummary(m *tasteModel) map[string]any {
 
 // ---- Storage --------------------------------------------------------------
 
-const tasteEventColumns = `id,client_id,kind,mode,COALESCE(listing_id::text,''),COALESCE(other_listing_id::text,''),action,tag,note,undoes,audio_object IS NOT NULL,audio_duration_ms,created_at`
+const tasteEventColumns = `id,client_id,kind,mode,COALESCE(listing_id::text,''),COALESCE(other_listing_id::text,''),action,tag,note,undoes,audio_object IS NOT NULL,audio_duration_ms,meta,created_at`
 
 func scanTasteEvent(row pgx.Row) (tasteEvent, error) {
 	var e tasteEvent
-	err := row.Scan(&e.ID, &e.ClientID, &e.Kind, &e.Mode, &e.ListingID, &e.OtherListingID, &e.Action, &e.Tag, &e.Note, &e.Undoes, &e.HasAudio, &e.AudioMs, &e.CreatedAt)
+	var meta []byte
+	err := row.Scan(&e.ID, &e.ClientID, &e.Kind, &e.Mode, &e.ListingID, &e.OtherListingID, &e.Action, &e.Tag, &e.Note, &e.Undoes, &e.HasAudio, &e.AudioMs, &meta, &e.CreatedAt)
+	if err == nil && len(meta) > 0 {
+		_ = json.Unmarshal(meta, &e.Meta)
+	}
 	return e, err
 }
 
@@ -1125,6 +1180,8 @@ type tasteEventInput struct {
 	Tag            string `json:"tag"`
 	Note           string `json:"note"`
 	Undoes         int64  `json:"undoes"`
+	// Only swipes and head-to-head choices carry metadata.
+	Meta *tasteMeta `json:"meta,omitempty"`
 }
 
 func validateTasteEvent(in *tasteEventInput) error {
@@ -1172,6 +1229,9 @@ func validateTasteEvent(in *tasteEventInput) error {
 		}
 	default:
 		return errors.New("kind must be swipe, pair, tag, note or undo")
+	}
+	if in.Meta != nil && in.Kind != "swipe" && in.Kind != "pair" {
+		return errors.New("only swipes and head-to-head choices carry meta")
 	}
 	return nil
 }
@@ -1291,9 +1351,13 @@ func insertTasteEvent(ctx context.Context, tx pgx.Tx, user uuid.UUID, in tasteEv
 	if audio != nil {
 		object, contentType, size, duration = audio.object, audio.contentType, audio.size, audio.durationMs
 	}
-	e, err := scanTasteEvent(tx.QueryRow(ctx, `INSERT INTO trumpet_taste_events(user_id,client_id,kind,mode,listing_id,other_listing_id,action,tag,note,undoes,audio_object,audio_content_type,audio_bytes,audio_duration_ms)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING `+tasteEventColumns,
-		user, in.ClientID, in.Kind, in.Mode, nullText(in.ListingID), nullText(in.OtherListingID), in.Action, in.Tag, in.Note, undoes, object, contentType, size, duration))
+	meta := []byte("{}")
+	if in.Meta != nil {
+		meta, _ = json.Marshal(in.Meta)
+	}
+	e, err := scanTasteEvent(tx.QueryRow(ctx, `INSERT INTO trumpet_taste_events(user_id,client_id,kind,mode,listing_id,other_listing_id,action,tag,note,undoes,audio_object,audio_content_type,audio_bytes,audio_duration_ms,meta)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING `+tasteEventColumns,
+		user, in.ClientID, in.Kind, in.Mode, nullText(in.ListingID), nullText(in.OtherListingID), in.Action, in.Tag, in.Note, undoes, object, contentType, size, duration, meta))
 	return e, false, err
 }
 

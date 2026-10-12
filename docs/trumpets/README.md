@@ -777,3 +777,68 @@ The first taste-training run was stored, but the runner crashed: `POST
 `tools/trumpets/runner.py` to `/opt/trumpets/runner.py` on the VM; the service,
 timer and env file are unchanged. The new runner against an older API still works
 (the lookup answers 404, so it falls back to the idempotent resubmit).
+
+## Listing photos (migration 034)
+
+Many Taste cards showed the placeholder drawing although the source had photos:
+Reverb listings that were no longer due were never rechecked, imported and lead
+records were stored without photos, multi-valued or `http://` `og:image` tags and
+protocol-relative Shopify JSON images were dropped, and a recheck without photos
+wiped the ones a listing had.
+
+- **Runner.** Every path that reaches a listing keeps its photos, up to 6 absolute
+  HTTPS URLs at a bounded large size where the CDN's URL sets it (Shopify `_1600x`,
+  Squarespace `?format=1500w`, eBay `s-l1600`; other URLs as the page gives them;
+  sizes of one photo, e.g. Weebly `_w640`/`_w2560`, counted once), never logos,
+  placeholders, icons, banners, `data:` URIs or tracking pixels:
+  Reverb's public API (`photos[]._links.full`/`large_crop`, else `_links.photo`) on
+  discovery and recheck; a page's schema.org Product `image` (a product described
+  twice counts once; a page with several products gives none), the first main
+  product gallery only (WooCommerce `data-large_image`, Squarespace `data-image`,
+  Shopify media; never related, upsell or cross-sell sections or `ul.products`
+  loops, whose photos are other horns),
+  `og:image`/`twitter:image` and microdata; Shopify's `/products/<handle>.js`;
+  eBay only through the Browse API when keys exist. Lead hints carry the photos of
+  the page they came from. A tracked listing without photos whose page was reached
+  but did not verify an offer gets them through the run's `imageUpdates`.
+- **eBay without keys.** Item pages refuse automated requests (403), the
+  Responses `web_search` sources carry only URLs and titles (no image), and
+  `i.ebayimg.com` answers 200 with a stock image even for made-up ids, so a
+  model-reported image URL could not be checked against the item. eBay listings
+  stay without photos unless `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` are set.
+- **API.** A run's listing upsert keeps the stored photos when it brings none, and
+  replaces them when it brings new ones. `imageUpdates: [{id, images}]` (any run
+  kind, at most 1000, 1–20 HTTPS URLs each) only fill a listing that has no photos;
+  the response reports `imagesAdded`. Runs of the new kind `images` carry image
+  updates only: no listings, checks or coverage, no observation or `last_checked`
+  change, replayed per `externalId` like every run, and left out of the board's
+  latest-run and last-success freshness.
+- **Taste.** The swipe queue lets one photo-less card through in every five while
+  cards with photos remain, then shows the rest. A photo-less card (or one whose
+  photo fails to load) shows **View listing ↗**, opening the source in a new tab;
+  pressing it is never a swipe or a head-to-head choice (in head to head it sits
+  beside the choice button, not inside it). Swipes and pair choices send
+  `meta: {"hadPhoto": true|false}` (pairs: both sides had a photo), stored in the
+  new `trumpet_taste_events.meta` column (`{}` for earlier events, which keep full
+  weight). The model gives a reaction made without a photo half weight.
+
+**Deploy.** API first (migration 034 widens the `trumpet_runs.kind` check to allow
+`images` and adds `trumpet_taste_events.meta`; both replay-safe). The new taste page
+sends `meta`, which an older API rejects, so ship the static site with or after the
+API. Then copy `tools/trumpets/runner.py` to `/opt/trumpets/runner.py` on the VM
+(service, timer and env file unchanged; against an older API it resubmits a daily
+run without `imageUpdates`). Run the one-time backfill with the same environment:
+
+```sh
+sudo systemd-run --wait --pipe --property=EnvironmentFile=/etc/trumpets/runner.env \
+  --property=DynamicUser=yes /usr/bin/python3 /opt/trumpets/runner.py --backfill-images
+```
+
+It walks every tracked listing without photos (Reverb API, then the eBay Browse
+API with keys, then the page and a Shopify product's JSON). After a refusal (401,
+403, 429 or a bot challenge) it makes no further requests to that source for the
+rest of the run: the Reverb API, the eBay API, or that one site. It stays within
+caps of 450 listings, 200 Reverb calls, 200 page fetches
+(30 per domain, a second apart), 60 eBay calls and 25 minutes. It prints counts only
+and submits one `images` run (`image-backfill-<time>`); rerunning it later only
+tries listings that still have no photos.
