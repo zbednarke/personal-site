@@ -10,7 +10,11 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
 3. A new static release on `actual-server` (`actual-budget-zb`, `us-west1-a`, over
    IAP) made by `deploy/publish-static-release.sh`: it copies the live release,
    overlays `index.html`, `.nojekyll`, `assets/`, `jazz/`, `trumpets/`, `commonplace/` and `privacy/` from the
-   commit, then switches `/srv/zachbednarke.com/current` atomically. Films in
+   commit, then switches `/srv/zachbednarke.com/current` atomically. Only the
+   files whose bytes differ from the live release are uploaded
+   (`deploy/package-static-release.py` compares SHA-256 hashes read from the VM;
+   if they cannot be read, every file is), because the IAP upload runs at a few
+   KB/s; the overlay makes the release the same either way. Films in
    `/srv/zachbednarke.com/films` are separate and untouched. The log prints the
    previous release and a one-line rollback.
 

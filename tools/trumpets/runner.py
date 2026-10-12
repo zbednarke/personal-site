@@ -2078,10 +2078,38 @@ class Taste:
         return 6 if self.rejected(key) else 16 if self.favored(key) else 12
 
 
+# Registered sources the daily search does not site-search, and why. They stay
+# in the registry (and in the -site: exclusions of source discovery); the run
+# notes say they were left out, so a search that cannot find anything neither
+# spends one of the 36 source slots nor makes the run partial.
+NOT_SEARCHED={
+    # A maker's own shop (Shopware) selling new instruments: its categories and
+    # sitemap list no used, demo or consignment trumpets, and its "Sale" pages
+    # are discounted new stock. Product URLs are German (/p/...-b-trompete-...)
+    # and Schagerl is not a tracked maker, so no result could become an offer
+    # or a lead; the site search only ever ended "failed" with 0 candidates.
+    'schagerl.com':'maker shop selling new instruments only; no used or demo listings to find',
+}
+
+
+def source_domain(domain):
+    return str(domain or '').lower().removeprefix('www.')
+
+
+def not_searched(profile):
+    """[(name, domain, reason)] for registered sources the search leaves out."""
+    found={}
+    for s in profile.get('sourceUniverse') or []:
+        domain=source_domain(s.get('domain'))
+        if domain in NOT_SEARCHED:found.setdefault(domain,(s.get('name') or domain,domain,NOT_SEARCHED[domain]))
+    return list(found.values())
+
+
 def search_plan(profile,day=None):
     day=day or dt.datetime.now(dt.timezone.utc).date()
     taste=Taste(profile)
-    universe=profile.get('sourceUniverse') or [dict(domain=d,name=n,specialty='specialist dealer',geography='International') for n,ds in SOURCES.items() for d in ds]
+    registry=profile.get('sourceUniverse') or [dict(domain=d,name=n,specialty='specialist dealer',geography='International') for n,ds in SOURCES.items() for d in ds]
+    universe=[s for s in registry if source_domain(s['domain']) not in NOT_SEARCHED]
     # Sort never/oldest searched sources first; date-dependent ties avoid repeating
     # the same seed subset. Useful sources get a bounded portion of the run.
     rank=lambda s:hashlib.sha256((day.isoformat()+s['domain']).encode()).hexdigest()
@@ -2121,7 +2149,7 @@ def search_plan(profile,day=None):
     if taste.active:plan.sort(key=lambda t:(-t['priority'][0],-t['priority'][1]))
     # All known domains are excluded from deliberate source-expansion queries.
     exclusions=''
-    for source in universe:
+    for source in registry:
         term=' -site:'+source['domain']
         if len(exclusions)+len(term)>3000: break
         exclusions+=term
@@ -2925,6 +2953,9 @@ def daily(client, trigger_fix=False):
     report['sources'].append(check);market_notes={'reverb':check['note']}
     if not key and not openai: failures.append('No search provider key configured')
     else:
+        left_out=not_searched(profile)
+        if left_out:
+            notes.append('Not searched by design: '+'; '.join(f'{name} ({domain}): {why}' for name,domain,why in left_out))
         for task in search_plan(profile):
             check={k:task[k] for k in ('source','domain','query','geography','specialty') if k in task}
             check.update(status='checked',candidates=0,note='',pagesOpened=0,verifiedOffers=0,staleResults=0)
