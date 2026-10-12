@@ -395,6 +395,17 @@ func TestTrumpetPersistence(t *testing.T) {
 		if leadStatus != "stale" || leadFailures != 4 || !attempted || checked {
 			t.Fatalf("candidate failure state %s %d %v %v", leadStatus, leadFailures, attempted, checked)
 		}
+		// A NUL in a runner's reason (from a page reading) never loses the run:
+		// Postgres text rejects \x00, so the API strips it before the insert.
+		nul := ingest(trumpetRunInput{ExternalID: "nul-reason", Kind: "search", Status: "succeeded", Error: "fixture note\x00", Sources: blocked.Sources,
+			CheckFailures: []trumpetCheckFailure{{ID: leadID, Reason: "leads.test / no offer\npage reading hint (unverified): \"$4\x00,350.00\" USD"}}}, 200)
+		if nul["checkFailures"].(float64) != 1 {
+			t.Fatalf("NUL reason run: %v", nul)
+		}
+		var nulReason string
+		if err := isolated.QueryRow(ctx, `SELECT last_check_error FROM trumpet_listings WHERE id=$1`, leadID).Scan(&nulReason); err != nil || nulReason != "leads.test / no offer\npage reading hint (unverified): \"$4,350.00\" USD" {
+			t.Fatalf("NUL reason stored as %q (%v)", nulReason, err)
+		}
 		lead.ID = leadID
 		lead.Status = "removed"
 		lead.Evidence = "HTTP 404; search lead no longer exists"

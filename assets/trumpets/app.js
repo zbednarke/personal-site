@@ -510,7 +510,11 @@
       "Notable features": (l.details.notableFeatures || []).join(", "),
       "First seen": date(l.firstSeen),
       "Last checked": date(l.lastChecked),
-      "Verified via": { api: "Official marketplace API", "search-provider": "Search provider (source-matched web search)" }[l.verifiedVia],
+      "Verified via": {
+        api: "Official marketplace API",
+        "search-provider": "Search provider (source-matched web search)",
+        "page-llm": "Page reading (model read the fetched page; price text matched on the page)",
+      }[l.verifiedVia],
       "Check problem": M.checkNote(l),
       "Posted date": l.postedAt ? date(l.postedAt) : "Unknown",
     })) {

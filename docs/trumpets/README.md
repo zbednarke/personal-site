@@ -882,3 +882,182 @@ caps of 450 listings, 200 Reverb calls, 200 page fetches
 (30 per domain, a second apart), 60 eBay calls and 25 minutes. It prints counts only
 and submits one `images` run (`image-backfill-<time>`); rerunning it later only
 tries listings that still have no photos.
+
+## Dealer pages that verify, LLM page reading and the discovery page budget (migration 036)
+
+Daily rechecks failed on several dealer sites with "page did not expose a single
+verifiable offer", hornstash.com timed out, jamiejazz.com raised `ValueError`, and
+discovery always used its 240 pages. Causes, found on live pages:
+
+- **Pages without a usable Product JSON-LD.** WooCommerce shops built with page
+  builders (horntrader.com) render price and stock in widgets only; Rain POS
+  shops (jlandressbrass.com) expose a GA4 `view_item` event and a "This item is in
+  stock." line; Lightspeed shops (hornstash.com) a grouped microdata price without
+  currency or stock; classifieds (kleinanzeigen.de, bazos.cz) and hand-built
+  dealer pages (jamiejazz.com) their own layouts.
+- **One product described twice.** Shopify themes plus SEO apps (tcgakki.com) emit
+  two Product nodes for the same item (one inside `@graph`); the runner treated
+  any second product as "related products" and gave up.
+- **Retitled listings.** A tracked offer matched only on its exact stored title, so
+  "【値下げ】" (price cut), "Back in stock!" or a sold prefix made every recheck fail.
+- **Maker attribution.** A maker merely named in the description ("plays like a
+  Bach") outranked the structured brand, and the Bach/Yamaha rule then dropped
+  the horn (austincustombrass.biz, hornguys.com, store.ishibashi.co.jp).
+- **hornstash.com.** Stored URLs drop `www.` (`canonical_url`), and the bare
+  hostname is a registrar URL forwarder that does not serve HTTPS: the connection
+  hangs or is reset. The site itself (www) answers in under a second.
+- **jamiejazz.com.** `https://jamiejazz.com/…` answers 301 to
+  `http://www.jamiejazz.com/…`; the redirect guard refused the `http` target and
+  raised `ValueError("Only public HTTPS URLs allowed")`.
+
+What changed (all in `tools/trumpets/runner.py`):
+
+- **Fetches** (`fetch_page`): a per-site timeout (`SITE_TIMEOUTS`), up to three
+  tries with backoff on timeouts, resets and 502–504 (`Retry-After` up to 30 s; 403,
+  404 and 429 are not retried), and when a bare host gives no response at all the
+  same URL on `www.`, remembered for the run. A host that never answers gets one
+  try per page for the rest of the run. Only a successful `www.` answer is used:
+  a `www.` HTTP error never stands in for the bare host's own error (so a
+  listing is never marked removed because of the `www.` host). A same-site redirect to `http://` is
+  followed over HTTPS; any other `http` redirect is still refused.
+- **Generic extractors, first:** JSON-LD in more shapes (`@graph`/`mainEntity`,
+  offer lists normalized before comparing, `AggregateOffer` only with a single
+  price, `priceSpecification`, string prices with grouping or comma decimals,
+  zero meaning "no price", lenient JSON for raw newlines/trailing commas, the
+  page's own `product:price:currency` when the offer omits it); the same product
+  described twice counts once only when every copy names this page and their
+  facts agree; OpenGraph `og:availability`/`og:price:*` and grouped amounts; the
+  page's analytics `view_item` event (one item, named like the page heading) with
+  an explicit stock statement in the buy box (hidden elements, navigation and
+  related sections are ignored; "not in stock", "nicht auf Lager", "niet op
+  voorraad", "ej i lager" and "in stock soon"/pre-order/on order are read as not
+  in stock). Then the shop platform's own endpoint for this
+  URL: Shopify `.js` + `cart.js`, the WooCommerce Store API
+  (`/wp-json/wc/store/v1/products?slug=`, permalink must match, minor units,
+  `is_in_stock`; variable products with differing prices are ambiguous) and
+  Lightspeed `?format=json` (product URL must match, shop currency).
+- **Site layouts** only where needed: Kleinanzeigen (`#viewad-main-info` offer
+  scope, reserved/deleted labels), Bazoš ("Cena:" row with Kč/€/zł), Jamie's
+  Trumpet Gallery (heading price plus Inquire, or SOLD!; "$" is USD only because
+  the page's store data gives a US address). Classified ads with a symbolic price ("1 Kč", "VB 0") are
+  not verified.
+- **Strictness kept.** Several different products on a page still give none;
+  related-product prices are never read (no extractor looks inside related or
+  product-loop sections, and platform endpoints are keyed by this URL's slug);
+  currency is never taken from a domain. A retitled tracked offer matches only
+  when the page says it is the listing's URL (canonical, og:url or product url),
+  or comes from a URL-keyed platform endpoint or site layout, with the same maker
+  and no conflicting listing id; the maker must be the one the page itself names
+  (not the tracked listing's) and every model word of the tracked title must be
+  in the new title, so a reused URL ("Phat Boy" where a "Chicago" was) or a
+  generic title ("Used professional Bb trumpet") is never matched; the stored
+  title follows an accepted retitle. A listing URL that now redirects to another
+  page verifies nothing: an item page is its host, whole path and identifying
+  query (`product_id=`, `id=`, `route=`…), so `/trumpets/x` is not `/cornets/x`
+  and `item.php?id=1` is not `?id=2`. Japanese and European accessory/other-instrument
+  words (マウスピース, ケース, ピッコロ, C管, mondstuk, Trompetenmundstück…) are
+  rejected; "Trompete" and "trubka" count as horn words. A shop "brand" that is
+  only a category ("Bb-trumpet") is ignored; a recheck may fall back to the
+  tracked listing's own maker, a new find never is.
+- **LLM page reading** (`PageLLM`), last, and **shadow-only for now**.
+  `TRUMPETS_PAGE_LLM_MODE` is `off`, `shadow` (the default) or `confirm`. In
+  shadow mode the reader never confirms or changes anything: its reading is
+  only recorded as a hint on the listing's failed check ("page reading
+  (shadow, not applied): … agrees with the stored price" or "… differs from the
+  stored 4400 USD"), and the run notes count shadow agreements and
+  disagreements with stored prices. **Plan:** keep shadow mode on real runs,
+  review the agreement rate (and every disagreement) in the run notes and
+  check failures, and only then consider `confirm`; nothing enables `confirm`
+  today. In `confirm` mode it may only *confirm* an unambiguous price for a
+  tracked, previously verified offer with a positive stored price in the same
+  currency (otherwise: a hint only); it never chooses between competing prices
+  and never verifies a queued lead (for a lead the reading is only a hint). It runs only for a page the
+  runner fetched itself (HTTP 200, not redirected away from the listing's page)
+  that no extractor could read, and never on a page the extractors found
+  ambiguous (several products, disagreeing copies) or excluded (accessory,
+  other instrument, maker rule), on a variant URL (`variant=`, `size=`…), a
+  WooCommerce variable product, or a product whose offers carry more than one
+  price. The page is cleaned line by line (no scripts,
+  styles, navigation, header, footer, forms, hidden or screen-reader text,
+  related/featured/"pairs with"/carousel/review/testimonial sections,
+  `<del>`/`<s>`/line-through text, compare-at, was, old, list, RRP/MSRP price
+  elements, a regular price only when a sale/current price sits beside it, and
+  BigCommerce's without-tax price beside its with-tax one; hidden markup inside
+  a price element and `<ins>` are kept, `<sup>` cents read as decimals, and
+  variant `<option>`s are kept so their prices compete; title, main text and
+  JSON-LD kept;
+  about 12,000 characters) and sent as untrusted data inside a random
+  per-request delimiter to the Responses API (`TRUMPETS_VERIFY_MODEL`, else
+  `TRUMPETS_SEARCH_MODEL`; strict JSON schema; no tools). A reading is accepted
+  only when all of these hold:
+  - the model's whole title is on the page at word boundaries, or every word of
+    it (at least three) is in the main heading; it says this is a single Bb
+    trumpet product page with a known availability ("unknown" never verifies
+    and never marks anything sold);
+  - the quoted price text is a money amount in the cleaned text, with digit and
+    separator boundaries on both sides, parses to the stated price and is at
+    least 100 USD-equivalent;
+  - it is an asking price: the few words just before it (back to the previous
+    amount) are not about shipping, deposits, instalments, "from", "was",
+    compare-at/regular/list/RRP prices, "save", value, worth, paid, "up to",
+    estimated or appraised, the words just after it are not "/mo", "deposit" or
+    "shipping", and it is not a pre-tax price (税抜 beside 税込, or an amount
+    followed by "(税込 ¥…)"). "Free shipping" in the next paragraph or "ships
+    from Japan" say nothing about it; the price text matches ignoring
+    whitespace ("$ 4,350.00");
+  - it is in the product block: after the page's `<h1>` and before the next
+    `<h2>`/`<h3>`/`<section>` (a price-labelled `<h2>` does not end it);
+  - it is unambiguous: every other asking-price amount on the page is the same
+    price. Any disagreeing amount, even a price-labelled one, makes it
+    "ambiguous price";
+  - the currency is the amount's own ISO code or unambiguous symbol; "¥" is yen
+    on a `.jp` host or a `lang="ja"` page; otherwise "$", "¥" or "kr" need the
+    single currency the page declares for its product (OpenGraph/product meta or
+    microdata, the JSON-LD offer, or its own `view_item` event);
+  - the price moved at most 20% from the tracked price and kept its currency;
+    otherwise the check fails with "price change needs confirmation".
+  A confirmed reading keeps the tracked listing's title, score, tags and
+  rationale. Budget: `TRUMPETS_PAGE_LLM_LIMIT` pages per run (default 80; 0
+  turns it off; a non-number logs a warning and uses 80) and 8 minutes including
+  retries, spent in recheck order (active, high-score offers first). It logs
+  counts only. Confirmed offers carry `verifiedVia: "page-llm"`.
+- **Known issues before `confirm` can be enabled** (found in review; shadow mode
+  is safe with them, confirm would not be):
+  - variant prices that exist only in JavaScript (no `<option>`, JSON-LD offer
+    or variation data in the HTML) are invisible to the "several prices" check;
+  - a "price on request" page with one stray amount in the product block (a
+    case, an accessory, a deposit without a deposit word) can look like an
+    unambiguous price;
+  - value, comparable-sale, "recently sold" and Q&A text near the heading can
+    carry amounts the asking-price words do not catch;
+  - a stricter rule worth trying before confirm: require the price to be in a
+    price-labelled element of the product block, not just in the block.
+  Hints, reasons and the run notes are bounded in UTF-8 bytes before they reach
+  the API (500 per failure reason, 10,000 for the run notes, the listing and
+  source field limits); the model's currency is shown only when it is a
+  three-letter code; page-reading detail sits on the second line of a failure
+  reason (the fix list groups by the first line) and never in the run notes,
+  which carry counts only.
+- **Discovery page budget.** Pages were spent on results another query had
+  already returned (only kept results were remembered), on images/PDFs,
+  category/search/tag/blog pages, further result pages, cart/account pages,
+  accessories, other instruments, and on domains that had already refused the
+  run. `discovery_skip` drops those before any fetch, a URL is fetched at most once
+  per run, and refused domains are not fetched again. Sources that verified the
+  most offers are planned first. The cap stays 240 (`DISCOVERY_PAGES`): the run
+  note now records what the fetched pages gave and what was not fetched and why,
+  so a later change to the cap can be based on that data.
+
+**Deploy.** API first: migration `036_trumpet_page_llm.sql` widens the
+`trumpet_observations.verified_via` check to allow `page-llm` (replay-safe: only
+while it does not yet allow it), and the API accepts it. Against an older API the
+runner resubmits such offers as `direct` (the closest label; the evidence still
+says the page was read by a model). An older runner works unchanged against the
+new API. Then copy `tools/trumpets/runner.py` to `/opt/trumpets/runner.py` on the
+VM; the service, timer and env file path are unchanged, and the runner uses the
+existing `OPENAI_API_KEY`. Optional: `TRUMPETS_PAGE_LLM_LIMIT` in
+`/etc/trumpets/runner.env`. Leave `TRUMPETS_PAGE_LLM_MODE` unset (shadow) or
+set it to `off`; do not set `confirm` before the shadow agreement rate has been
+reviewed. The VM also needs outbound HTTPS to the dealers' own
+`/wp-json/wc/store/…`, `?format=json` and `www.` hosts, which are the same sites
+it already fetches.

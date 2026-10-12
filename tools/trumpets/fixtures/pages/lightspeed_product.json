@@ -1,0 +1,8 @@
+{"product":{"id":"900002","vid":"900003","brand":{"id":1,"url":"brands/benge","title":"Benge"},"code":"90B","sku":"90B",
+  "price":{"price":1250,"price_incl":1250,"price_excl":1250,"price_old":0},
+  "url":"used-fixture-benge-90b-bb-trumpet-000000xx.html","title":"Used Fixture Benge 90B Bb Trumpet - 000000XX",
+  "fulltitle":"Benge Used Fixture Benge 90B Bb Trumpet - 000000XX",
+  "stock":{"available":true,"on_stock":true,"track":true,"allow_outofstock_sale":false,"level":1},
+  "options":false,"matrix":false,"variants":false,"description":"Used, good condition, fictional Benge 90B Bb trumpet.",
+  "related":{"900009":{"id":900009,"title":"Fixture case","price":{"price":80}}}},
+ "shop":{"id":900000,"currencies":{"usd":{"code":"USD","symbol":"$","active":true}},"currency":"usd","currency2":{"code":"USD","symbol":"$","active":true}}}

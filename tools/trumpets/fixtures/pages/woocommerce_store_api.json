@@ -1,0 +1,8 @@
+[{"id":900,"name":"Fixture Schilke B6 S\/n 000000","slug":"fixture-schilke-b6-s-n-000000","parent":0,"type":"simple","variation":"",
+  "permalink":"https:\/\/brass.fixtures.invalid\/product\/fixture-schilke-b6-s-n-000000\/","sku":"","on_sale":true,
+  "prices":{"price":"295000","regular_price":"310000","sale_price":"295000","price_range":null,"currency_code":"USD","currency_symbol":"$","currency_minor_unit":2,"currency_decimal_separator":".","currency_thousand_separator":",","currency_prefix":"$","currency_suffix":""},
+  "short_description":"<p>Professional Bb trumpet, silver plate, fictional fixture.<\/p>","description":"<p>Fixture description.<\/p>",
+  "images":[{"id":1,"src":"https:\/\/brass.fixtures.invalid\/wp-content\/uploads\/fixture-b6.jpg","thumbnail":"https:\/\/brass.fixtures.invalid\/wp-content\/uploads\/fixture-b6-300x300.jpg"}],
+  "categories":[{"id":32,"name":"Bb Trumpets","slug":"bb-trumpets","link":"https:\/\/brass.fixtures.invalid\/product-category\/bb-trumpets\/"}],
+  "tags":[],"brands":[],"attributes":[],"variations":[],"has_options":false,"is_purchasable":true,"is_in_stock":true,"is_on_backorder":false,
+  "low_stock_remaining":null,"stock_availability":{"text":"In stock","class":"in-stock"},"sold_individually":false,"extensions":{}}]

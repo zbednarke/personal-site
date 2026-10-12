@@ -57,7 +57,9 @@ type trumpetCandidate struct {
 	Tags              []string    `json:"tags"`
 	Evidence          string      `json:"evidence"`
 	// How the offer was verified: direct (the page), api (Reverb/eBay
-	// official API) or search-provider (a source-matched web search).
+	// official API), search-provider (a source-matched web search) or
+	// page-llm (the runner's fetched page read by a model, grounded in the
+	// page text).
 	VerifiedVia string `json:"verifiedVia,omitempty"`
 	SeedKey     string `json:"-"`
 }
@@ -285,6 +287,9 @@ func hornIdentity(maker, serial string) string {
 	return identityPart(maker) + ":" + strings.ReplaceAll(identityPart(serial), " ", "")
 }
 func normalizeTrumpet(c *trumpetCandidate) error {
+	for _, field := range []*string{&c.Maker, &c.Model, &c.Title, &c.Description, &c.Source, &c.Seller, &c.Location, &c.SerialNumber, &c.SearchRationale, &c.Evidence} {
+		*field = stripNUL(*field)
+	}
 	c.Maker = strings.TrimSpace(c.Maker)
 	c.Model = strings.TrimSpace(c.Model)
 	c.Source = strings.TrimSpace(c.Source)
@@ -317,8 +322,8 @@ func normalizeTrumpet(c *trumpetCandidate) error {
 	if c.VerifiedVia == "" {
 		c.VerifiedVia = "direct"
 	}
-	if !containsString([]string{"direct", "api", "search-provider"}, c.VerifiedVia) {
-		return errors.New("verifiedVia must be direct, api or search-provider")
+	if !containsString([]string{"direct", "api", "search-provider", "page-llm"}, c.VerifiedVia) {
+		return errors.New("verifiedVia must be direct, api, search-provider or page-llm")
 	}
 	if c.VerificationState == "candidate" {
 		if c.URL == "" {
@@ -1019,7 +1024,13 @@ func (app *application) trumpetProfile(w http.ResponseWriter, r *http.Request) {
 	profile["watchPolicy"] = map[string]any{"minimumDistinctDomains": 36, "newSourceQueries": 4, "explorationFraction": 0.25, "alertLimit": 8, "dailyRevalidation": true}
 	writeJSON(w, 200, profile)
 }
+
+// stripNUL removes NUL characters, which Postgres text values cannot hold: a
+// stray one in a runner's reason or note must not lose the whole run.
+func stripNUL(s string) string { return strings.ReplaceAll(s, "\x00", "") }
+
 func validateTrumpetRun(input *trumpetRunInput) error {
+	input.Error = stripNUL(input.Error)
 	if strings.TrimSpace(input.ExternalID) == "" || len(input.ExternalID) > 200 || len(input.Error) > 10000 {
 		return errors.New("bounded externalId required")
 	}
@@ -1050,7 +1061,7 @@ func validateTrumpetRun(input *trumpetRunInput) error {
 		if _, err := uuid.Parse(f.ID); err != nil {
 			return fmt.Errorf("check failure %d: listing id required", i)
 		}
-		input.CheckFailures[i].Reason = strings.TrimSpace(f.Reason)
+		input.CheckFailures[i].Reason = strings.TrimSpace(stripNUL(f.Reason))
 		if input.CheckFailures[i].Reason == "" || len(input.CheckFailures[i].Reason) > 500 {
 			return fmt.Errorf("check failure %d: bounded reason required", i)
 		}
@@ -1062,6 +1073,9 @@ func validateTrumpetRun(input *trumpetRunInput) error {
 		return errors.New("run start must be within the past 48 hours")
 	}
 	seen := map[string]bool{}
+	for i := range input.Sources {
+		input.Sources[i].Note = stripNUL(input.Sources[i].Note)
+	}
 	for _, s := range input.Sources {
 		if s.Source == "" || len(s.Source) > 200 || seen[s.Source] || !containsString([]string{"checked", "failed", "skipped"}, s.Status) || s.Candidates < 0 || len(s.Note) > 5000 {
 			return errors.New("invalid or duplicate source coverage")
