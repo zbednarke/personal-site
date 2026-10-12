@@ -1000,6 +1000,23 @@ What changed (all in `tools/trumpets/runner.py`):
   turns it off; a non-number logs a warning and uses 80) and 8 minutes including
   retries, spent in recheck order (active, high-score offers first). It logs
   counts only. Confirmed offers carry `verifiedVia: "page-llm"`.
+- **Known issues before `confirm` can be enabled** (found in review; shadow mode
+  is safe with them, confirm would not be):
+  - variant prices that exist only in JavaScript (no `<option>`, JSON-LD offer
+    or variation data in the HTML) are invisible to the "several prices" check;
+  - a "price on request" page with one stray amount in the product block (a
+    case, an accessory, a deposit without a deposit word) can look like an
+    unambiguous price;
+  - value, comparable-sale, "recently sold" and Q&A text near the heading can
+    carry amounts the asking-price words do not catch;
+  - a stricter rule worth trying before confirm: require the price to be in a
+    price-labelled element of the product block, not just in the block.
+  Hints, reasons and the run notes are bounded in UTF-8 bytes before they reach
+  the API (500 per failure reason, 10,000 for the run notes, the listing and
+  source field limits); the model's currency is shown only when it is a
+  three-letter code; page-reading detail sits on the second line of a failure
+  reason (the fix list groups by the first line) and never in the run notes,
+  which carry counts only.
 - **Discovery page budget.** Pages were spent on results another query had
   already returned (only kept results were remembered), on images/PDFs,
   category/search/tag/blog pages, further result pages, cart/account pages,

@@ -1889,7 +1889,40 @@ def landed_run(client, external_id):
     return found if found.get('found') else None
 
 
+def clip_bytes(text, limit):
+    """text cut to at most limit UTF-8 bytes, never inside a character (the
+    API bounds its strings in bytes, not characters)."""
+    text=str(text if text is not None else '')
+    data=text.encode('utf-8')
+    return text if len(data)<=limit else data[:limit].decode('utf-8','ignore')
+
+
+# The API's limits (jazz-api trumpets.go validateTrumpetRun, normalizeTrumpet,
+# validateTrumpetSource), in UTF-8 bytes.
+API_RUN_LIMITS={'externalId':200,'error':10000}
+API_FAILURE_REASON=500
+API_SOURCE_LIMITS={'source':200,'note':5000,'query':10000,'geography':200,'specialty':200}
+API_LISTING_LIMITS={'title':1000,'description':50000,'searchRationale':10000,'source':200,'serialNumber':200}
+
+
+def bound_report(report):
+    """A copy of a run report with every string the API bounds cut to its
+    byte limit, so one long or non-ASCII reason can never make it reject the
+    whole run."""
+    out=dict(report)
+    for key,limit in API_RUN_LIMITS.items():
+        if isinstance(out.get(key),str):out[key]=clip_bytes(out[key],limit)
+    out['checkFailures']=[dict(f,reason=clip_bytes(str(f.get('reason') or '').strip(),API_FAILURE_REASON).strip() or 'check failed')
+                          for f in report.get('checkFailures') or []]
+    out['sources']=[dict(x,**{k:clip_bytes(x[k],n) for k,n in API_SOURCE_LIMITS.items() if isinstance(x.get(k),str)}) for x in report.get('sources') or []]
+    out['listings']=[dict(l,**{k:clip_bytes(l[k],n) for k,n in API_LISTING_LIMITS.items() if isinstance(l.get(k),str)}) for l in report.get('listings') or []]
+    for key in ('checkFailures','sources','listings'):
+        if key not in report:out.pop(key,None)
+    return out
+
+
 def post_run(client, report):
+    report=bound_report(report)
     try: return client.call('/runs',report)
     except urllib.error.HTTPError as error:
         if error.code!=400: raise
@@ -2573,24 +2606,26 @@ class PageLLM:
             self.counts['failed']+=1;return None,'page reading gave no answer'
         why=grounded(data,view,page,listing.get('url',''))
         currency=str(data.get('currency') or '').upper()
+        # Only a three-letter code is ever echoed into a hint or a reason.
+        shown=currency if re.fullmatch('[A-Z]{3}',currency) else '?'
         tracked=listing.get('verificationState')!='candidate'
         old=listing.get('price');old_currency=str(listing.get('currency') or '').upper()
         stored=isinstance(old,(int,float)) and not isinstance(old,bool) and old>0
         reported=data.get('price') if isinstance(data.get('price'),(int,float)) and not isinstance(data.get('price'),bool) else None
-        quoted=' '.join(str(data.get('price_text') or '').split())[:60]
+        quoted=clip_bytes(' '.join(str(data.get('price_text') or '').replace('"',"'").split()),60)
         agreement=''
         if tracked:
             # Shadow measurement: would this reading have agreed with the stored price?
             if not stored or reported is None:agreement='no stored price to compare'
             elif currency==old_currency and round(float(reported),2)==round(float(old),2):agreement='agrees with the stored price';self.counts['shadow agreements']+=1
-            else:agreement=f'differs from the stored {old:g} {old_currency}';self.counts['shadow disagreements']+=1
+            else:agreement=f'differs from the stored {old:g} {old_currency if re.fullmatch("[A-Z]{3}",old_currency) else "?"}';self.counts['shadow disagreements']+=1
         if not why and tracked and stored and (currency!=old_currency or abs(float(data['price'])-old)/old>MAX_LLM_MOVE):
             # A model's reading never moves a tracked price far or changes its
             # currency on its own: that needs a confirming check.
             why='price change needs confirmation'
         if why:
             self.counts['rejected']+=1;self.counts['rejected: '+why]+=1
-            note=f' (shadow: read "{quoted}" {currency}; {agreement})' if self.mode=='shadow' and tracked and agreement else ''
+            note=f' (shadow: read "{quoted}" {shown}; {agreement})' if self.mode=='shadow' and tracked and agreement else ''
             return None,'page reading rejected: '+why+note
         # The page's own heading (never model text) is the description the
         # maker, horn-word and accessory rules read besides the title.
@@ -2599,19 +2634,19 @@ class PageLLM:
         c=normalize_product(p,listing['url'],listing.get('source',''),profile)
         if not c:
             self.counts['rejected']+=1;self.counts['rejected: not a tracked-horn offer']+=1;return None,'page reading rejected: not a tracked-horn offer'
-        state=data['availability'].replace('_',' ')
+        state=str(data['availability']).replace('_',' ')
         if not tracked:
             # A queued lead is never verified by a model's reading alone; the
             # reading is kept as a hint on its check (counts only are logged).
             self.counts['lead hints']+=1
-            return None,f'page reading hint (unverified): "{quoted}" {currency}, {state}'
+            return None,f'page reading hint (unverified): "{quoted}" {shown}, {state}'
         if self.mode!='confirm':
             self.counts['shadow hints']+=1
-            return None,f'page reading (shadow, not applied): "{quoted}" {currency}, {state}; {agreement}'
+            return None,f'page reading (shadow, not applied): "{quoted}" {shown}, {state}; {agreement}'
         if not stored or old_currency!=currency:
             # Nothing to compare the reading with: a hint, never a confirmation.
             self.counts['hints without a stored price']+=1
-            return None,f'page reading hint (unverified, {agreement}): "{quoted}" {currency}, {state}'
+            return None,f'page reading hint (unverified, {agreement}): "{quoted}" {shown}, {state}'
         self.counts['accepted']+=1
         c['evidence']='LLM page reading, grounded in the fetched page'+(f' (price text "{quoted}")' if quoted else ' (price unpublished)')+' / '+data['availability']
         return c,'accepted'
@@ -2771,8 +2806,13 @@ def daily(client, trigger_fix=False):
         if checked['status']=='removed':live[domain]['staleResults']+=1
         link_physical_horn(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
         return True,None
-    def record_failure(listing,domain,reason):
-        report['checkFailures'].append({'id':listing['id'],'reason':(domain+' / '+reason)[:500]})
+    def record_failure(listing,domain,reason,detail=''):
+        # The first line is the reason the fix list groups by; a page-reading
+        # detail goes on a second line (the grouping ignores it) and never into
+        # the run notes, which carry fixed reasons and counts only.
+        text=clip_bytes(domain+' / '+reason,API_FAILURE_REASON)
+        if detail:text=clip_bytes(text+'\n'+detail,API_FAILURE_REASON)
+        report['checkFailures'].append({'id':listing['id'],'reason':text})
         if listing.get('verificationState')!='candidate':
             notes.append('Recheck failed, recorded for retry: '+domain+' / '+reason)
     # Direct revalidation of every active offer takes precedence over discovery.
@@ -2811,8 +2851,10 @@ def daily(client, trigger_fix=False):
                 if checked['status']=='removed':live[domain]['staleResults']+=1;leads['retired']+=lead
                 elif lead:leads['verified']+=1
             else:
-                why=found.get('llm')
-                record_failure(listing,domain,'page did not expose a single verifiable offer (price, currency and stock)'+(' / '+why if why and why!='accepted' else ''));leads['unverified']+=lead
+                why=found.get('llm') or ''
+                inline=why if why=='listing URL redirected to another page' else ''
+                record_failure(listing,domain,'page did not expose a single verifiable offer (price, currency and stock)'+(' / '+inline if inline else ''),
+                               '' if inline or why=='accepted' else why);leads['unverified']+=lead
         except Exception as error:
             refused=isinstance(error,ChallengePage) or (isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES)
             if refused:blocked.add(domain)
@@ -3039,7 +3081,7 @@ def daily(client, trigger_fix=False):
     if image_updates:
         report['imageUpdates']=[{'id':k,'images':v} for k,v in image_updates.items()]
         notes.append(f'Photos found for {len(image_updates)} tracked listings that had none')
-    report['error']='; '.join(dict.fromkeys(failures+notes))[:10000]
+    report['error']=clip_bytes('; '.join(dict.fromkeys(failures+notes)),API_RUN_LIMITS['error'])
     if failures:report['status']='partial'
     result=submit_run(client,report);print(json.dumps(result),flush=True)
     if trigger_fix or in_fix_list_window(report['startedAt']):fix_list_call(client,'/fixlist',{})

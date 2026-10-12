@@ -984,5 +984,124 @@ class ShadowAndRoundFourTests(unittest.TestCase):
         self.rejected(bc, reading(price=4000, price_text='$4,000.00 USD'), 'price text not on the page', listing=self.tracked(price=4000.0))
 
 
+# ---- Round 5: everything bound for the API fits its byte limits ------------------
+RUNNER_PAYLOAD_FIXTURE = os.path.join(os.path.dirname(__file__), '..', '..', 'jazz-api', 'testdata', 'runner_shadow_run.json')
+
+
+def api_rejects(report):
+    """Why jazz-api's validateTrumpetRun / normalizeTrumpet / validateTrumpetSource
+    would reject this run (their limits are UTF-8 bytes), or None. Mirrors the Go."""
+    size = lambda v: len(str(v or '').encode('utf-8'))
+    if not str(report.get('externalId') or '').strip() or size(report.get('externalId')) > 200 or size(report.get('error')) > 10000:
+        return 'bounded externalId required'
+    if len(report.get('listings') or []) > 1000 or len(report.get('sources') or []) > 200 or len(report.get('checkFailures') or []) > 1000:
+        return 'run too large'
+    for i, f in enumerate(report.get('checkFailures') or []):
+        reason = str(f.get('reason') or '').strip()
+        if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', str(f.get('id'))):
+            return f'check failure {i}: listing id required'
+        if not reason or size(reason) > 500:
+            return f'check failure {i}: bounded reason required'
+    seen = set()
+    for s in report.get('sources') or []:
+        if not s.get('source') or size(s['source']) > 200 or s['source'] in seen or size(s.get('note')) > 5000:
+            return 'invalid or duplicate source coverage'
+        if size(s.get('query')) > 10000 or size(s.get('geography')) > 200 or size(s.get('specialty')) > 200:
+            return 'invalid source'
+        seen.add(s['source'])
+    for i, l in enumerate(report.get('listings') or []):
+        if size(l.get('description')) > 50000 or size(l.get('title')) > 1000 or size(l.get('searchRationale')) > 10000 or size(l.get('source')) > 200 or size(l.get('serialNumber')) > 200:
+            return f'listing {i}: listing text too long'
+    return None
+
+
+class ApiByteLimitTests(unittest.TestCase):
+    def test_clip_bytes_never_splits_a_character(self):
+        self.assertEqual(runner.clip_bytes('abc', 10), 'abc')
+        text = '通貨' * 300
+        clipped = runner.clip_bytes(text, 500)
+        self.assertLessEqual(len(clipped.encode('utf-8')), 500)
+        self.assertTrue(text.startswith(clipped)); self.assertEqual(len(clipped), 166)
+        self.assertEqual(runner.clip_bytes('€' * 10, 4), '€')
+
+    def test_bound_report_cuts_every_bounded_string(self):
+        long = '価' * 6000
+        report = {'externalId': 'x' * 300, 'error': long * 2, 'kind': 'combined', 'status': 'partial',
+                  'checkFailures': [{'id': '00000000-0000-4000-8000-000000000001', 'reason': long}, {'id': '00000000-0000-4000-8000-000000000002', 'reason': '   '}],
+                  'sources': [{'source': long, 'note': long, 'query': long * 3, 'geography': long, 'specialty': long, 'status': 'checked'}],
+                  'listings': [{'title': long, 'description': long * 10, 'searchRationale': long * 2, 'source': long, 'serialNumber': long}]}
+        bounded = runner.bound_report(report)
+        self.assertIsNone(api_rejects(bounded))
+        self.assertEqual(bounded['checkFailures'][1]['reason'], 'check failed')
+        self.assertEqual(len(report['error']), 12000)  # the original is untouched
+
+    def shadow_run(self, listings, readings):
+        class Client:
+            report = None
+            def call(self, path, body=None):
+                if path == '/profile': return copy.deepcopy(PROFILE)
+                if path == '/due': return {'listings': []}
+                if path == '/listings': return {'listings': copy.deepcopy(listings)}
+                if path == '/runs': self.report = copy.deepcopy(body); return {'status': body['status'], 'runId': 'saved'}
+                return {}
+        fake = FakeResponses(*readings)
+        client = Client()
+        with patch.dict('os.environ', {'BRAVE_SEARCH_API_KEY': '', 'OPENAI_API_KEY': '', 'EBAY_CLIENT_ID': ''}), \
+                patch.object(runner, 'reverb_search', return_value=[]), patch.object(runner, 'fetch', side_effect=lambda url, *a, **k: LLM_PAGE.replace('taylor-fixture-chicago', url.rsplit('/', 1)[-1])), \
+                patch.object(runner.PageLLM, 'from_env', classmethod(lambda cls: cls('test-only', post=fake, sleep=lambda _: None))), patch('builtins.print'):
+            runner.daily(client)
+        return client.report
+
+    def tracked_listing(self, i, currency='EUR'):
+        url = f'https://horns.fixtures.invalid/taylor-fixture-chicago-{i}'
+        return {'id': f'00000000-0000-4000-8000-{i:012d}', 'url': url, 'title': 'Taylor Fixture Chicago Bb Trumpet', 'source': 'Fixture dealer',
+                'verificationState': 'verified', 'status': 'active', 'maker': 'Taylor', 'model': 'Chicago', 'currency': currency, 'price': 4400.0,
+                'acquired': False, 'feedback': {'interestState': 'watch'}}
+
+    def test_eighty_eur_shadow_hints_and_a_bad_currency_fit_the_api(self):
+        # One reading with a 300× "通貨" currency and a huge non-ASCII price text,
+        # then 79 EUR shadow hints (the default cap is 80 pages), then one over the cap.
+        listings = [self.tracked_listing(80)] + [self.tracked_listing(i) for i in range(80)]
+        readings = [reading(currency='通貨' * 300, price_text='¥' + '４' * 2000)] + [reading(currency='EUR', price_text='4.350,00 € inkl. MwSt. – 価格は税込みです') for _ in range(79)]
+        report = self.shadow_run(listings, readings)
+        self.assertIsNone(api_rejects(report))
+        self.assertEqual(len(report['checkFailures']), 81)
+        for failure in report['checkFailures']:
+            first = failure['reason'].split('\n')[0]
+            self.assertEqual(first, 'horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)')
+        self.assertNotIn('通貨', json.dumps(report, ensure_ascii=False))  # the model's currency is never echoed
+        self.assertIn('" ?; differs from the stored 4400 EUR', report['checkFailures'][0]['reason'])
+        self.assertTrue(all('page reading' in f['reason'] for f in report['checkFailures'][:80]))
+        self.assertTrue(report['checkFailures'][-1]['reason'].endswith('\npage-reading budget reached'))
+        # Run notes carry counts and fixed reasons only, never hint text.
+        self.assertNotIn('page reading (shadow', report['error'])
+        self.assertNotIn('4.350', report['error'])
+        self.assertIn('80 pages read', report['error'])
+        # The same payload is the Go test's fixture (TestRunnerShadowPayloadPassesValidation).
+        with open(RUNNER_PAYLOAD_FIXTURE, encoding='utf-8') as f:
+            fixture = json.load(f)
+        strip = lambda r: {k: v for k, v in r.items() if k not in ('externalId', 'startedAt')}
+        self.assertEqual(strip(fixture), strip(report))
+
+    def test_fix_list_grouping_line_stays_fixed(self):
+        """S2: the page-reading detail is on the second line of the reason; the
+        fix list groups by the first line (fixReason)."""
+        report = self.shadow_run([self.tracked_listing(1), self.tracked_listing(2)],
+                                 [reading(), reading(price=4400, price_text='$4,400.00 USD')])
+        firsts = {f['reason'].split('\n')[0] for f in report['checkFailures']}
+        self.assertEqual(firsts, {'horns.fixtures.invalid / page did not expose a single verifiable offer (price, currency and stock)'})
+        self.assertTrue(all('\npage reading' in f['reason'] for f in report['checkFailures']))
+
+
+def regenerate_runner_payload_fixture():
+    """python -c 'import test_dealer_pages as t; t.regenerate_runner_payload_fixture()'"""
+    case = ApiByteLimitTests('test_eighty_eur_shadow_hints_and_a_bad_currency_fit_the_api')
+    listings = [case.tracked_listing(80)] + [case.tracked_listing(i) for i in range(80)]
+    readings = [reading(currency='通貨' * 300, price_text='¥' + '４' * 2000)] + [reading(currency='EUR', price_text='4.350,00 € inkl. MwSt. – 価格は税込みです') for _ in range(79)]
+    report = case.shadow_run(listings, readings)
+    with open(RUNNER_PAYLOAD_FIXTURE, 'w', encoding='utf-8') as f:
+        json.dump(report, f, ensure_ascii=False, indent=1)
+
+
 if __name__ == '__main__':
     unittest.main()
