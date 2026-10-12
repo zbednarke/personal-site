@@ -258,10 +258,7 @@ def normalize_product(product,url,source,profile):
         if preference['maker'].lower()==maker.lower() and preference['currency']==currency and price is not None and price>=preference['referencePrice']:
             penalty+=8; break
     score=max(0,min(100,base+len(traits)*5+min(12,bonus)-min(18,penalty)))
-    images=product.get('image',[])
-    if isinstance(images,(str,dict)): images=[images]
-    images=[i.get('url','') if isinstance(i,dict) else i for i in images]
-    images=[i for i in images if isinstance(i,str) and i.startswith('https://')][:20]
+    images=clean_images(product.get('image',[]),url)
     model=str(product.get('model') or title)
     if isinstance(product.get('model'),dict): model=str(product['model'].get('name') or title)
     # Explicit private feedback phrases provide bounded ranking adjustments.
@@ -328,18 +325,141 @@ class DealerPage(HTMLParser):
         return {k:v[0] for k,v in facts.items()}
 
 
+# ---- Listing photos -------------------------------------------------------------
+# Up to MAX_IMAGES absolute HTTPS photo URLs per listing, largest variant
+# preferred; logos, placeholders, icons, data: URIs and tracking pixels dropped.
+MAX_IMAGES=6
+NOT_PHOTO=re.compile(r'(?:^|[^a-z])(?:logos?|placeholders?|no[-_ ]?(?:image|img|photo|picture)s?|noimage|image[-_ ]?coming[-_ ]?soon|coming[-_ ]?soon'
+                     r'|spacer|pixel|blank|transparent|1x1|favicons?|sprites?|icons?|badges?|banners?|avatars?|loading|loader|spinner'
+                     r'|default[-_ ]?(?:image|img|og|share)|og[-_ ]?default|share[-_ ]?image|social[-_ ]?share|payment[-_ ]?icons?|flags?)(?:[^a-z]|$)',re.I)
+TRACKING_HOSTS=('facebook.com','facebook.net','google-analytics.com','googletagmanager.com','doubleclick.net','googleadservices.com','bat.bing.com',
+                'analytics.','pixel.','scorecardresearch.com','quantserve.com','hotjar.com','px.ads.','ct.pinterest.com','t.co')
+NOT_PHOTO_EXT=('.svg','.ico','.cur','.bmp')
+SHOPIFY_SIZE=re.compile(r'_(?:\d+x\d*|x\d+|pico|icon|thumb|small|compact|medium|large|grande|original|master)(?:_crop_[a-z_]+)?(?:@\dx)?(?=\.[a-z0-9]+$)',re.I)
+
+
+def enlarge(url):
+    """The largest variant a known image CDN serves for this photo."""
+    p=urllib.parse.urlsplit(url);host=(p.hostname or '').lower();path=p.path
+    query=urllib.parse.parse_qsl(p.query,keep_blank_values=True)
+    if 'shopify' in host or '/cdn/shop/' in path:
+        path=SHOPIFY_SIZE.sub('',path);query=[(k,v) for k,v in query if k not in ('width','height','crop')]
+    elif host.endswith('ebayimg.com'):
+        path=re.sub(r'/s-l\d+\.(jpg|jpeg|png|webp)$',r'/s-l1600.\1',path,flags=re.I)
+    elif 'squarespace-cdn.com' in host:
+        query=[(k,v) for k,v in query if k!='format']
+    return urllib.parse.urlunsplit((p.scheme,p.netloc,path,urllib.parse.urlencode(query),''))
+
+
+def image_key(url):
+    """One photo in different sizes (Weebly _w640/_w2560, WordPress -300x200,
+    Shopify _1024x, ?width=) shares a key; the first (gallery, larger) wins."""
+    p=urllib.parse.urlsplit(url)
+    path=re.sub(r'(?:_w\d+|_orig|_\d+x\d*|-\d+x\d+)(?=\.[a-z0-9]+$)','',SHOPIFY_SIZE.sub('',p.path.lower()))
+    query=sorted((k,v) for k,v in urllib.parse.parse_qsl(p.query) if k.lower() not in ('width','height','w','h','format','crop','resize','fit','v','quality'))
+    return (p.hostname or '').removeprefix('www.')+path+'?'+urllib.parse.urlencode(query)
+
+
+def clean_images(values, base=''):
+    """Absolute https photo URLs from strings, lists or schema.org ImageObjects."""
+    if isinstance(values,(str,dict)):values=[values]
+    if not isinstance(values,list):return []
+    out=[];keys=set()
+    for value in values:
+        if isinstance(value,dict):value=value.get('url') or value.get('contentUrl') or value.get('src') or ''
+        if not isinstance(value,str) or not value.strip():continue
+        value=html.unescape(value.strip())
+        if value.lower().startswith(('data:','javascript:','blob:')):continue
+        try:
+            value=urllib.parse.urljoin(base,value) if base else value
+            p=urllib.parse.urlsplit(value)
+        except ValueError:continue
+        if p.scheme=='http':value='https'+value[4:];p=urllib.parse.urlsplit(value)
+        host=(p.hostname or '').lower()
+        if p.scheme!='https' or not host or p.username or p.password or len(value)>2000:continue
+        if any(host==t or host.endswith('.'+t) or (t.endswith('.') and (host.startswith(t) or '.'+t in host)) for t in TRACKING_HOSTS):continue
+        path=urllib.parse.unquote(p.path).lower()
+        if path.endswith(NOT_PHOTO_EXT) or NOT_PHOTO.search(path) or re.search(r'(?:^|[?&])(?:w|width|h|height)=1(?:&|$)',p.query):continue
+        value=enlarge(value);key=image_key(value)
+        if key not in keys:keys.add(key);out.append(value)
+        if len(out)==MAX_IMAGES:break
+    return out
+
+
+class PageImages(HTMLParser):
+    """Photo candidates on one product page: OpenGraph/Twitter meta, schema.org
+    microdata and WooCommerce/Squarespace/Shopify product galleries."""
+    GALLERY=re.compile(r'woocommerce-product-gallery|product-gallery|productitem-gallery|product__media|product-single__photo|product-images?\b|sqs-gallery',re.I)
+    VOID=('img','meta','link','input','br','hr','source','wbr','area','base','col','embed','track','param')
+    def __init__(self):
+        super().__init__();self.meta={};self.micro=[];self.gallery=[];self.stack=[]
+    def handle_starttag(self, tag, attrs):
+        a={k:(v or '') for k,v in attrs}
+        if tag=='meta':
+            key=(a.get('property') or a.get('name') or a.get('itemprop') or '').lower()
+            if key and a.get('content'):self.meta.setdefault(key,[]).append(a['content'])
+            return
+        if a.get('itemprop','').lower()=='image':
+            self.micro.append(a.get('content') or a.get('src') or a.get('href') or '')
+        if tag not in self.VOID:
+            self.stack.append((tag,bool(self.GALLERY.search(a.get('class','')+' '+a.get('id','')))))
+        inside=any(flag for _,flag in self.stack) or (tag=='img' and bool(self.GALLERY.search(a.get('class',''))))
+        if inside and tag=='img':
+            self.gallery.append(a.get('data-large_image') or a.get('data-zoom-image') or a.get('data-image') or a.get('data-src') or a.get('src') or '')
+        elif inside and tag=='a' and re.search(r'\.(?:jpe?g|png|webp)(?:\?|$)',a.get('href',''),re.I):
+            self.gallery.append(a['href'])
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack)-1,-1,-1):
+            if self.stack[i][0]==tag:
+                del self.stack[i:];break
+    def candidates(self):
+        meta=[v for k in ('og:image:secure_url','og:image','og:image:url','twitter:image','twitter:image:src') for v in self.meta.get(k,[])]
+        return self.gallery+meta+self.micro
+
+
+def page_images(page, url):
+    """Up to MAX_IMAGES photos of the one product on a page. A page with
+    several different structured products (a category or search page) gives
+    none; the same product described twice (theme plus app) counts once."""
+    if not page:return []
+    structured=products(page)
+    if len({' '.join(str(p.get('name','')).lower().split()) for p in structured})>1:return []
+    raw=[]
+    for product in structured:
+        image=product.get('image',[])
+        raw+=image if isinstance(image,list) else [image]
+    parser=PageImages()
+    try:parser.feed(page)
+    except Exception:pass
+    return clean_images(raw+parser.candidates(),url)
+
+
+def shopify_images(url, get_page=fetch):
+    """Photos from a Shopify product's own JSON (/products/<handle>.js)."""
+    parts=urllib.parse.urlsplit(url)
+    if not re.search(r'/products/[^/]+/?$',parts.path):return []
+    base=urllib.parse.urlunsplit((parts.scheme,parts.netloc,parts.path.rstrip('/'),'',''))
+    product=json.loads(get_page(base+'.js'))
+    if not isinstance(product,dict):return []
+    media=[m.get('src') for m in product.get('media') or [] if isinstance(m,dict) and m.get('media_type','image')=='image']
+    return clean_images((product.get('images') or [])+media+[product.get('featured_image')],url)
+
+
 def page_offers(page, url, source, profile):
     structured=products(page)
     if len(structured)>1: return []  # related products cannot verify the requested horn
     if structured:
-        return [c for p in structured if (c:=normalize_product(p,url,source,profile))]
+        offers=[c for p in structured if (c:=normalize_product(p,url,source,profile))]
+        for c in offers:
+            if not c['images']:c['images']=page_images(page,url)
+        return offers
     # BigCommerce/OpenGraph dealer metadata must explicitly establish all
     # three offer facts. Missing availability stays in the candidate queue.
     metadata=DealerPage(); metadata.feed(page)
     availability=metadata.one('product:availability','availability')
     availability={'in stock':'InStock','instock':'InStock','out of stock':'OutOfStock','outofstock':'OutOfStock','sold out':'SoldOut'}.get(availability.lower(),availability)
     p={'name':metadata.name(),'description':metadata.one('og:description','description'),
-       'image':metadata.one('og:image'),'offers':{'price':metadata.one('product:price:amount','price'),
+       'image':page_images(page,url),'offers':{'price':metadata.one('product:price:amount','price'),
        'priceCurrency':metadata.one('product:price:currency','pricecurrency'),'availability':availability}}
     c=normalize_product(p,url,source,profile)
     if c: return [dict(c,evidence='Individual dealer product metadata / explicit availability')]
@@ -483,13 +603,25 @@ def reverb_facts(data):
     if isinstance(data.get('published_at'),str):
         try:posted=dt.datetime.fromisoformat(data['published_at'].replace('Z','+00:00')).astimezone(dt.timezone.utc).isoformat()
         except ValueError:pass
-    images=[]
-    for photo in data.get('photos') or []:
-        href=((photo or {}).get('_links') or {}).get('full',{}).get('href','')
-        if isinstance(href,str) and href.startswith('https://'):images.append(href)
+    images=reverb_images(data)
     location=(data.get('location') or {}).get('display_location','') if isinstance(data.get('location'),dict) else ''
-    return dict(state=state,status=status,price=price,currency=currency,shipping=shipping,postedAt=posted,images=images[:20],
+    return dict(state=state,status=status,price=price,currency=currency,shipping=shipping,postedAt=posted,images=images,
                 seller=str(data.get('shop_name') or ''),location=str(location or ''),sourceListingId=str(data.get('id') or ''))
+
+
+def reverb_images(data):
+    """Listing photos from Reverb's API: each photo's full (or large crop)
+    link, else the listing's main photo link."""
+    def href(links, key):
+        link=links.get(key) if isinstance(links,dict) else None
+        return link.get('href') if isinstance(link,dict) and isinstance(link.get('href'),str) else ''
+    links=[]
+    for photo in data.get('photos') or []:
+        sizes=photo.get('_links') if isinstance(photo,dict) else None
+        links.append(next((h for size in ('full','large_crop','small_crop','thumbnail') if (h:=href(sizes,size))),''))
+    # The main photo (usually the first photo's full link again; deduplicated).
+    links.append(href(data.get('_links'),'photo'))
+    return clean_images([h for h in links if h])
 
 
 def reverb_web_url(data, fallback=''):
@@ -600,7 +732,7 @@ def ebay_facts(item, now=None):
     place=', '.join(str(location[k]) for k in ('city','stateOrProvince','country') if isinstance(location.get(k),str) and location.get(k))
     return dict(status=status,price=price,currency=currency,shipping=shipping,postedAt=posted,endsAt=ends.isoformat() if ends else None,
                 condition=str(item.get('condition') or ''),location=place,seller=str((item.get('seller') or {}).get('username') or ''),
-                images=[i for i in images if i.startswith('https://')][:20],sourceListingId=str(item.get('legacyItemId') or ''),auction='AUCTION' in options)
+                images=clean_images(images),sourceListingId=str(item.get('legacyItemId') or ''),auction='AUCTION' in options)
 
 
 def ebay_offer_from(item, url, source, profile):
@@ -640,7 +772,7 @@ def candidate_hint(result, source, profile, page=''):
     if not scoring or scoring['searchScore']<45: return None
     return dict(maker=maker,model=title,title=title,description='',url=url,source=source,
         status='stale',verificationState='candidate',discoveryType='newly discovered',price=None,
-        currency='USD',shipping=None,postedAt=None,serialNumber='',details={},images=[],
+        currency='USD',shipping=None,postedAt=None,serialNumber='',details={},images=page_images(page,url),
         searchScore=scoring['searchScore'],tags=scoring['tags'],
         searchRationale='Promising search lead: '+maker+'. Price, availability and instrument details require verification.',
         evidence='Unverified search result / URL hint; not a market observation')
@@ -691,6 +823,7 @@ class LiveState(HTMLParser):
 def apply_api_facts(c, facts, offer, evidence):
     """Update a tracked offer from official-API facts (Reverb, eBay)."""
     c['verifiedVia']='api'
+    if facts['images'] and not c.get('images'):c['images']=facts['images']
     if c.get('verificationState')=='candidate':
         if facts['status']=='removed':
             c.update(status='removed',evidence=evidence)
@@ -721,19 +854,20 @@ def api_gone(c, label, code):
     return c
 
 
-def recheck_reverb(c, profile, get_api=None):
+def recheck_reverb(c, profile, get_api=None, found=None):
     """Recheck a Reverb item through the public API: state, price, currency,
-    shipping and post date. HTTP 404/410 from the API means the item is gone."""
+    shipping, post date and photos. HTTP 404/410 from the API means the item is gone."""
     try: data=reverb_listing(c['url'],get_api)
     except urllib.error.HTTPError as error:
         if error.code not in (404,410): raise
         return api_gone(c,'Reverb API',error.code)
+    if data and found is not None:found['images']=reverb_images(data)
     facts=reverb_facts(data) if data else None
     if not facts: return None
     return apply_api_facts(c,facts,reverb_offer_from(data,c['url'],c['source'],profile),'Reverb public listings API / state '+facts['state'])
 
 
-def recheck_ebay(c, profile, ebay):
+def recheck_ebay(c, profile, ebay, found=None):
     """Recheck an eBay item through the Browse API (getItemByLegacyId). The API
     only returns live items: 404 means the listing ended or sold."""
     try: item=ebay.item(ebay_id(c['url']))
@@ -741,6 +875,7 @@ def recheck_ebay(c, profile, ebay):
         if error.code not in (404,410): raise
         return api_gone(c,'eBay Browse API',error.code)
     facts=ebay_facts(item)
+    if facts and found is not None:found['images']=facts['images']
     if not facts: return None
     offer=ebay_offer_from(item,c['url'],c['source'],profile)
     return apply_api_facts(c,facts,offer,offer['evidence'] if offer else 'eBay Browse API')
@@ -760,19 +895,20 @@ def is_challenge(page):
     return bool((title and CHALLENGE_TITLE.search(title[1])) or CHALLENGE_MARKUP.search(page[:200000]))
 
 
-def recheck(listing, get_page, profile, get_api=None, ebay=None):
-    """Official API first (Reverb; eBay with keys), then the page itself."""
+def recheck(listing, get_page, profile, get_api=None, ebay=None, found=None):
+    """Official API first (Reverb; eBay with keys), then the page itself.
+    found (a dict) receives the photos seen, even when the offer is not verified."""
     c={k:copy.deepcopy(v) for k,v in listing.items() if k in ALLOWED_FIELDS}
     c['discoveryType']='rediscovered'
     if not c.get('url'): return None
-    if reverb_id(c['url']): return recheck_reverb(c,profile,get_api)
-    if ebay is not None and ebay_id(c['url']): return recheck_ebay(c,profile,ebay)
-    result=recheck_page(c,get_page,profile)
+    if reverb_id(c['url']): return recheck_reverb(c,profile,get_api,found)
+    if ebay is not None and ebay_id(c['url']): return recheck_ebay(c,profile,ebay,found)
+    result=recheck_page(c,get_page,profile,found)
     if result is not None: result.setdefault('verifiedVia','direct')
     return result
 
 
-def recheck_page(c, get_page, profile):
+def recheck_page(c, get_page, profile, found=None):
     try: page=get_page(c['url'])
     except urllib.error.HTTPError as error:
         if error.code not in (404,410): raise
@@ -782,6 +918,9 @@ def recheck_page(c, get_page, profile):
         c.update(status='removed',evidence=f'HTTP {error.code}; prior price retained as last known')
         return c
     if is_challenge(page): raise ChallengePage('bot challenge page')
+    photos=page_images(page,c['url'])
+    if found is not None:found['images']=photos
+    if photos and not c.get('images'):c['images']=photos
     state=LiveState();state.feed(page);authoritative=state.state(c['title'])
     candidates=page_offers(page,c['url'],c['source'],profile)
     if not candidates and '/products/' in c['url']:
@@ -790,7 +929,7 @@ def recheck_page(c, get_page, profile):
             if offer: candidates=[offer]
         except Exception: pass
     if c.get('verificationState')=='candidate' and len(candidates)==1:
-        return dict(candidates[0],id=c.get('id'),verificationState='verified')
+        return dict(candidates[0],id=c.get('id'),verificationState='verified',images=candidates[0]['images'] or photos)
     candidates=[p for p in candidates if p]
     # A page with multiple unrelated products is ambiguous; never take the
     # price of a recommendation/related product as the tracked horn's price.
@@ -876,6 +1015,7 @@ def search_openai(query, key):
 # Report fields newer than some deployed APIs; a 400 for unknown JSON retries
 # once without them so a runner deployed before its API still records runs.
 NEW_REPORT_FIELDS=('verifiedVia',)
+NEW_REPORT_KEYS=('imageUpdates',)
 
 
 # Storing a run can take a while (the API serves one request at a time per
@@ -918,7 +1058,7 @@ def post_run(client, report):
         try: body=error.read().decode('utf-8','replace')
         except Exception: body=''
         if 'unknown field' not in body and 'invalid run JSON' not in body: raise
-        stripped=dict(report,listings=[{k:v for k,v in l.items() if k not in NEW_REPORT_FIELDS} for l in report.get('listings',[])])
+        stripped=dict({k:v for k,v in report.items() if k not in NEW_REPORT_KEYS},listings=[{k:v for k,v in l.items() if k not in NEW_REPORT_FIELDS} for l in report.get('listings',[])])
         print(json.dumps({'note':'API predates new report fields; resubmitted without them'}),flush=True)
         return client.call('/runs',stripped)
 
@@ -1321,6 +1461,12 @@ def daily(client):
     live=collections.defaultdict(lambda:dict(pagesOpened=0,verifiedOffers=0,staleResults=0))
     key=os.environ.get('BRAVE_SEARCH_API_KEY');openai=os.environ.get('OPENAI_API_KEY')
     blocked=set();leads=collections.Counter();ebay_results=[]
+    # Photos seen for tracked listings that have none, even when the page did
+    # not verify an offer; the API only fills empty galleries with them.
+    image_updates={}
+    def note_images(listing,images):
+        if listing and listing.get('id') and not listing.get('images') and images:
+            image_updates.setdefault(listing['id'],list(images[:MAX_IMAGES]))
     ebay=EbayAPI.from_env()
     verify_limit=int(os.environ.get('TRUMPETS_VERIFY_LIMIT') or VERIFY_LIMIT);verifier=collections.Counter()
     ebay_verify_limit=int(os.environ.get('TRUMPETS_EBAY_VERIFY_LIMIT') or EBAY_DISCOVERY_VERIFY_LIMIT)
@@ -1367,7 +1513,9 @@ def daily(client):
             if not ok:record_failure(listing,domain,'eBay: '+(reason or 'search-provider check unavailable'))
             continue
         try:
-            checked=recheck(listing,fetch,profile,ebay=ebay)
+            found={}
+            checked=recheck(listing,fetch,profile,ebay=ebay,found=found)
+            if not checked or not checked.get('images'):note_images(listing,found.get('images'))
             live[domain]['pagesOpened']+=1
             if checked:
                 link_physical_horn(checked,baseline);market_context(checked,baseline);report['listings'].append(checked);submitted.add(canonical_url(listing['url']))
@@ -1430,6 +1578,7 @@ def daily(client):
                     # Shown in a converted display currency: fetch it in its own.
                     if calls>=REVERB_CALLS:seen['budget']+=1;continue
                     calls+=1;data=reverb_item(str(data.get('id')),currency=native)
+                note_images(by_item.get(reverb_id(url)),reverb_images(data))
                 c=reverb_offer_from(data,url,'Reverb',profile)
                 if not c:seen['not a verifiable Bb trumpet offer']+=1;continue
                 seen[keep_market(c,reverb_id(url),'reverb.com',check)]+=1
@@ -1473,6 +1622,7 @@ def daily(client):
                                 offers=[dict(offer,verifiedVia='api')] if offer else []
                             else:
                                 markup=fetch(url);live[domain]['pagesOpened']+=1
+                                if old:note_images(old,page_images(markup,url))
                                 offers=[dict(o,verifiedVia='direct') for o in page_offers(markup,url,source,profile)]
                                 if not offers and '/products/' in url:
                                     try:
@@ -1580,9 +1730,86 @@ def daily(client):
             check=dict(source='Live pages / '+domain,domain=domain,status='checked' if counts['pagesOpened'] else 'skipped',candidates=domain_finds[domain],note='Direct listing pages reviewed; stock evidence is stored per offer.' if counts['pagesOpened'] else 'Unverified search lead discovered; no live page accessed.',**counts)
             report['sources'].append(check)
         else:by_domain[domain].update(counts)
+    if image_updates:
+        report['imageUpdates']=[{'id':k,'images':v} for k,v in image_updates.items()]
+        notes.append(f'Photos found for {len(image_updates)} tracked listings that had none')
     report['error']='; '.join(dict.fromkeys(failures+notes))[:10000]
     if failures:report['status']='partial'
     result=submit_run(client,report);print(json.dumps(result),flush=True)
+    return 0 if result.get('status')=='succeeded' else 2
+
+
+# ---- One-time photo backfill (--backfill-images) --------------------------------
+# Request caps: Reverb API calls, direct page fetches (all domains, and per
+# domain), eBay Browse API calls (only with keys), listings tried, and time.
+BACKFILL_LIMITS={'listings':450,'reverb':200,'pages':200,'perDomain':30,'ebay':60}
+BACKFILL_BUDGET=25*60
+BACKFILL_DOMAIN_DELAY=1.0  # seconds between two page fetches on one domain
+
+
+def backfill_images(client, get_page=None, get_api=None, ebay=None, sleep=None, clock=None, limits=None):
+    """Photos for every tracked listing that has none: Reverb's public API, the
+    eBay Browse API (with keys), else the listing page itself (and a Shopify
+    product's own JSON). Submitted as one 'images' run, which only fills empty
+    galleries. Logs counts only, never URLs or listing details."""
+    get_page=get_page or fetch;sleep=sleep or time.sleep;clock=clock or time.monotonic
+    limits=dict(BACKFILL_LIMITS,**(limits or {}))
+    started=clock();now=dt.datetime.now(dt.timezone.utc)
+    listings=client.call('/listings').get('listings',[])
+    targets=[l for l in listings if l.get('id') and l.get('url') and not l.get('images')]
+    counts=collections.Counter(missing=len(targets),tracked=len(listings))
+    requests=collections.Counter();per_domain=collections.Counter();blocked=set();updates=[]
+    def page_request(domain):
+        if requests['pages']>=limits['pages'] or per_domain[domain]>=limits['perDomain']:return False
+        if per_domain[domain]:sleep(BACKFILL_DOMAIN_DELAY)
+        requests['pages']+=1;per_domain[domain]+=1
+        return True
+    for listing in targets:
+        url=listing['url']
+        domain=(urllib.parse.urlsplit(url).hostname or '').lower().removeprefix('www.')
+        family='reverb' if reverb_id(url) else 'ebay' if ebay_id(url) else 'page'
+        if counts['tried']>=limits['listings'] or clock()-started>BACKFILL_BUDGET:
+            counts['skipped (run cap)']+=1;continue
+        images=[]
+        try:
+            if family=='reverb':
+                if requests['reverb']>=limits['reverb']:counts['skipped (request cap)']+=1;continue
+                requests['reverb']+=1;counts['tried']+=1
+                images=reverb_images(api_json(REVERB_API+reverb_id(url),REVERB_HEADERS,get=get_api,sleep=sleep))
+            elif family=='ebay':
+                # eBay item pages refuse automated requests and web-search
+                # sources carry no photos; only the Browse API has them.
+                if ebay is None:counts['skipped (eBay without API keys)']+=1;continue
+                if requests['ebay']>=limits['ebay']:counts['skipped (request cap)']+=1;continue
+                requests['ebay']+=1;counts['tried']+=1
+                images=(ebay_facts(ebay.item(ebay_id(url))) or {}).get('images') or []
+            else:
+                if domain in blocked:counts['skipped (source blocks automated checks)']+=1;continue
+                if not page_request(domain):counts['skipped (request cap)']+=1;continue
+                counts['tried']+=1
+                page=get_page(url)
+                if is_challenge(page):raise ChallengePage('bot challenge page')
+                images=page_images(page,url)
+                if not images and re.search(r'/products/[^/]+/?$',urllib.parse.urlsplit(url).path) and page_request(domain):
+                    try:images=shopify_images(url,get_page)
+                    except Exception:pass
+        except Exception as error:
+            if isinstance(error,ChallengePage) or (isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES):
+                blocked.add(domain);counts['blocked']+=1
+            elif isinstance(error,urllib.error.HTTPError) and error.code in (404,410):counts['gone']+=1
+            else:counts['failed']+=1
+            continue
+        if images:
+            updates.append({'id':listing['id'],'images':images[:MAX_IMAGES]});counts['found ('+family+')']+=1
+        else:counts['no photos ('+family+')']+=1
+    summary={'backfill':'images',**dict(sorted(counts.items())),'requests':dict(requests),'blockedDomains':len(blocked)}
+    print(json.dumps(summary),flush=True)
+    if not updates:
+        print(json.dumps({'note':'no photos found; nothing submitted'}),flush=True);return 0
+    report={'externalId':'image-backfill-'+now.isoformat(),'startedAt':now.isoformat(),'kind':'images','status':'succeeded',
+            'sources':[],'listings':[],'checkFailures':[],'error':f'Image backfill: photos for {len(updates)} of {len(targets)} listings without photos','imageUpdates':updates}
+    result=submit_run(client,report)
+    print(json.dumps({k:result.get(k) for k in ('runId','status','imagesAdded','replayed','recovered') if k in result}),flush=True)
     return 0 if result.get('status')=='succeeded' else 2
 
 
@@ -1609,7 +1836,10 @@ def run():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report',help='Submit a normalized ChatGPT run JSON; retries use the same externalId.')
     parser.add_argument('--prepare',help='Write a private profile/all-tracked/due snapshot for a search client.')
+    parser.add_argument('--backfill-images',action='store_true',help='One-time: find photos for tracked listings that have none (Reverb API, then the listing page) and submit them as an images run.')
     args=parser.parse_args();client=Client()
+    if args.backfill_images:
+        return backfill_images(client,ebay=EbayAPI.from_env())
     if args.prepare:
         snapshot={key:client.call('/'+path) for key,path in [('profile','profile'),('board','listings'),('due','due')]}
         fd=os.open(args.prepare,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)

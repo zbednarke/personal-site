@@ -86,8 +86,14 @@
 
   // ---- Rendering ------------------------------------------------------------
   const listing = (id) => window.TrumpetApp?.listing(id);
-  function visual(l, className) {
+  // The listing photo; without one (or when it fails to load), the card shows
+  // the placeholder drawing and onMissing() adds a "View listing" link.
+  function visual(l, className, onMissing) {
     const v = el("div", className);
+    const missing = () => {
+      v.classList.add("no-photo");
+      onMissing?.(v);
+    };
     if (l.images?.length) {
       const img = el("img");
       img.src = l.images[0];
@@ -98,14 +104,33 @@
         "error",
         () => {
           img.remove();
-          v.classList.add("no-photo");
+          missing();
         },
         { once: true },
       );
       v.append(img);
-    } else v.classList.add("no-photo");
+    } else missing();
     return v;
   }
+  // Opens the source page in a new tab. Never a reaction: the press and the
+  // click stop here, so the card's drag (and a pair card's choice) never sees them.
+  function viewListing(l) {
+    const url = M.safeURL(l.url);
+    if (!url || url === "#") return null;
+    const a = el("a", "taste-view-listing", "View listing ↗");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = "No photo here: open the listing in a new tab";
+    a.setAttribute("aria-label", `View listing for ${l.maker} ${l.model} (opens in a new tab)`);
+    for (const type of ["pointerdown", "pointerup", "click"]) a.addEventListener(type, (e) => e.stopPropagation());
+    return a;
+  }
+  // Whether the reaction was made looking at a photo (every card involved).
+  const photoShown = (box) => {
+    const visuals = [...box.querySelectorAll(".swipe-visual, .pair-visual")];
+    return visuals.length > 0 && visuals.every((v) => !v.classList.contains("no-photo"));
+  };
   function facts(l, score) {
     const body = el("div", "taste-card-body");
     const kicker = el("div", "card-kicker");
@@ -155,7 +180,8 @@
     card.dataset.id = l.id;
     card.tabIndex = 0;
     card.setAttribute("aria-label", `${l.maker} ${l.model}, ${M.money(l.price, l.currency)}. Swipe right for cool, left for not for me, up for must see.`);
-    card.append(visual(l, "swipe-visual"), facts(l, { ...(data.scores?.[l.id] || { taste: 50, sd: 1 }), reason: q.reason === "new" ? "new to you" : "model unsure" }));
+    const view = viewListing(l);
+    card.append(visual(l, "swipe-visual", (v) => view && !view.isConnected && v.append(view)), facts(l,{ ...(data.scores?.[l.id] || { taste: 50, sd: 1 }), reason: q.reason === "new" ? "new to you" : "model unsure" }));
     for (const [cls, text] of [
       ["stamp right", "COOL"],
       ["stamp left", "NOT FOR ME"],
@@ -181,13 +207,18 @@
       ["b", p.b],
     ]) {
       const l = listing(id);
+      // The link sits beside the choice button (never inside it), over the
+      // placeholder, so opening the listing is not a choice.
+      const slot = el("div", "pair-slot");
       const b = el("button", "pair-card");
       b.type = "button";
       b.dataset.side = side;
       b.setAttribute("aria-label", `Choose ${l.maker} ${l.model}`);
-      b.append(visual(l, "pair-visual"), facts(l));
+      const view = viewListing(l);
+      b.append(visual(l, "pair-visual", () => view && !view.isConnected && slot.append(view)), facts(l));
       b.addEventListener("click", () => react({ kind: "pair", action: side }));
-      box.append(b);
+      slot.prepend(b);
+      box.append(slot);
     }
   }
   function renderChips() {
@@ -285,13 +316,13 @@
     if (r.kind === "swipe") {
       const q = currentCard();
       if (!q) return;
-      body = { kind: "swipe", mode: "swipe", listingId: q.listingId, action: r.action };
+      body = { kind: "swipe", mode: "swipe", listingId: q.listingId, action: r.action, meta: { hadPhoto: photoShown($("#swipe-deck")) } };
       doneCards.add(q.listingId);
       entry = { kind: "swipe", listingId: q.listingId };
     } else {
       const p = currentPair();
       if (!p) return;
-      body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action };
+      body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action, meta: { hadPhoto: photoShown($("#pair-cards")) } };
       donePairs.add(T.pairKey(p));
       entry = { kind: "pair", key: T.pairKey(p) };
     }
