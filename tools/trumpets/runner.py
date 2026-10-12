@@ -1684,10 +1684,22 @@ def llm_skip_reason(page, url, source, profile, maker_hint=''):
     """Why the page reader must not run on a page the extractors already found
     ambiguous or excluded: several products, disagreeing copies of one, or an
     item the accessory/other-instrument/maker rules reject."""
+    query={k.lower() for k,_ in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)}
+    if query&{'variant','size','color','colour','option'}:return 'a variant of the product (variant URL)'
+    if 'data-product_variations' in page or 'variations_form' in page:return 'a product with variants'
     groups=product_groups(products(page))
     if len(groups)>1:return 'several products on the page'
     if not groups:return None
     group=groups[0]
+    prices=set()
+    for p in group:
+        offers=p.get('offers');offers=offers if isinstance(offers,list) else [offers]
+        for offer in offers:
+            if isinstance(offer,dict):
+                for key in ('price','lowPrice','highPrice'):
+                    value=parse_price(offer.get(key))
+                    if value:prices.add(value)
+    if len(prices)>1:return 'several prices for the product (variants)'
     if len(group)>1:
         if not all(declares_page(p,url) for p in group):return 'several product descriptions on the page'
         facts={(c['price'],c['currency'],c['status']) for p in group if (c:=normalize_product(p,url,source,profile))}
@@ -2193,6 +2205,11 @@ def verify_via_search(url, key, get=None, sleep=None):
 # page, or the page's own currency metadata), and it is a single Bb trumpet
 # product page. "unknown" availability never verifies (nor marks anything sold).
 PAGE_LLM_LIMIT=80
+# off: no page reading. shadow (default): the reading is only recorded as a
+# hint on the check (with whether it agrees with the stored price), never
+# applied. confirm: a grounded reading may confirm a tracked offer. Confirm is
+# for after the shadow agreement rate on real runs has been reviewed.
+PAGE_LLM_MODE='shadow'
 # The most a model's reading may move a tracked offer's price on its own.
 MAX_LLM_MOVE=0.20
 # Wall-clock share of the 35-minute run the page reader may use (rechecks run
@@ -2230,17 +2247,29 @@ def not_current_price(a):
             or (bool(tokens&NOT_CURRENT_WITH_PRICE) and bool(tokens&{'price','prices','amount','pricing'})))
 
 
+# Sections that are about other things than the page's own horn (the
+# deterministic extractors keep their narrower NOT_THIS_PRODUCT).
+NOT_THIS_PRODUCT_TEXT=re.compile(r'related|upsell|cross-?sell|recommend|recently.?viewed|you.?may.?also|also.?like|similar|featured|pairs?.?(?:well|with)|'
+                                 r'complete.?the.?look|carousel|more.?from|reviews?|testimonials?',re.I)
+CURRENT_PRICE_WORDS={'sale','current','special','now','final','actual','our','offer'}
+
+
 class PageText(HTMLParser):
     """The page's readable text, line by line (block elements and <br> end a
     line): title, headings and main content, plus its JSON-LD; without
-    scripts, styles, navigation, header, footer, forms, hidden or
-    screen-reader-only text, struck-through or compare-at/was/old/regular/list
-    prices, and related/recommended product sections. Text inside a current
-    price element (class, id or itemprop "price") is marked as price-labelled."""
+    scripts, styles, navigation, header, footer, hidden or screen-reader text
+    (except inside a price element), related/recommended/review sections,
+    struck-through or compare-at/was/old/list prices, a regular price beside a
+    sale/current one, and a pre-tax price beside a with-tax one. Variant
+    choices (<option>) are kept: their prices compete. Each chunk of text
+    knows whether it is in a current-price element (class, id or itemprop
+    "price") and whether it is in the product block: after the main <h1> and
+    before the next <h2>/<h3>/<section> boundary."""
     VOID=StockStatement.VOID
-    BLOCK=('p','div','li','tr','h1','h2','h3','h4','h5','h6','section','article','dd','dt','table','ul','ol','td','th','main','header','figure','blockquote')
+    BLOCK=('p','div','li','tr','h1','h2','h3','h4','h5','h6','section','article','dd','dt','table','ul','ol','td','th','main','header','figure','blockquote','option','label')
     def __init__(self):
         super().__init__();self.stack=[];self.lines=[[]];self.title=[];self.jsonld=[];self.ld=None;self.h1=[]
+        self.block='before';self.has_sale=False;self.has_with_tax=False
     def skipping(self):return any(e[1] for e in self.stack)
     def newline(self):
         if self.lines[-1]:self.lines.append([])
@@ -2251,14 +2280,28 @@ class PageText(HTMLParser):
             if tag=='br':self.newline()
             return
         label=a.get('class','')+' '+a.get('id','')
-        hidden=('hidden' in a or a.get('aria-hidden','').lower()=='true' or re.search(r'display\s*:\s*none|visibility\s*:\s*hidden',a.get('style',''),re.I)
-                or re.search(r'(?:^|\s)(?:d-none|hidden|sr-only|screen-reader-text|visually-?hidden|visuallyhidden|u-hidden)(?:\s|$)',a.get('class','')))
-        other=bool(PageImages.OTHERS.search(a.get('class',''))) or bool(NOT_THIS_PRODUCT.search(label)) or (tag=='ul' and re.search(r'(?:^|\s)products(?:\s|$)',a.get('class','')) is not None)
-        in_content=any(e[0] in ('main','article') for e in self.stack)
-        skip=(tag in ('script','style','noscript','nav','footer','template','svg','form','select','iframe','aside','del','s','strike')
-              or (tag=='header' and not in_content) or bool(hidden) or other or not_current_price(a))
+        tokens=set(re.split(r'[^a-z]+',label.lower()))-{''}
         priced=bool(re.search(r'price',label+' '+a.get('itemprop',''),re.I))
-        self.stack.append((tag,skip,priced))
+        in_price=any(e[2] for e in self.stack)
+        # Inside a price element nothing counts as hidden ("<ins aria-hidden>"
+        # holds WooCommerce's current price); <ins> is never hidden either.
+        hidden=not (in_price or priced or tag=='ins') and ('hidden' in a or a.get('aria-hidden','').lower()=='true'
+                or re.search(r'display\s*:\s*none|visibility\s*:\s*hidden',a.get('style',''),re.I)
+                or re.search(r'(?:^|\s)(?:d-none|hidden|sr-only|screen-reader-text|visually-?hidden|visuallyhidden|u-hidden)(?:\s|$)',a.get('class','')))
+        other=bool(PageImages.OTHERS.search(a.get('class',''))) or bool(NOT_THIS_PRODUCT_TEXT.search(label)) or (tag=='ul' and re.search(r'(?:^|\s)products(?:\s|$)',a.get('class','')) is not None)
+        in_content=any(e[0] in ('main','article') for e in self.stack)
+        # "price__regular" is the current price unless a sale price sits beside it.
+        regular=priced and 'regular' in tokens and not (tokens&NOT_CURRENT_ALONE) and not NOT_CURRENT.search(label)
+        pretax=bool(re.search(r'without-?tax|ex(?:cl)?-?tax',label,re.I)) or 'data-product-price-without-tax' in a
+        if priced and tokens&CURRENT_PRICE_WORDS:self.has_sale=True
+        if re.search(r'(?<!out)-?with-?tax|incl-?tax',label,re.I) or 'data-product-price-with-tax' in a:self.has_with_tax=True
+        skip=(tag in ('script','style','noscript','nav','footer','template','svg','iframe','aside','del','s','strike')
+              or (tag=='header' and not in_content) or bool(hidden) or other or (not_current_price(a) and not regular))
+        kind='regular' if regular else 'pretax' if pretax else ''
+        if not skip and not self.skipping():
+            if tag=='h1' and self.block=='before':self.block='product'
+            elif self.block=='product' and (tag in ('section','h2','h3') and not priced):self.block='after'
+        self.stack.append((tag,skip,priced,kind))
         if tag in self.BLOCK:self.newline()
     def handle_endtag(self,tag):
         if tag=='script' and self.ld is not None:
@@ -2271,16 +2314,24 @@ class PageText(HTMLParser):
         if self.stack and self.stack[-1][0]=='title':self.title.append(data);return
         if not self.skipping() and data.strip():
             text=' '.join(html.unescape(data).split())
-            self.lines[-1].append((text,any(e[2] for e in self.stack)))
+            kinds={e[3] for e in self.stack}-{''}
+            chunk=[text,any(e[2] for e in self.stack),'regular' if 'regular' in kinds else 'pretax' if 'pretax' in kinds else '',self.block=='product']
+            last=self.lines[-1][-1] if self.lines[-1] else None
+            # "$4,350<sup>00</sup>": superscript cents are the decimals.
+            if any(e[0]=='sup' for e in self.stack) and re.fullmatch(r'\d{2}',text) and last and re.search(r'\d$',last[0]):last[0]+='.'+text
+            else:self.lines[-1].append(chunk)
             if any(e[0]=='h1' for e in self.stack):self.h1.append(text)
     def line_texts(self):
-        """[(line text, [(start, end, price-labelled)])], each line flattened on its own."""
+        """[(line text, [(start, end, price-labelled, in product block)])], each
+        line flattened on its own."""
         out=[]
         for chunks in self.lines:
             text='';marks=[]
-            for chunk,priced in chunks:
+            for chunk,priced,kind,in_block in chunks:
+                if kind=='regular' and self.has_sale:continue
+                if kind=='pretax' and self.has_with_tax:continue
                 if text:text+=' '
-                marks.append((len(text),len(text)+len(chunk),priced));text+=chunk
+                marks.append((len(text),len(text)+len(chunk),priced,in_block));text+=chunk
             if text:out.append((text,marks))
         return out
     def body(self):return '\n'.join(t for t,_ in self.line_texts())
@@ -2320,7 +2371,7 @@ MONEY=re.compile(r"(?P<pre>US\$|CA\$|AU\$|NZ\$|C\$|A\$|[$€£¥￥]|(?<![A-Za-z
 PREFIX_CHARS=25
 NOT_ASKING_BEFORE=re.compile(r'shipping|postage|delivery|freight|versand|porto|frakt|verzend|送料|deposit|down ?payment|anzahlung|aanbetaling|'
                              r'financ|klarna|affirm|afterpay|instal(?:l)?ments?|as low as|payments? of|monthly|per month|monatlich|月々|'
-                             r'trade-?in|rental|\brent\b|miete',re.I)
+                             r'trade-?in|rental|\brent\b|miete|\bvalued?\b|\bworth\b|\bpaid\b|\bup to\b|estimated|appraised',re.I)
 NOT_ASKING_LABEL=re.compile(r'(?:\bfrom|\bstarting at|\bab|\bvanaf|à partir de|\bdès|\bwas|\bold price|\bregular price|\boriginal price|\blist price|'
                             r'\bcompare at|\bcompare|\brrp|\bmsrp|\buvp|\bstatt|\binstead of|\bsave|\byou save|\bretail value|\breg\.?|\bnormally|\bvalued at)\s*[:\-]?\s*$',re.I)
 NOT_ASKING_AFTER=re.compile(r'^\s*(?:/\s?mo\b|/\s?month|per month|a month|monthly|/\s?mes|deposit|down payment|shipping|postage|delivery|s&h|versand|送料|off\b)',re.I)
@@ -2329,6 +2380,7 @@ TAX_EXCLUDED=re.compile(r'税抜|税別|tax excl|excl\.? (?:vat|tax)|zzgl\.? mws
 # unbracketed label ("税抜価格 ¥450,000") to the amount after it.
 TAX_NOTE_AFTER=re.compile(r'^\s*[（(]\s*(?:税抜|税別|tax excl|excl\.? (?:vat|tax)|zzgl\.? mwst|ohne mwst|ex\.? vat)|^\s*(?:税抜|税別)',re.I)
 TAX_LABEL_BEFORE=re.compile(r'(?<![（(])(?:税抜|税別|tax excl\.?|excl\.? (?:vat|tax)|ohne mwst)[^（()）\d]{0,8}$',re.I)
+TAX_INCLUDED_NOTE_AFTER=re.compile(r'^\s*[（(]\s*(?:税込|tax incl\w*\.?|incl\.? (?:vat|tax)|inkl\.? mwst)\s*[:：]?\s*(?:[¥￥$€£]|\d)',re.I)
 TAX_INCLUDED=re.compile(r'税込|tax incl|incl\.? (?:vat|tax)|inkl\.? mwst',re.I)
 
 
@@ -2350,8 +2402,11 @@ def money_spans(view_or_body):
             before=text[max(previous,m.start()-PREFIX_CHARS):m.start()];after=text[m.end():min(following,m.end()+20)]
             why=('not an asking price' if NOT_ASKING_BEFORE.search(before) or NOT_ASKING_LABEL.search(before) or NOT_ASKING_AFTER.search(after) else
                  'price before tax' if both_taxes and (TAX_NOTE_AFTER.search(after) or TAX_LABEL_BEFORE.search(before)) else '')
-            labelled=any(a<m.end() and m.start()<b and priced for a,b,priced in marks)
-            spans.append(dict(line=n,start=m.start(),end=m.end(),marker=marker,value=parse_price(number,code or symbol_currency(marker)),labelled=labelled,why=why))
+            # "¥450,000（税込 ¥495,000）": the amount before a tax-inclusive note is pre-tax.
+            if not why and TAX_INCLUDED_NOTE_AFTER.search(text[m.end():m.end()+20]):why='price before tax'
+            labelled=any(a<m.end() and m.start()<b and priced for a,b,priced,_ in marks)
+            in_block=any(a<m.end() and m.start()<b and block for a,b,_,block in marks)
+            spans.append(dict(line=n,start=m.start(),end=m.end(),marker=marker,value=parse_price(number,code or symbol_currency(marker)),labelled=labelled,in_block=in_block,why=why))
     return spans
 
 
@@ -2396,6 +2451,15 @@ def money_currency(marker, currency, page, url=''):
     return 'currency not stated on the page'
 
 
+def compact_find(line, needle):
+    """Spans of line where needle occurs ignoring whitespace ("$ 4,350.00" is
+    "$4,350.00"), with digit/separator boundaries on both sides."""
+    index=[i for i,ch in enumerate(line) if not ch.isspace()]
+    compact=''.join(line[i] for i in index);target=''.join(str(needle).split())
+    if not target:return []
+    return [(index[m.start()],index[m.end()-1]+1) for m in re.finditer(r'(?<![\d.,])'+re.escape(target)+r'(?![\d]|[.,]\d)',compact)]
+
+
 def title_on_page(title, view):
     """The model's title is on the page: the whole title at word boundaries
     (in the heading or a line of text), or every one of its words (at least
@@ -2437,27 +2501,28 @@ def grounded(data, view, page, url=''):
     price=round(float(price),2)
     if parse_price(price_text,currency)!=price:return 'price text does not match the price'
     if below_floor(price,currency):return 'price below the plausibility floor'
-    lines=view.body().split('\n')
-    at=[(n,m.start(),m.end()) for n,line in enumerate(lines) for m in re.finditer(r'(?<![\d.,])'+re.escape(price_text)+r'(?![\d]|[.,]\d)',line)]
+    at=[(n,a,b) for n,line in enumerate(view.body().split('\n')) for a,b in compact_find(line,price_text)]
     if not at:return 'price text not on the page'
     spans=money_spans(view)
     hits=[s for s in spans if any(n==s['line'] and s['start']<b and a<s['end'] for n,a,b in at)]
     if not hits:return 'price text is not a money amount'
     hits=[s for s in hits if not s['why']]
     if not hits:return 'not the asking price (shipping, deposit, instalment, old or pre-tax price)'
-    asking=[s for s in spans if not s['why']]
-    if any(s['value']!=price for s in asking):
-        labelled=[s for s in asking if s['labelled']]
-        if not any(s['labelled'] for s in hits) or any(s['value']!=price for s in labelled):return 'ambiguous price'
-        hits=[s for s in hits if s['labelled']]
+    # Only the page's own product block (after its <h1>, before the next
+    # <h2>/<h3>/<section>): a stray amount further down is not the horn's price.
+    hits=[s for s in hits if s['in_block']]
+    if not hits:return 'price is not in the product block'
+    # Any other asking amount that disagrees makes the price ambiguous, even a
+    # price-labelled one: the reader only confirms, it never chooses.
+    if any(s['value']!=price for s in spans if not s['why']):return 'ambiguous price'
     return money_currency(hits[0]['marker'],currency,page,url)
 
 
 class PageLLM:
     """The per-run budget and counters (counts only are logged) for LLM page
     reading. post(url, headers, body) is the transport (tests use a fake)."""
-    def __init__(self, key, limit=PAGE_LLM_LIMIT, model=None, post=None, sleep=None, seconds=PAGE_LLM_SECONDS, clock=None):
-        self._key=key;self.limit=limit;self.post=post;self.sleep=sleep
+    def __init__(self, key, limit=PAGE_LLM_LIMIT, model=None, post=None, sleep=None, seconds=PAGE_LLM_SECONDS, clock=None, mode=PAGE_LLM_MODE):
+        self._key=key;self.limit=limit;self.post=post;self.sleep=sleep;self.mode=mode
         self.clock=clock or time.monotonic;self.seconds=seconds;self.spent=0.0
         self.model=model or os.environ.get('TRUMPETS_VERIFY_MODEL') or os.environ.get('TRUMPETS_SEARCH_MODEL','gpt-4.1-mini')
         self.counts=collections.Counter()
@@ -2469,7 +2534,11 @@ class PageLLM:
         except ValueError:
             limit=PAGE_LLM_LIMIT
             print(json.dumps({'warning':f'TRUMPETS_PAGE_LLM_LIMIT is not a whole number; using {PAGE_LLM_LIMIT}'}),flush=True)
-        return cls(key,limit=max(0,limit),**kw) if limit>0 else None
+        mode=(os.environ.get('TRUMPETS_PAGE_LLM_MODE') or PAGE_LLM_MODE).strip().lower()
+        if mode not in ('off','shadow','confirm'):
+            print(json.dumps({'warning':f'TRUMPETS_PAGE_LLM_MODE must be off, shadow or confirm; using {PAGE_LLM_MODE}'}),flush=True);mode=PAGE_LLM_MODE
+        if mode=='off' or limit<=0:return None
+        return cls(key,limit=limit,mode=mode,**kw)
     def __repr__(self):return 'PageLLM(<key hidden>)'
     def read(self, text):
         # A fresh delimiter per request, and none left inside the page text,
@@ -2504,13 +2573,25 @@ class PageLLM:
             self.counts['failed']+=1;return None,'page reading gave no answer'
         why=grounded(data,view,page,listing.get('url',''))
         currency=str(data.get('currency') or '').upper()
-        old=listing.get('price')
-        if not why and listing.get('verificationState')!='candidate' and isinstance(old,(int,float)) and old>0:
+        tracked=listing.get('verificationState')!='candidate'
+        old=listing.get('price');old_currency=str(listing.get('currency') or '').upper()
+        stored=isinstance(old,(int,float)) and not isinstance(old,bool) and old>0
+        reported=data.get('price') if isinstance(data.get('price'),(int,float)) and not isinstance(data.get('price'),bool) else None
+        quoted=' '.join(str(data.get('price_text') or '').split())[:60]
+        agreement=''
+        if tracked:
+            # Shadow measurement: would this reading have agreed with the stored price?
+            if not stored or reported is None:agreement='no stored price to compare'
+            elif currency==old_currency and round(float(reported),2)==round(float(old),2):agreement='agrees with the stored price';self.counts['shadow agreements']+=1
+            else:agreement=f'differs from the stored {old:g} {old_currency}';self.counts['shadow disagreements']+=1
+        if not why and tracked and stored and (currency!=old_currency or abs(float(data['price'])-old)/old>MAX_LLM_MOVE):
             # A model's reading never moves a tracked price far or changes its
             # currency on its own: that needs a confirming check.
-            if currency!=str(listing.get('currency') or '').upper() or abs(float(data['price'])-old)/old>MAX_LLM_MOVE:why='price change needs confirmation'
+            why='price change needs confirmation'
         if why:
-            self.counts['rejected']+=1;self.counts['rejected: '+why]+=1;return None,'page reading rejected: '+why
+            self.counts['rejected']+=1;self.counts['rejected: '+why]+=1
+            note=f' (shadow: read "{quoted}" {currency}; {agreement})' if self.mode=='shadow' and tracked and agreement else ''
+            return None,'page reading rejected: '+why+note
         # The page's own heading (never model text) is the description the
         # maker, horn-word and accessory rules read besides the title.
         p={'name':data.get('title') or '','description':view.heading(),'image':page_images(page,listing['url']),
@@ -2518,12 +2599,19 @@ class PageLLM:
         c=normalize_product(p,listing['url'],listing.get('source',''),profile)
         if not c:
             self.counts['rejected']+=1;self.counts['rejected: not a tracked-horn offer']+=1;return None,'page reading rejected: not a tracked-horn offer'
-        quoted=' '.join(str(data.get('price_text') or '').split())[:60]
-        if listing.get('verificationState')=='candidate':
+        state=data['availability'].replace('_',' ')
+        if not tracked:
             # A queued lead is never verified by a model's reading alone; the
             # reading is kept as a hint on its check (counts only are logged).
             self.counts['lead hints']+=1
-            return None,f'page reading hint (unverified): "{quoted}" {currency}, {data["availability"].replace("_"," ")}'
+            return None,f'page reading hint (unverified): "{quoted}" {currency}, {state}'
+        if self.mode!='confirm':
+            self.counts['shadow hints']+=1
+            return None,f'page reading (shadow, not applied): "{quoted}" {currency}, {state}; {agreement}'
+        if not stored or old_currency!=currency:
+            # Nothing to compare the reading with: a hint, never a confirmation.
+            self.counts['hints without a stored price']+=1
+            return None,f'page reading hint (unverified, {agreement}): "{quoted}" {currency}, {state}'
         self.counts['accepted']+=1
         c['evidence']='LLM page reading, grounded in the fetched page'+(f' (price text "{quoted}")' if quoted else ' (price unpublished)')+' / '+data['availability']
         return c,'accepted'
@@ -2531,8 +2619,11 @@ class PageLLM:
         if not self.counts['calls'] and not self.counts['over budget']:return ''
         c=self.counts
         reasons=', '.join(f'{n} {k[10:]}' for k,n in sorted(c.items()) if k.startswith('rejected: '))
-        return (f"Page reading (LLM): {c['calls']} pages read, {c['accepted']} grounded offers accepted, {c['rejected']} rejected"
+        return (f"Page reading (LLM, {self.mode} mode): {c['calls']} pages read, {c['accepted']} grounded offers accepted, {c['rejected']} rejected"
+                +(f", {c['shadow hints']} shadow hints (not applied)" if c['shadow hints'] else '')
+                +(f", {c['shadow agreements']} shadow agreements, {c['shadow disagreements']} shadow disagreements with stored prices" if c['shadow agreements'] or c['shadow disagreements'] else '')
                 +(f", {c['lead hints']} lead hints (never verified)" if c['lead hints'] else '')
+                +(f", {c['hints without a stored price']} hints without a stored price" if c['hints without a stored price'] else '')
                 +(f' ({reasons})' if reasons else '')+(f", {c['failed']} failed" if c['failed'] else '')+(f", {c['over budget']} skipped (per-run cap of {self.limit} pages or {self.seconds//60} minutes)" if c['over budget'] else ''))
 
 

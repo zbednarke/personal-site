@@ -938,17 +938,33 @@ What changed (all in `tools/trumpets/runner.py`):
   rejected; "Trompete" and "trubka" count as horn words. A shop "brand" that is
   only a category ("Bb-trumpet") is ignored; a recheck may fall back to the
   tracked listing's own maker, a new find never is.
-- **LLM page reading** (`PageLLM`), last. It may only *confirm* an
-  unambiguous price for a tracked, previously verified offer; it never chooses
-  between competing prices and never verifies a queued lead (for a lead the
-  reading is only a hint on its failed check). It runs only for a page the
+- **LLM page reading** (`PageLLM`), last, and **shadow-only for now**.
+  `TRUMPETS_PAGE_LLM_MODE` is `off`, `shadow` (the default) or `confirm`. In
+  shadow mode the reader never confirms or changes anything: its reading is
+  only recorded as a hint on the listing's failed check ("page reading
+  (shadow, not applied): … agrees with the stored price" or "… differs from the
+  stored 4400 USD"), and the run notes count shadow agreements and
+  disagreements with stored prices. **Plan:** keep shadow mode on real runs,
+  review the agreement rate (and every disagreement) in the run notes and
+  check failures, and only then consider `confirm`; nothing enables `confirm`
+  today. In `confirm` mode it may only *confirm* an unambiguous price for a
+  tracked, previously verified offer with a positive stored price in the same
+  currency (otherwise: a hint only); it never chooses between competing prices
+  and never verifies a queued lead (for a lead the reading is only a hint). It runs only for a page the
   runner fetched itself (HTTP 200, not redirected away from the listing's page)
   that no extractor could read, and never on a page the extractors found
   ambiguous (several products, disagreeing copies) or excluded (accessory,
-  other instrument, maker rule). The page is cleaned line by line (no scripts,
+  other instrument, maker rule), on a variant URL (`variant=`, `size=`…), a
+  WooCommerce variable product, or a product whose offers carry more than one
+  price. The page is cleaned line by line (no scripts,
   styles, navigation, header, footer, forms, hidden or screen-reader text,
-  related products, `<del>`/`<s>`/line-through text, or compare-at, was, old,
-  regular, list, RRP/MSRP price elements; title, main text and JSON-LD kept;
+  related/featured/"pairs with"/carousel/review/testimonial sections,
+  `<del>`/`<s>`/line-through text, compare-at, was, old, list, RRP/MSRP price
+  elements, a regular price only when a sale/current price sits beside it, and
+  BigCommerce's without-tax price beside its with-tax one; hidden markup inside
+  a price element and `<ins>` are kept, `<sup>` cents read as decimals, and
+  variant `<option>`s are kept so their prices compete; title, main text and
+  JSON-LD kept;
   about 12,000 characters) and sent as untrusted data inside a random
   per-request delimiter to the Responses API (`TRUMPETS_VERIFY_MODEL`, else
   `TRUMPETS_SEARCH_MODEL`; strict JSON schema; no tools). A reading is accepted
@@ -962,14 +978,17 @@ What changed (all in `tools/trumpets/runner.py`):
     least 100 USD-equivalent;
   - it is an asking price: the few words just before it (back to the previous
     amount) are not about shipping, deposits, instalments, "from", "was",
-    compare-at/regular/list/RRP prices or "save", the words just after it are
-    not "/mo", "deposit" or "shipping", and it is not the 税抜 (pre-tax) price
-    beside a 税込 one. "Free shipping" in the next paragraph or "ships from
-    Japan" say nothing about it;
-  - it is unambiguous: every asking-price amount on the page is that price, or
-    it sits in the page's current-price element (class, id or itemprop "price")
-    and no other current-price element disagrees. Anything else is "ambiguous
-    price";
+    compare-at/regular/list/RRP prices, "save", value, worth, paid, "up to",
+    estimated or appraised, the words just after it are not "/mo", "deposit" or
+    "shipping", and it is not a pre-tax price (税抜 beside 税込, or an amount
+    followed by "(税込 ¥…)"). "Free shipping" in the next paragraph or "ships
+    from Japan" say nothing about it; the price text matches ignoring
+    whitespace ("$ 4,350.00");
+  - it is in the product block: after the page's `<h1>` and before the next
+    `<h2>`/`<h3>`/`<section>` (a price-labelled `<h2>` does not end it);
+  - it is unambiguous: every other asking-price amount on the page is the same
+    price. Any disagreeing amount, even a price-labelled one, makes it
+    "ambiguous price";
   - the currency is the amount's own ISO code or unambiguous symbol; "¥" is yen
     on a `.jp` host or a `lang="ja"` page; otherwise "$", "¥" or "kr" need the
     single currency the page declares for its product (OpenGraph/product meta or
@@ -999,6 +1018,8 @@ says the page was read by a model). An older runner works unchanged against the
 new API. Then copy `tools/trumpets/runner.py` to `/opt/trumpets/runner.py` on the
 VM; the service, timer and env file path are unchanged, and the runner uses the
 existing `OPENAI_API_KEY`. Optional: `TRUMPETS_PAGE_LLM_LIMIT` in
-`/etc/trumpets/runner.env`. The VM also needs outbound HTTPS to the dealers' own
+`/etc/trumpets/runner.env`. Leave `TRUMPETS_PAGE_LLM_MODE` unset (shadow) or
+set it to `off`; do not set `confirm` before the shadow agreement rate has been
+reviewed. The VM also needs outbound HTTPS to the dealers' own
 `/wp-json/wc/store/…`, `?format=json` and `www.` hosts, which are the same sites
 it already fetches.
