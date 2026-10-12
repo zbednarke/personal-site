@@ -21,6 +21,27 @@
     if (text != null) n.textContent = text;
     return n;
   }
+  // After every committed reaction: a one-tap undo for 4 seconds.
+  let toastTimer = null;
+  function hideUndoToast() {
+    clearTimeout(toastTimer);
+    document.querySelector("#taste-toast")?.remove();
+  }
+  function showUndoToast(text) {
+    hideUndoToast();
+    const toast = el("div", "toast taste-toast");
+    toast.id = "taste-toast";
+    toast.setAttribute("role", "status");
+    const undoButton = el("button", "", "Undo");
+    undoButton.type = "button";
+    undoButton.addEventListener("click", () => {
+      hideUndoToast();
+      undo();
+    });
+    toast.append(el("span", "", text), undoButton);
+    document.body.append(toast);
+    toastTimer = setTimeout(hideUndoToast, 4000);
+  }
   function status(text, error = false) {
     const n = $("#taste-status");
     n.textContent = text;
@@ -271,7 +292,9 @@
     $("#taste-note").value = "";
     entry.pending = post(body);
     undoStack.push(entry);
-    status(r.kind === "swipe" ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action] : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action]);
+    const said = r.kind === "swipe" ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action] : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action];
+    status(said);
+    showUndoToast(said);
     render();
     try {
       const out = await entry.pending;
@@ -279,6 +302,7 @@
       accept(out);
     } catch (e) {
       undoStack.splice(undoStack.indexOf(entry), 1);
+      hideUndoToast();
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
       status(e.message, true);
@@ -288,6 +312,7 @@
   async function undo() {
     const entry = undoStack.pop();
     if (!entry) return;
+    hideUndoToast();
     render();
     try {
       if (!entry.eventId) entry.eventId = (await entry.pending).event.id;
@@ -392,42 +417,69 @@
   }
 
   // ---- Gestures and keyboard -----------------------------------------------
+  // Thresholds live in TasteModel.dragState: a commit is deliberate (40% of
+  // the card or a fast fling); anything else springs back. Vertical touch
+  // drags belong to the page (touch-action: pan-y); the browser then cancels
+  // the pointer, which never commits.
   function attachDrag(card) {
-    let start = null;
+    let drag = null;
+    const stamps = {
+      right: card.querySelector(".stamp.right"),
+      left: card.querySelector(".stamp.left"),
+      up: card.querySelector(".stamp.up"),
+    };
+    const state = () =>
+      T.dragState({ dx: drag.dx, dy: drag.dy, width: card.offsetWidth, axis: drag.axis, pointerType: drag.pointerType, vx: T.velocity(drag.samples).vx });
+    const show = (s) => {
+      for (const [dir, stamp] of Object.entries(stamps)) if (stamp) stamp.style.opacity = dir === s.direction ? String(s.commit ? 1 : 0.15 + 0.6 * s.progress) : "";
+      card.dataset.leaning = s.commit ? s.direction : "";
+    };
+    const springBack = () => {
+      drag = null;
+      card.classList.remove("dragging");
+      card.classList.add("springing");
+      card.style.transform = "";
+      card.dataset.leaning = "";
+      for (const stamp of Object.values(stamps)) if (stamp) stamp.style.opacity = "";
+      setTimeout(() => card.classList.remove("springing"), 320);
+    };
     const move = (e) => {
-      if (!start) return;
-      const dx = e.clientX - start.x,
-        dy = e.clientY - start.y;
-      card.style.transform = `translate(${dx}px, ${Math.min(dy, 40)}px) rotate(${dx / 18}deg)`;
-      const g = T.gesture(dx, dy, card.offsetWidth);
-      card.dataset.leaning = g || "";
+      if (!drag || e.pointerId !== drag.id) return;
+      drag.dx = e.clientX - drag.x;
+      drag.dy = e.clientY - drag.y;
+      drag.axis = T.lockAxis(drag.axis, drag.dx, drag.dy);
+      drag.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+      if (drag.samples.length > 12) drag.samples.shift();
+      if (!drag.axis) return;
+      if (!drag.captured) {
+        drag.captured = true;
+        card.classList.add("dragging");
+        // Touch is implicitly captured by the card already.
+        if (drag.pointerType !== "touch") card.setPointerCapture?.(e.pointerId);
+      }
+      // Follow the finger along the locked axis (a little give on the other).
+      const x = drag.axis === "x" ? drag.dx : drag.dx * 0.15;
+      const y = drag.axis === "y" ? Math.min(drag.dy, 40) : Math.max(-200, Math.min(drag.dy, 40)) * 0.35;
+      card.style.transform = `translate(${x}px, ${y}px) rotate(${x / 18}deg)`;
+      show(state());
     };
     const end = (e) => {
-      if (!start) return;
-      const g = T.gesture(e.clientX - start.x, e.clientY - start.y, card.offsetWidth);
-      start = null;
+      if (!drag || e.pointerId !== drag.id) return;
+      const s = state();
+      if (!s.commit) return springBack();
+      drag = null;
       card.classList.remove("dragging");
-      if (g) {
-        card.classList.add("gone-" + g);
-        react({ kind: "swipe", action: g });
-      } else {
-        card.style.transform = "";
-        card.dataset.leaning = "";
-      }
+      card.classList.add("gone-" + s.direction);
+      react({ kind: "swipe", action: s.direction });
     };
     card.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      start = { x: e.clientX, y: e.clientY };
-      card.classList.add("dragging");
-      card.setPointerCapture?.(e.pointerId);
+      if (e.button !== 0 || drag) return;
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0, axis: null, captured: false, pointerType: e.pointerType || "mouse", samples: [{ t: e.timeStamp, x: e.clientX, y: e.clientY }] };
     });
     card.addEventListener("pointermove", move);
     card.addEventListener("pointerup", end);
-    card.addEventListener("pointercancel", () => {
-      start = null;
-      card.classList.remove("dragging");
-      card.style.transform = "";
-    });
+    // Scrolling (or anything else that takes the pointer) never commits.
+    card.addEventListener("pointercancel", (e) => drag && e.pointerId === drag.id && springBack());
   }
   document.addEventListener("keydown", (e) => {
     if (!active || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;

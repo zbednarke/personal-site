@@ -1216,10 +1216,13 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
 .swipe-deck { position: relative; display: flex; justify-content: center; min-height: 420px; }
 .swipe-card {
   position: relative; width: 100%; max-width: 440px; border: 1px solid var(--line); background: var(--paper);
-  touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab;
+  /* Vertical touch drags scroll the page; only sideways drags move the card. */
+  touch-action: pan-y; user-select: none; -webkit-user-select: none; cursor: grab;
   transition: transform 0.18s ease-out, opacity 0.18s ease-out, border-color 0.2s;
 }
 .swipe-card.dragging { transition: none; cursor: grabbing; }
+/* A released drag that did not commit settles back with a small overshoot. */
+.swipe-card.springing { transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s; }
 .swipe-card:focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
 .swipe-card[data-leaning="right"] { border-color: var(--green); }
 .swipe-card[data-leaning="left"] { border-color: var(--red); }
@@ -1243,7 +1246,11 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
 .stamp.right { left: 16px; color: var(--green); transform: rotate(-8deg); }
 .stamp.left { right: 16px; color: var(--red); transform: rotate(8deg); }
 .stamp.up { left: 50%; transform: translateX(-50%); color: var(--brass); }
-.swipe-card[data-leaning="right"] .stamp.right, .swipe-card[data-leaning="left"] .stamp.left, .swipe-card[data-leaning="up"] .stamp.up { opacity: 1; }
+/* While dragging, the stamp's opacity follows progress (set inline); it is
+   fully opaque and enlarged once releasing would commit. */
+.swipe-card.dragging .stamp { transition: none; }
+.swipe-card[data-leaning="right"] .stamp.right, .swipe-card[data-leaning="left"] .stamp.left, .swipe-card[data-leaning="up"] .stamp.up { opacity: 1; font-size: 15px; }
+.taste-toast { z-index: 40; }
 .taste-actions { display: flex; justify-content: center; gap: 14px; margin: 18px 0 6px; }
 .react {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;

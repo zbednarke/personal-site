@@ -77,12 +77,15 @@ function syntheticPng(width, height) {
 (async () => {
   let browser;
   try {
-    for (let i = 0; i < 100; i++) {
+    // The preview is a `go test` binary: with a cold build cache compiling it
+    // takes well over a minute (CI runs `go test ./...` first, so it is warm).
+    for (let i = 0, ready = false; !ready; i++) {
       try {
-        const r = await fetch(base + "/trumpets/");
-        if (r.ok) break;
+        ready = (await fetch(base + "/trumpets/")).ok;
       } catch {}
+      if (ready) break;
       if (child.exitCode !== null) throw Error(logs);
+      if (i >= 1200) throw Error("Go preview server did not start on " + base + " within 3 minutes\n" + logs);
       await new Promise((r) => setTimeout(r, 150));
     }
     browser = await chromium.launch({
@@ -638,6 +641,71 @@ function syntheticPng(width, height) {
     await mobile.waitForSelector(".pair-card");
     await mobile.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 8));
     await mobile.screenshot({ path: path.join(out, "taste-pair-mobile.png") });
+    // Touch drags (the iPhone report): partial drags and page scrolls over the
+    // card never commit; only a deliberate drag does, with a one-tap undo.
+    await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
+    await mobile.waitForSelector(".swipe-card");
+    let tastePostCount = 0;
+    mobile.on("request", (r) => r.method() === "POST" && r.url().includes("/taste/events") && tastePostCount++);
+    const cdp = await phone.newCDPSession(mobile);
+    const touch = (type, x, y) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }] });
+    const touchDrag = async (dx, steps = 8) => {
+      const b = await mobile.locator(".swipe-card").boundingBox();
+      const x = b.x + b.width / 2,
+        y = b.y + 150;
+      await touch("touchStart", x, y);
+      // Slow, deliberate movement (no fling), then a pause before lifting.
+      for (let i = 1; i <= steps; i++) {
+        await touch("touchMove", x + (dx * i) / steps, y);
+        await mobile.waitForTimeout(60);
+      }
+      await mobile.waitForTimeout(150);
+      await touch("touchEnd");
+    };
+    await mobile.setViewportSize({ width: 430, height: 844 });
+    await mobile.locator(".swipe-card").evaluate((c) => ((c.style.width = "390px"), (c.style.maxWidth = "none")));
+    assert.equal(await mobile.locator(".swipe-card").evaluate((c) => c.offsetWidth), 390);
+    await mobile.evaluate(() => scrollTo(0, document.querySelector(".swipe-card").getBoundingClientRect().top + scrollY - 60));
+    const partialId = await mobile.locator(".swipe-card").getAttribute("data-id");
+    await touchDrag(120);
+    await mobile.waitForFunction(() => !document.querySelector(".swipe-card.dragging") && !document.querySelector(".swipe-card").style.transform);
+    await mobile.waitForTimeout(400);
+    assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "a 120 px partial drag on a 390 px card springs back");
+    assert.equal(tastePostCount, 0, "a partial drag posts nothing");
+    // A vertical scroll that starts on the card moves the page, not the card
+    // (pan-y: the browser takes the touch and cancels the pointer).
+    const scrolledFrom = await mobile.evaluate(() => scrollY);
+    const b = await mobile.locator(".swipe-card").boundingBox();
+    const sx = b.x + b.width / 2,
+      sy = b.y + 300;
+    await touch("touchStart", sx, sy);
+    for (let i = 1; i <= 10; i++) {
+      await touch("touchMove", sx + 3, sy - 32 * i);
+      await mobile.waitForTimeout(16);
+    }
+    await touch("touchEnd");
+    await mobile.waitForTimeout(500);
+    const scrolledTo = await mobile.evaluate(() => scrollY);
+    assert.ok(scrolledTo > scrolledFrom + 100, `the page scrolled (${scrolledFrom} -> ${scrolledTo})`);
+    assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "scrolling over the card is not a must-see");
+    // Even when a long upward touch drag reaches the card as pointer moves
+    // (no cancel), touch never commits "must see".
+    await mobile.evaluate(() => scrollTo(0, document.querySelector(".swipe-card").getBoundingClientRect().top + scrollY - 60));
+    const c = await mobile.locator(".swipe-card").boundingBox();
+    await cdp.send("Input.synthesizeScrollGesture", { x: Math.round(c.x + c.width / 2), y: Math.round(c.y + 320), yDistance: -300, gestureSourceType: "touch", speed: 800 });
+    await mobile.waitForTimeout(500);
+    assert.equal(await mobile.locator(".swipe-card").getAttribute("data-id"), partialId, "an upward touch drag is not a must-see");
+    assert.equal(tastePostCount, 0, "a vertical scroll over the card posts nothing");
+    // A deliberate drag commits; the toast undoes it in one tap.
+    await mobile.evaluate(() => scrollTo(0, document.querySelector(".swipe-card").getBoundingClientRect().top + scrollY - 60));
+    await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), touchDrag(200)]);
+    await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, partialId);
+    assert.equal(tastePostCount, 1);
+    assert.match(await mobile.locator("#taste-toast").innerText(), /Cool\./);
+    await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), mobile.locator("#taste-toast").getByRole("button", { name: "Undo" }).tap()]);
+    await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, partialId);
+    assert.equal(await mobile.locator("#taste-toast").count(), 0, "the toast closes on undo");
+    await mobile.setViewportSize({ width: 390, height: 844 });
     // Other views stay overflow-free at these widths with the extra tab.
     await mobile.goto(base + "/trumpets/");
     await mobile.waitForFunction(() => document.querySelector("#all-count").textContent !== "0");
@@ -709,7 +777,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, undo, chips, text and voice notes, head to head, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, chips, text and voice notes, head to head, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

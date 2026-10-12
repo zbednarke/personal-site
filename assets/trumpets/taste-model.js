@@ -4,13 +4,55 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.TasteModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
-  // A drag becomes a swipe past ~28% of the card width (at least 70px), or
-  // an upward drag past 90px that is mostly vertical.
-  function gesture(dx, dy, width = 360) {
-    const threshold = Math.max(70, width * 0.28);
-    if (dy < -90 && Math.abs(dy) > Math.abs(dx) * 1.2) return "up";
-    if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy)) return dx > 0 ? "right" : "left";
-    return null;
+  // Card drags. A commit is deliberate: a horizontal drag past 40% of the card
+  // width (never more than 140 px needed), or a fast fling (> 0.6 px/ms over
+  // the last ~80 ms, same direction, past 60 px). Up ("must see") needs a
+  // long, mostly vertical drag (> 160 px, |dy| > 2|dx|) and, for touch, a card
+  // already grabbed sideways: vertical touch drags scroll the page
+  // (touch-action: pan-y), and touch has the Must-see button. Anything else
+  // springs back.
+  const AXIS_LOCK_PX = 10;
+  const FLING_WINDOW_MS = 80;
+  const FLING_SPEED = 0.6;
+  const FLING_MIN_PX = 60;
+  const UP_PX = 160;
+  const commitDistance = (width = 360) => Math.min(140, width * 0.4);
+  // The drag's axis, decided once it has moved ~10 px; then it stays.
+  function lockAxis(axis, dx, dy) {
+    if (axis) return axis;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < AXIS_LOCK_PX) return null;
+    return Math.abs(dx) >= Math.abs(dy) ? "x" : "y";
+  }
+  // Velocity (px/ms) from pointer samples [{t, x, y}] over the last ~80 ms.
+  function velocity(samples) {
+    const list = samples || [];
+    if (list.length < 2) return { vx: 0, vy: 0 };
+    const last = list[list.length - 1];
+    let first = last;
+    for (let i = list.length - 2; i >= 0 && last.t - list[i].t <= FLING_WINDOW_MS; i--) first = list[i];
+    const dt = last.t - first.t;
+    return dt > 0 ? { vx: (last.x - first.x) / dt, vy: (last.y - first.y) / dt } : { vx: 0, vy: 0 };
+  }
+  // What releasing now would do and how far along it is (progress 0..1;
+  // commit = releasing now commits). d: { dx, dy, width, axis, pointerType, vx }.
+  function dragState(d) {
+    const { dx = 0, dy = 0, width = 360, axis = null, pointerType = "mouse", vx = 0 } = d || {};
+    const upAllowed = axis !== null && (pointerType !== "touch" || axis === "x");
+    if (upAllowed && dy < 0 && Math.abs(dy) > 2 * Math.abs(dx)) {
+      return { direction: "up", progress: Math.min(1, -dy / UP_PX), commit: -dy > UP_PX };
+    }
+    if (axis !== "x" || dx === 0) return { direction: null, progress: 0, commit: false };
+    const distance = Math.abs(dx);
+    const fling = distance > FLING_MIN_PX && Math.sign(vx) === Math.sign(dx) && Math.abs(vx) > FLING_SPEED;
+    const commit = distance >= commitDistance(width) || fling;
+    return { direction: dx > 0 ? "right" : "left", progress: commit ? 1 : Math.min(1, distance / commitDistance(width)), commit };
+  }
+  // The swipe a released drag commits, or null (spring back). Without an
+  // explicit axis, the drag's own dominant axis is used.
+  function gesture(dx, dy, width = 360, opts = {}) {
+    const axis = opts.axis !== undefined ? opts.axis : lockAxis(null, dx, dy);
+    const s = dragState({ dx, dy, width, axis, pointerType: opts.pointerType || "mouse", vx: opts.vx || 0 });
+    return s.commit ? s.direction : null;
   }
   // Keyboard shortcuts; null when the key means nothing in that mode.
   function keyAction(key, mode) {
@@ -105,5 +147,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { gesture, keyAction, pairKey, nextCards, nextPairs, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });

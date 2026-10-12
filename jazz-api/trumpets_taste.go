@@ -1177,7 +1177,7 @@ func validateTasteEvent(in *tasteEventInput) error {
 }
 
 func (app *application) tasteResponse(ctx context.Context, user uuid.UUID) (map[string]any, error) {
-	listings, err := app.loadTrumpets(ctx, user)
+	listings, err := app.loadTrumpetsForTaste(ctx, user)
 	if err != nil {
 		return nil, err
 	}
@@ -1247,7 +1247,7 @@ func (app *application) machineTrumpetTaste(w http.ResponseWriter, r *http.Reque
 		app.serverError(w, err)
 		return
 	}
-	listings, err := app.loadTrumpets(r.Context(), user)
+	listings, err := app.loadTrumpetsForTaste(r.Context(), user)
 	if err != nil {
 		app.serverError(w, err)
 		return

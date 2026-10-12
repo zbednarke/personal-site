@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,21 +155,24 @@ func (app *application) trumpetRoutes(mux *http.ServeMux) {
 		"PUT /v1/trumpets/taste/preferences": app.putTastePreferences,
 	}
 	for path, h := range browser {
-		mux.Handle(path, app.trumpetPrivacy(app.authenticate(h)))
+		mux.Handle(path, trumpetGzip(app.trumpetPrivacy(app.authenticate(h))))
 	}
 	machine := map[string]http.HandlerFunc{
 		"GET /v1/trumpets/machine/profile":  app.trumpetProfile,
 		"GET /v1/trumpets/machine/listings": app.trumpetBoard,
 		"GET /v1/trumpets/machine/due":      app.trumpetDue,
 		"POST /v1/trumpets/machine/runs":    app.ingestTrumpetRun,
-		"GET /v1/trumpets/machine/taste":    app.machineTrumpetTaste,
+		// Whether a run with this externalId was stored (the runner asks
+		// after a submit whose response it never received).
+		"GET /v1/trumpets/machine/runs":  app.lookupTrumpetRun,
+		"GET /v1/trumpets/machine/taste": app.machineTrumpetTaste,
 		// The machine owner is fixed server-side; this lets an operator seed
 		// the owner's stated preferences after deploy.
 		"GET /v1/trumpets/machine/preferences": app.getTastePreferences,
 		"PUT /v1/trumpets/machine/preferences": app.putTastePreferences,
 	}
 	for path, h := range machine {
-		mux.Handle(path, app.trumpetPrivacy(app.trumpetMachineAuth(h)))
+		mux.Handle(path, trumpetGzip(app.trumpetPrivacy(app.trumpetMachineAuth(h))))
 	}
 }
 func (app *application) trumpetPrivacy(next http.Handler) http.Handler {
@@ -410,13 +414,33 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 	var oldPrice *float64
 	var oldStatus, oldCurrency, oldVerification, oldDescription string
 	var acquired bool
-	err := tx.QueryRow(ctx, `SELECT l.id,l.horn_id,l.price,l.status,l.currency,h.acquired,l.verification_state,l.description FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id
+	var previousSnapshot json.RawMessage
+	// A run ingest prefetches the owner's listings (see trumpetPipe): a recheck
+	// of a tracked offer then needs no lookup, snapshot or replay query.
+	var known *trumpetKnownListings
+	if p, ok := tx.(*trumpetPipe); ok && run != nil {
+		known = p.known
+	}
+	prior, prefetched := known.lookup(c)
+	var err error
+	fresh := false
+	if prefetched {
+		fresh = prior == nil
+		if prior != nil {
+			id, horn, oldPrice, oldStatus, oldCurrency, acquired, oldVerification, oldDescription, previousSnapshot =
+				prior.id, prior.horn, prior.price, prior.status, prior.currency, prior.acquired, prior.verification, prior.description, prior.snapshot
+		}
+	} else {
+		err = tx.QueryRow(ctx, `SELECT l.id,l.horn_id,l.price,l.status,l.currency,h.acquired,l.verification_state,l.description FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id
  WHERE l.user_id=$1 AND (($2::uuid IS NOT NULL AND l.id=$2) OR ($2::uuid IS NULL AND (($3::text IS NOT NULL AND l.canonical_url=$3) OR ($4::text IS NOT NULL AND l.source=$5 AND l.source_listing_id=$4) OR ($6::text IS NOT NULL AND l.seed_key=$6))))
  ORDER BY l.first_seen LIMIT 1 FOR UPDATE OF l`, user, nullText(c.ID), nullText(c.URL), nullText(c.SourceListingID), c.Source, nullText(c.SeedKey)).Scan(&id, &horn, &oldPrice, &oldStatus, &oldCurrency, &acquired, &oldVerification, &oldDescription)
-	fresh := errors.Is(err, pgx.ErrNoRows)
-	if err != nil && !fresh {
-		return uuid.Nil, err
+		fresh = errors.Is(err, pgx.ErrNoRows)
+		if err != nil && !fresh {
+			return uuid.Nil, err
+		}
+		err = nil
 	}
+	defer func() { known.touch(c, prior, id) }()
 	if fresh && c.ID != "" {
 		return uuid.Nil, errors.New("listing id not owned or not found")
 	}
@@ -425,16 +449,20 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		return id, nil
 	}
 	details, _ := json.Marshal(c.Details)
-	var previousSnapshot json.RawMessage
 	if !fresh {
-		e := tx.QueryRow(ctx, `SELECT snapshot FROM trumpet_observations WHERE listing_id=$1 ORDER BY checked_at DESC,id DESC LIMIT 1`, id).Scan(&previousSnapshot)
-		if e != nil && !errors.Is(e, pgx.ErrNoRows) {
-			return uuid.Nil, e
+		if !prefetched {
+			e := tx.QueryRow(ctx, `SELECT snapshot FROM trumpet_observations WHERE listing_id=$1 ORDER BY checked_at DESC,id DESC LIMIT 1`, id).Scan(&previousSnapshot)
+			if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+				return uuid.Nil, e
+			}
 		}
 		if c.SerialNumber != "" && c.VerificationState == "verified" && oldVerification == "candidate" {
 			var linked uuid.UUID
 			e := tx.QueryRow(ctx, `SELECT id FROM trumpet_horns WHERE user_id=$1 AND identity_key=$2 AND id<>$3`, user, hornIdentity(c.Maker, c.SerialNumber), horn).Scan(&linked)
 			if e == nil {
+				if p, ok := tx.(*trumpetPipe); ok {
+					p.known, known = nil, nil // other listings move to the linked horn
+				}
 				if err = mergeTrumpetHorn(ctx, tx, user, horn, linked); err != nil {
 					return uuid.Nil, err
 				}
@@ -447,6 +475,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 			}
 		}
 	}
+	newHorn := false // a horn created just now has no other listings
 	if fresh {
 		identity := hornIdentity(c.Maker, c.SerialNumber)
 		if c.HornID == "" && c.VerificationState != "candidate" {
@@ -476,15 +505,18 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 				return uuid.Nil, errors.New("horn id not owned or not found")
 			}
 		} else {
-			horn = uuid.New()
+			created := uuid.New()
 			err = tx.QueryRow(ctx, `INSERT INTO trumpet_horns(id,user_id,maker,model,serial_number,identity_key,details,acquired)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(user_id,identity_key) DO UPDATE SET identity_key=EXCLUDED.identity_key RETURNING id,acquired`, horn, user, c.Maker, c.Model, c.SerialNumber, nullText(identity), details, c.Status == "acquired").Scan(&horn, &acquired)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(user_id,identity_key) DO UPDATE SET identity_key=EXCLUDED.identity_key RETURNING id,acquired`, created, user, c.Maker, c.Model, c.SerialNumber, nullText(identity), details, c.Status == "acquired").Scan(&horn, &acquired)
 			if err != nil {
 				return uuid.Nil, err
 			}
+			newHorn = horn == created
 		}
 		id = uuid.New()
-	} else if run != nil {
+	} else if run != nil && !prefetched {
+		// (A prefetched listing that this ingest has not touched cannot have
+		// an observation from this brand-new run.)
 		var already bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_observations WHERE listing_id=$1 AND run_id=$2)`, id, run).Scan(&already); err != nil {
 			return uuid.Nil, err
@@ -500,7 +532,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 	images, _ := json.Marshal(c.Images)
 	tags, _ := json.Marshal(c.Tags)
 	if fresh {
-		_, err = tx.Exec(ctx, `INSERT INTO trumpet_listings(id,user_id,horn_id,canonical_url,source,source_listing_id,seed_key,title,description,seller,location,price,currency,shipping,posted_at,status,discovery_type,search_score,search_rationale,images,tags,last_checked)
+		err = trumpetWrite(ctx, tx, `INSERT INTO trumpet_listings(id,user_id,horn_id,canonical_url,source,source_listing_id,seed_key,title,description,seller,location,price,currency,shipping,posted_at,status,discovery_type,search_score,search_rationale,images,tags,last_checked)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,CASE WHEN $7::text IS NULL THEN now() ELSE NULL END)`, id, user, horn, nullText(c.URL), c.Source, nullText(c.SourceListingID), nullText(c.SeedKey), c.Title, c.Description, c.Seller, c.Location, c.Price, c.Currency, c.Shipping, c.PostedAt, c.Status, c.DiscoveryType, c.SearchScore, c.SearchRationale, images, tags)
 		if err != nil {
 			return uuid.Nil, err
@@ -509,7 +541,10 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		if c.SeedKey == "" {
 			meaningful := !acquired && c.VerificationState != "candidate" && c.Status == "active" && c.SearchScore >= 65
 			var crossposted bool
-			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_listings WHERE horn_id=$1 AND id<>$2 AND verification_state='verified' AND status='active' AND (currency<>$3 OR price IS NULL OR $4::numeric IS NULL OR price<=$4::numeric*1.03))`, horn, id, c.Currency, c.Price).Scan(&crossposted); err != nil {
+			if newHorn || !meaningful {
+				// No other listing shares a brand-new horn, and a listing that
+				// is not meaningful stays so whether or not it is crossposted.
+			} else if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_listings WHERE horn_id=$1 AND id<>$2 AND verification_state='verified' AND status='active' AND (currency<>$3 OR price IS NULL OR $4::numeric IS NULL OR price<=$4::numeric*1.03))`, horn, id, c.Currency, c.Price).Scan(&crossposted); err != nil {
 				return uuid.Nil, err
 			}
 			if err = trumpetEvent(ctx, tx, user, id, c.DiscoveryType, nil, c.Price, c.Currency, "", c.Status, meaningful && !crossposted); err != nil {
@@ -532,7 +567,7 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 				}
 			}
 		}
-		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET title=$3,description=$4,seller=$5,location=$6,price=$7,currency=$8,shipping=$9,
+		err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET title=$3,description=$4,seller=$5,location=$6,price=$7,currency=$8,shipping=$9,
    posted_at=COALESCE($10,posted_at),status=$11,search_score=$12,search_rationale=$13,images=$14,tags=$15,last_checked=now(),
    changed_at=CASE WHEN price IS DISTINCT FROM $7::numeric OR currency<>$8 OR status<>$11 OR description<>$4 THEN now() ELSE changed_at END,
    discovery_type=CASE WHEN $16<>'' THEN $16 ELSE discovery_type END WHERE id=$1 AND user_id=$2`, id, user, c.Title, c.Description, c.Seller, c.Location, c.Price, c.Currency, c.Shipping, c.PostedAt, c.Status, c.SearchScore, c.SearchRationale, images, tags, discovery)
@@ -570,40 +605,43 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		}
 	}
 	if !fresh {
-		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET canonical_url=COALESCE($3,canonical_url),source=$4,source_listing_id=COALESCE($5,source_listing_id) WHERE id=$1 AND user_id=$2`, id, user, nullText(c.URL), c.Source, nullText(c.SourceListingID))
+		err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET canonical_url=COALESCE($3,canonical_url),source=$4,source_listing_id=COALESCE($5,source_listing_id) WHERE id=$1 AND user_id=$2`, id, user, nullText(c.URL), c.Source, nullText(c.SourceListingID))
 		if err != nil {
 			return uuid.Nil, err
 		}
 	}
-	_, err = tx.Exec(ctx, `UPDATE trumpet_horns SET details=details||$3::jsonb,serial_number=CASE WHEN $4<>'' THEN $4 ELSE serial_number END,
+	err = trumpetWrite(ctx, tx, `UPDATE trumpet_horns SET details=details||$3::jsonb,serial_number=CASE WHEN $4<>'' THEN $4 ELSE serial_number END,
    identity_key=COALESCE($5,identity_key) WHERE id=$1 AND user_id=$2`, horn, user, details, c.SerialNumber, nullText(hornIdentity(c.Maker, c.SerialNumber)))
 	if err != nil {
 		return uuid.Nil, err
 	}
 	if c.Status == "acquired" {
+		if p, ok := tx.(*trumpetPipe); ok {
+			p.known, known = nil, nil // every listing of the horn becomes acquired
+		}
 		if err = markTrumpetAcquired(ctx, tx, user, horn); err != nil {
 			return uuid.Nil, err
 		}
 	}
 	if oldVerification == "candidate" && c.VerificationState == "verified" && !acquired {
-		_, err = tx.Exec(ctx, `UPDATE trumpet_horns SET maker=$3,model=$4 WHERE id=$1 AND user_id=$2`, horn, user, c.Maker, c.Model)
+		err = trumpetWrite(ctx, tx, `UPDATE trumpet_horns SET maker=$3,model=$4 WHERE id=$1 AND user_id=$2`, horn, user, c.Maker, c.Model)
 		if err != nil {
 			return uuid.Nil, err
 		}
 	}
 	if c.VerificationState == "candidate" {
 		// A search rediscovery is not a check; only a dead page counts as an attempt.
-		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3,last_checked=NULL,
+		err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET verification_state=$3,last_checked=NULL,
    last_check_attempt=CASE WHEN $4='removed' THEN now() ELSE last_check_attempt END WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState, c.Status)
 		return id, err
 	}
-	_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET verification_state=$3 WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState)
+	err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET verification_state=$3 WHERE id=$1 AND user_id=$2`, id, user, c.VerificationState)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	if c.SeedKey == "" {
 		// Any verified observation is a successful check: clear the failure streak.
-		_, err = tx.Exec(ctx, `UPDATE trumpet_listings SET check_failures=0,last_check_error='',last_check_attempt=NULL WHERE id=$1 AND user_id=$2`, id, user)
+		err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET check_failures=0,last_check_error='',last_check_attempt=NULL WHERE id=$1 AND user_id=$2`, id, user)
 		if err != nil {
 			return uuid.Nil, err
 		}
@@ -613,13 +651,13 @@ func upsertTrumpet(ctx context.Context, tx pgx.Tx, user uuid.UUID, c trumpetCand
 		if !fresh && oldVerification == "verified" {
 			changes := trumpetSnapshotChanges(previousSnapshot, snapshot, oldDescription, c.Description)
 			if changes != "" {
-				_, err = tx.Exec(ctx, `INSERT INTO trumpet_events(listing_id,user_id,kind,old_status,new_status,meaningful,detail) VALUES($1,$2,'details change',$3,$4,$5,$6)`, id, user, oldStatus, c.Status, !acquired, changes)
+				err = trumpetWrite(ctx, tx, `INSERT INTO trumpet_events(listing_id,user_id,kind,old_status,new_status,meaningful,detail) VALUES($1,$2,'details change',$3,$4,$5,$6)`, id, user, oldStatus, c.Status, !acquired, changes)
 				if err != nil {
 					return uuid.Nil, err
 				}
 			}
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO trumpet_observations(listing_id,user_id,run_id,price,currency,shipping,status,evidence,snapshot,verified_via) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(listing_id,run_id) DO NOTHING`, id, user, run, c.Price, c.Currency, c.Shipping, c.Status, c.Evidence, snapshot, c.VerifiedVia)
+		err = trumpetWrite(ctx, tx, `INSERT INTO trumpet_observations(listing_id,user_id,run_id,price,currency,shipping,status,evidence,snapshot,verified_via) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(listing_id,run_id) DO NOTHING`, id, user, run, c.Price, c.Currency, c.Shipping, c.Status, c.Evidence, snapshot, c.VerifiedVia)
 	}
 	return id, err
 }
@@ -627,18 +665,37 @@ func samePrice(a, b *float64) bool {
 	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
 }
 func trumpetEvent(ctx context.Context, tx pgx.Tx, user, id uuid.UUID, kind string, oldPrice, newPrice *float64, currency, oldStatus, newStatus string, meaningful bool) error {
-	_, err := tx.Exec(ctx, `INSERT INTO trumpet_events(listing_id,user_id,kind,old_price,new_price,currency,old_status,new_status,meaningful) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, user, kind, oldPrice, newPrice, currency, nullText(oldStatus), newStatus, meaningful)
-	return err
+	return trumpetWrite(ctx, tx, `INSERT INTO trumpet_events(listing_id,user_id,kind,old_price,new_price,currency,old_status,new_status,meaningful) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, user, kind, oldPrice, newPrice, currency, nullText(oldStatus), newStatus, meaningful)
 }
 
 func (app *application) loadTrumpets(ctx context.Context, user uuid.UUID) ([]trumpetListing, error) {
+	return app.loadTrumpetListings(ctx, user, true)
+}
+
+// Price history sends a snapshot only when it differs from the previous
+// observation's (unchanged daily snapshots used to repeat every description).
+func trumpetHistoryColumns(histories bool) string {
+	if !histories {
+		return `'[]'::jsonb,'[]'::jsonb,`
+	}
+	return ` COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence,'snapshot',CASE WHEN o.snapshot IS NOT DISTINCT FROM o.previous THEN NULL ELSE o.snapshot END,'verifiedVia',o.verified_via) ORDER BY o.checked_at,o.id)
+  FROM (SELECT *,lag(snapshot) OVER (ORDER BY checked_at,id) AS previous FROM trumpet_observations WHERE listing_id=l.id) o),'[]'),
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',e.kind,'oldStatus',e.old_status,'newStatus',e.new_status,'oldPrice',e.old_price,'newPrice',e.new_price,'currency',e.currency,'occurredAt',e.occurred_at,'detail',e.detail) ORDER BY e.occurred_at) FROM trumpet_events e WHERE e.listing_id=l.id),'[]'),`
+}
+
+// loadTrumpetsForTaste skips the price and status histories (the bulk of the
+// board), which the taste model does not use.
+func (app *application) loadTrumpetsForTaste(ctx context.Context, user uuid.UUID) ([]trumpetListing, error) {
+	return app.loadTrumpetListings(ctx, user, false)
+}
+
+func (app *application) loadTrumpetListings(ctx context.Context, user uuid.UUID, histories bool) ([]trumpetListing, error) {
 	rows, err := app.db.Query(ctx, `SELECT l.id::text,l.horn_id::text,h.maker,h.model,h.serial_number,h.details,l.title,l.description,
  COALESCE(l.canonical_url,''),l.source,COALESCE(l.source_listing_id,''),l.seller,l.location,l.price,l.currency,l.shipping,l.posted_at,
  l.status,l.discovery_type,l.search_score,l.search_rationale,l.images,l.tags,l.first_seen,l.last_checked,l.changed_at,h.acquired,l.verification_state,
  COALESCE((SELECT jsonb_build_object('rating',f.rating,'interestState',f.interest_state,'notes',f.notes,'favorite',f.favorite,
  'favoredAttributes',f.favored_attributes,'dislikedAttributes',f.disliked_attributes) FROM trumpet_feedback f WHERE f.horn_id=h.id),'{}'),
- COALESCE((SELECT jsonb_agg(jsonb_build_object('price',o.price,'currency',o.currency,'shipping',o.shipping,'checkedAt',o.checked_at,'status',o.status,'evidence',o.evidence,'snapshot',o.snapshot,'verifiedVia',o.verified_via) ORDER BY o.checked_at) FROM trumpet_observations o WHERE o.listing_id=l.id),'[]'),
- COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',e.kind,'oldStatus',e.old_status,'newStatus',e.new_status,'oldPrice',e.old_price,'newPrice',e.new_price,'currency',e.currency,'occurredAt',e.occurred_at,'detail',e.detail) ORDER BY e.occurred_at) FROM trumpet_events e WHERE e.listing_id=l.id),'[]'),
+`+trumpetHistoryColumns(histories)+`
  (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL),
  l.check_failures,l.last_check_attempt,l.last_check_error,
  COALESCE((SELECT o.verified_via FROM trumpet_observations o WHERE o.listing_id=l.id ORDER BY o.checked_at DESC,o.id DESC LIMIT 1),'')
@@ -997,12 +1054,14 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
-	tx, err := app.db.Begin(r.Context())
+	plain, err := app.db.Begin(r.Context())
 	if err != nil {
 		app.serverError(w, err)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer plain.Rollback(r.Context())
+	// Pipelined: writes travel with the next read (see trumpetPipe).
+	tx := newTrumpetPipe(plain)
 	if err = lockTrumpetOwner(r.Context(), tx, user); err != nil {
 		app.serverError(w, err)
 		return
@@ -1019,11 +1078,13 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
-	_, err = tx.Exec(r.Context(), `INSERT INTO trumpet_runs(id,user_id,external_id,kind,started_at) VALUES($1,$2,$3,$4,COALESCE($5,now()))`, run, user, input.ExternalID, input.Kind, input.StartedAt)
-	if err != nil {
-		app.serverError(w, err)
-		return
+	if len(input.Listings) > 0 {
+		if err = tx.prefetchTrumpets(r.Context(), user); err != nil {
+			app.serverError(w, err)
+			return
+		}
 	}
+	tx.Queue(`INSERT INTO trumpet_runs(id,user_id,external_id,kind,started_at) VALUES($1,$2,$3,$4,COALESCE($5,now()))`, run, user, input.ExternalID, input.Kind, input.StartedAt)
 	ids := []uuid.UUID{}
 	for _, c := range input.Listings {
 		id, e := upsertTrumpet(r.Context(), tx, user, c, &run)
@@ -1033,8 +1094,13 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 		}
 		ids = append(ids, id)
 	}
+	// Queued listing writes fail here, not in a later unrelated statement.
+	if err = tx.Flush(r.Context()); err != nil {
+		writeError(w, 400, "listing identity conflict or invalid owner; run rolled back")
+		return
+	}
 	for _, s := range input.Sources {
-		if _, err = tx.Exec(r.Context(), `INSERT INTO trumpet_run_sources(run_id,source,status,candidates,note,domain,query,pages_opened,verified_offers,stale_results) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, run, s.Source, s.Status, s.Candidates, s.Note, s.Domain, s.Query, s.PagesOpened, s.VerifiedOffers, s.StaleResults); err != nil {
+		if err = trumpetWrite(r.Context(), tx, `INSERT INTO trumpet_run_sources(run_id,source,status,candidates,note,domain,query,pages_opened,verified_offers,stale_results) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, run, s.Source, s.Status, s.Candidates, s.Note, s.Domain, s.Query, s.PagesOpened, s.VerifiedOffers, s.StaleResults); err != nil {
 			app.serverError(w, err)
 			return
 		}
@@ -1066,7 +1132,7 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 			input.Error = fmt.Sprintf("%d active listings still require daily revalidation. %s", remaining, input.Error)
 		}
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE trumpet_runs SET completed_at=now(),status=$2,error=$3 WHERE id=$1`, run, input.Status, input.Error)
+	tx.Queue(`UPDATE trumpet_runs SET completed_at=now(),status=$2,error=$3 WHERE id=$1`, run, input.Status, input.Error)
 	if err != nil {
 		app.serverError(w, err)
 		return
@@ -1078,6 +1144,35 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 200, map[string]any{"runId": run, "listingIds": ids, "status": input.Status, "remainingActive": remaining, "checkFailures": recorded, "markedUnverifiable": unverifiable})
 }
 
+// lookupTrumpetRun answers whether a run with ?externalId= was stored, so a
+// runner whose submit timed out can tell a stored run from a lost one before
+// it resubmits (which is idempotent anyway: the same externalId replays).
+func (app *application) lookupTrumpetRun(w http.ResponseWriter, r *http.Request) {
+	external := strings.TrimSpace(r.URL.Query().Get("externalId"))
+	if external == "" || len(external) > 200 {
+		writeError(w, 400, "bounded externalId required")
+		return
+	}
+	user, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var id uuid.UUID
+	var status string
+	var completed *time.Time
+	err = app.db.QueryRow(r.Context(), `SELECT id,status,completed_at FROM trumpet_runs WHERE user_id=$1 AND external_id=$2`, user, external).Scan(&id, &status, &completed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, 200, map[string]any{"found": false})
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"found": true, "runId": id, "status": status, "completedAt": completed})
+}
+
 // recordTrumpetCheckFailures stores failed rechecks without touching price or
 // stock facts. The streak counts UTC days (a same-day rerun does not add one)
 // and resets on any verified observation. After trumpetUnverifiableAfterDays a
@@ -1085,42 +1180,67 @@ func (app *application) ingestTrumpetRun(w http.ResponseWriter, r *http.Request)
 // a later successful check, never treated as sold. Candidates only record the
 // attempt, which rotates them to the back of the lead queue.
 func recordTrumpetCheckFailures(ctx context.Context, tx pgx.Tx, user uuid.UUID, failures []trumpetCheckFailure) (int, int, error) {
-	recorded, transitioned := 0, 0
-	for _, f := range failures {
-		var streak int
-		var status, verification, currency string
-		var lastChecked *time.Time
-		err := tx.QueryRow(ctx, `UPDATE trumpet_listings l SET
+	if len(failures) == 0 {
+		return 0, 0, nil
+	}
+	// One statement for every failure (a listing listed twice keeps its last
+	// reason); only the rare transitions to unverifiable cost more writes.
+	ids, reasons := make([]string, len(failures)), make([]string, len(failures))
+	for i, f := range failures {
+		ids[i], reasons[i] = f.ID, f.Reason
+	}
+	rows, err := tx.Query(ctx, `WITH f AS (SELECT DISTINCT ON (id) id,reason,ord FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS u(id,reason,ord) ORDER BY id,ord DESC)
+ UPDATE trumpet_listings l SET
   check_failures=CASE WHEN l.last_check_attempt >= `+trumpetUTCDay+` AND l.check_failures>0 THEN l.check_failures ELSE l.check_failures+1 END,
-  last_check_attempt=now(),last_check_error=$3
- FROM trumpet_horns h WHERE h.id=l.horn_id AND l.id=$1 AND l.user_id=$2 AND NOT h.acquired
+  last_check_attempt=now(),last_check_error=f.reason
+ FROM f,trumpet_horns h WHERE l.id=f.id AND h.id=l.horn_id AND l.user_id=$3 AND NOT h.acquired
   AND l.verification_state IN ('verified','candidate') AND l.status IN ('active','stale','unverifiable')
   AND (l.last_checked IS NULL OR l.last_checked < `+trumpetUTCDay+`)
- RETURNING l.check_failures,l.status,l.verification_state,l.last_checked,l.currency`, f.ID, user, f.Reason).Scan(&streak, &status, &verification, &lastChecked, &currency)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue // not owned, acquired, retired or already verified today
-		}
-		if err != nil {
+ RETURNING l.id,f.reason,f.ord,l.check_failures,l.status,l.verification_state,l.last_checked,l.currency`, ids, reasons, user)
+	if err != nil {
+		return 0, 0, err
+	}
+	type updated struct {
+		id                             uuid.UUID
+		reason                         string
+		ord                            int64
+		streak                         int
+		status, verification, currency string
+		lastChecked                    *time.Time
+	}
+	done := []updated{}
+	for rows.Next() {
+		var u updated
+		if err = rows.Scan(&u.id, &u.reason, &u.ord, &u.streak, &u.status, &u.verification, &u.lastChecked, &u.currency); err != nil {
+			rows.Close()
 			return 0, 0, err
 		}
-		recorded++
-		if verification != "verified" || streak < trumpetUnverifiableAfterDays || (status != "active" && status != "stale") {
+		done = append(done, u)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	sort.Slice(done, func(a, b int) bool { return done[a].ord < done[b].ord })
+	transitioned := 0
+	for _, u := range done {
+		if u.verification != "verified" || u.streak < trumpetUnverifiableAfterDays || (u.status != "active" && u.status != "stale") {
 			continue
 		}
 		last := "never"
-		if lastChecked != nil {
-			last = lastChecked.UTC().Format("2006-01-02")
+		if u.lastChecked != nil {
+			last = u.lastChecked.UTC().Format("2006-01-02")
 		}
-		detail := fmt.Sprintf("Unverifiable after %d consecutive failed daily checks (%s). Last verified %s; last known price retained; not marked sold.", streak, f.Reason, last)
-		if _, err = tx.Exec(ctx, `UPDATE trumpet_listings SET status='unverifiable',discovery_type='status change',changed_at=now() WHERE id=$1 AND user_id=$2`, f.ID, user); err != nil {
+		detail := fmt.Sprintf("Unverifiable after %d consecutive failed daily checks (%s). Last verified %s; last known price retained; not marked sold.", u.streak, u.reason, last)
+		if err = trumpetWrite(ctx, tx, `UPDATE trumpet_listings SET status='unverifiable',discovery_type='status change',changed_at=now() WHERE id=$1 AND user_id=$2`, u.id, user); err != nil {
 			return 0, 0, err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO trumpet_events(listing_id,user_id,kind,currency,old_status,new_status,meaningful,detail) VALUES($1,$2,'status change',$3,$4,'unverifiable',false,$5)`, f.ID, user, currency, status, detail); err != nil {
+		if err = trumpetWrite(ctx, tx, `INSERT INTO trumpet_events(listing_id,user_id,kind,currency,old_status,new_status,meaningful,detail) VALUES($1,$2,'status change',$3,$4,'unverifiable',false,$5)`, u.id, user, u.currency, u.status, detail); err != nil {
 			return 0, 0, err
 		}
 		transitioned++
 	}
-	return recorded, transitioned, nil
+	return len(done), transitioned, nil
 }
 
 func isAcquiredTaylor(c trumpetCandidate) bool {
