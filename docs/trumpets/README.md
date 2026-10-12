@@ -861,3 +861,103 @@ caps of 450 listings, 200 Reverb calls, 200 page fetches
 (30 per domain, a second apart), 60 eBay calls and 25 minutes. It prints counts only
 and submits one `images` run (`image-backfill-<time>`); rerunning it later only
 tries listings that still have no photos.
+
+## Dealer pages that verify, LLM page reading and the discovery page budget (migration 036)
+
+Daily rechecks failed on several dealer sites with "page did not expose a single
+verifiable offer", hornstash.com timed out, jamiejazz.com raised `ValueError`, and
+discovery always used its 240 pages. Causes, found on live pages:
+
+- **Pages without a usable Product JSON-LD.** WooCommerce shops built with page
+  builders (horntrader.com) render price and stock in widgets only; Rain POS
+  shops (jlandressbrass.com) expose a GA4 `view_item` event and a "This item is in
+  stock." line; Lightspeed shops (hornstash.com) a grouped microdata price without
+  currency or stock; classifieds (kleinanzeigen.de, bazos.cz) and hand-built
+  dealer pages (jamiejazz.com) their own layouts.
+- **One product described twice.** Shopify themes plus SEO apps (tcgakki.com) emit
+  two Product nodes for the same item (one inside `@graph`); the runner treated
+  any second product as "related products" and gave up.
+- **Retitled listings.** A tracked offer matched only on its exact stored title, so
+  "【値下げ】" (price cut), "Back in stock!" or a sold prefix made every recheck fail.
+- **Maker attribution.** A maker merely named in the description ("plays like a
+  Bach") outranked the structured brand, and the Bach/Yamaha rule then dropped
+  the horn (austincustombrass.biz, hornguys.com, store.ishibashi.co.jp).
+- **hornstash.com.** Stored URLs drop `www.` (`canonical_url`), and the bare
+  hostname is a registrar URL forwarder that does not serve HTTPS: the connection
+  hangs or is reset. The site itself (www) answers in under a second.
+- **jamiejazz.com.** `https://jamiejazz.com/…` answers 301 to
+  `http://www.jamiejazz.com/…`; the redirect guard refused the `http` target and
+  raised `ValueError("Only public HTTPS URLs allowed")`.
+
+What changed (all in `tools/trumpets/runner.py`):
+
+- **Fetches** (`fetch_page`): a per-site timeout (`SITE_TIMEOUTS`), up to three
+  tries with backoff on timeouts, resets and 502–504 (`Retry-After` up to 30 s; 403,
+  404 and 429 are not retried), and when a bare host gives no response at all the
+  same URL on `www.`, remembered for the run. A host that never answers gets one
+  try per page for the rest of the run. A same-site redirect to `http://` is
+  followed over HTTPS; any other `http` redirect is still refused.
+- **Generic extractors, first:** JSON-LD in more shapes (`@graph`/`mainEntity`,
+  offer lists normalized before comparing, `AggregateOffer` only with a single
+  price, `priceSpecification`, string prices with grouping or comma decimals,
+  zero meaning "no price", lenient JSON for raw newlines/trailing commas, the
+  page's own `product:price:currency` when the offer omits it); the same product
+  described twice counts once only when every copy names this page and their
+  facts agree; OpenGraph `og:availability`/`og:price:*` and grouped amounts; the
+  page's analytics `view_item` event (one item, named like the page heading) with
+  an explicit stock statement in the buy box (hidden elements, navigation and
+  related sections are ignored). Then the shop platform's own endpoint for this
+  URL: Shopify `.js` + `cart.js`, the WooCommerce Store API
+  (`/wp-json/wc/store/v1/products?slug=`, permalink must match, minor units,
+  `is_in_stock`; variable products with differing prices are ambiguous) and
+  Lightspeed `?format=json` (product URL must match, shop currency).
+- **Site layouts** only where needed: Kleinanzeigen (`#viewad-main-info` offer
+  scope, reserved/deleted labels), Bazoš ("Cena:" row with Kč/€/zł), Jamie's
+  Trumpet Gallery (heading price plus Inquire, or SOLD!; "$" is USD only because
+  the page's store data gives a US address).
+- **Strictness kept.** Several different products on a page still give none;
+  related-product prices are never read (no extractor looks inside related or
+  product-loop sections, and platform endpoints are keyed by this URL's slug);
+  currency is never taken from a domain. A retitled tracked offer matches only
+  when the page says it is the listing's URL (canonical, og:url or product url),
+  or comes from a URL-keyed platform endpoint or site layout, with the same maker
+  and no conflicting listing id. Japanese and European accessory/other-instrument
+  words (マウスピース, ケース, ピッコロ, C管, mondstuk, Trompetenmundstück…) are
+  rejected; "Trompete" and "trubka" count as horn words. A shop "brand" that is
+  only a category ("Bb-trumpet") is ignored; a recheck may fall back to the
+  tracked listing's own maker, a new find never is.
+- **LLM page reading** (`PageLLM`), last: only for a page the runner fetched
+  itself (HTTP 200) that no extractor could read, and only for rechecks. The page
+  is cleaned (no scripts, styles, navigation, header, footer, forms, hidden or
+  related-product sections; title, main text and JSON-LD kept; about 12,000
+  characters) and sent as delimited, untrusted data to the Responses API
+  (`TRUMPETS_VERIFY_MODEL`, else `TRUMPETS_SEARCH_MODEL`; strict JSON schema; no
+  tools). It is accepted only when the quoted price text appears verbatim in that
+  cleaned text and parses to the stated price, the currency is stated (the price
+  text's code or unambiguous symbol, the ISO code in the page text, or the page's
+  currency metadata; "$" alone is not), and the model says it is a single Bb
+  trumpet product page. "unknown" availability never verifies and never marks
+  anything sold. Budget: `TRUMPETS_PAGE_LLM_LIMIT` pages per run (default 80; 0
+  turns it off) and 8 minutes, spent in recheck order (active, high-score offers
+  first). It logs counts only. Accepted offers carry `verifiedVia: "page-llm"`.
+- **Discovery page budget.** Pages were spent on results another query had
+  already returned (only kept results were remembered), on images/PDFs,
+  category/search/tag/blog pages, further result pages, cart/account pages,
+  accessories, other instruments, and on domains that had already refused the
+  run. `discovery_skip` drops those before any fetch, a URL is fetched at most once
+  per run, and refused domains are not fetched again. Sources that verified the
+  most offers are planned first. The cap stays 240 (`DISCOVERY_PAGES`): the run
+  note now records what the fetched pages gave and what was not fetched and why,
+  so a later change to the cap can be based on that data.
+
+**Deploy.** API first: migration `036_trumpet_page_llm.sql` widens the
+`trumpet_observations.verified_via` check to allow `page-llm` (replay-safe: only
+while it does not yet allow it), and the API accepts it. Against an older API the
+runner resubmits such offers as `direct` (the closest label; the evidence still
+says the page was read by a model). An older runner works unchanged against the
+new API. Then copy `tools/trumpets/runner.py` to `/opt/trumpets/runner.py` on the
+VM; the service, timer and env file path are unchanged, and the runner uses the
+existing `OPENAI_API_KEY`. Optional: `TRUMPETS_PAGE_LLM_LIMIT` in
+`/etc/trumpets/runner.env`. The VM also needs outbound HTTPS to the dealers' own
+`/wp-json/wc/store/…`, `?format=json` and `www.` hosts, which are the same sites
+it already fetches.

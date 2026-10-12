@@ -234,6 +234,7 @@ test("learned score sort and verification provenance labels", () => {
   assert.equal(M.verifiedViaLabel("search-provider"), "via search provider");
   assert.equal(M.verifiedViaLabel("api"), "via official API");
   assert.equal(M.verifiedViaLabel("direct"), "");
+  assert.equal(M.verifiedViaLabel("page-llm"), "via page reading");
 });
 
 test("reads retry a connection that drops while the body is read", async () => {

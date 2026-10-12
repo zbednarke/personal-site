@@ -326,6 +326,12 @@ func TestTrumpetTastePersistence(t *testing.T) {
 	if code := post(map[string]any{"externalId": "provenance-2", "kind": "search", "status": "partial", "listings": []any{offer}}); code != 400 {
 		t.Fatalf("invalid provenance accepted: %d", code)
 	}
+	// A page the runner fetched and a model read (grounded in the page text).
+	read := map[string]any{"maker": "Fixturecraft", "model": "Mistral", "title": "Fixturecraft Mistral · FIXTURE", "url": "https://dealer.fixtures.invalid/horn/mistral", "source": "Fixture dealer", "price": 3100, "currency": "EUR", "status": "active", "searchScore": 66, "verifiedVia": "page-llm", "evidence": "LLM page reading, grounded in the fetched page (fixture)"}
+	if code := post(map[string]any{"externalId": "provenance-3", "kind": "recheck", "status": "succeeded", "sources": []any{map[string]any{"source": "Live pages / dealer.fixtures.invalid", "domain": "dealer.fixtures.invalid", "status": "checked", "candidates": 1}}, "listings": []any{read}}); code != 200 {
+		t.Fatalf("page-llm provenance run: %d", code)
+	}
+	pageRead := false
 	found := false
 	for _, l := range call("GET", "/v1/trumpets/listings", nil, "owner", 200)["listings"].([]any) {
 		m := l.(map[string]any)
@@ -335,12 +341,17 @@ func TestTrumpetTastePersistence(t *testing.T) {
 			if m["verifiedVia"] != "search-provider" || history[len(history)-1].(map[string]any)["verifiedVia"] != "search-provider" {
 				t.Fatalf("provenance not stored: %v", m)
 			}
+		} else if m["url"] == "https://dealer.fixtures.invalid/horn/mistral" {
+			pageRead = m["verifiedVia"] == "page-llm"
 		} else if m["verifiedVia"] == "search-provider" {
 			t.Fatal("provenance leaked to another listing")
 		}
 	}
 	if !found {
 		t.Fatal("provenance listing missing")
+	}
+	if !pageRead {
+		t.Fatal("page-llm provenance not stored")
 	}
 
 	// An operator can seed the owner's preferences with the machine token.

@@ -57,7 +57,9 @@ type trumpetCandidate struct {
 	Tags              []string    `json:"tags"`
 	Evidence          string      `json:"evidence"`
 	// How the offer was verified: direct (the page), api (Reverb/eBay
-	// official API) or search-provider (a source-matched web search).
+	// official API), search-provider (a source-matched web search) or
+	// page-llm (the runner's fetched page read by a model, grounded in the
+	// page text).
 	VerifiedVia string `json:"verifiedVia,omitempty"`
 	SeedKey     string `json:"-"`
 }
@@ -317,8 +319,8 @@ func normalizeTrumpet(c *trumpetCandidate) error {
 	if c.VerifiedVia == "" {
 		c.VerifiedVia = "direct"
 	}
-	if !containsString([]string{"direct", "api", "search-provider"}, c.VerifiedVia) {
-		return errors.New("verifiedVia must be direct, api or search-provider")
+	if !containsString([]string{"direct", "api", "search-provider", "page-llm"}, c.VerifiedVia) {
+		return errors.New("verifiedVia must be direct, api, search-provider or page-llm")
 	}
 	if c.VerificationState == "candidate" {
 		if c.URL == "" {

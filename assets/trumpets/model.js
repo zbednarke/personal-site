@@ -100,7 +100,13 @@
   }
   // Provenance of the latest verified observation; the page itself is the default.
   function verifiedViaLabel(v) {
-    return v === "api" ? "via official API" : v === "search-provider" ? "via search provider" : "";
+    return v === "api"
+      ? "via official API"
+      : v === "search-provider"
+        ? "via search provider"
+        : v === "page-llm"
+          ? "via page reading"
+          : "";
   }
   function checkNote(l) {
     if (l.status === "unverifiable")
