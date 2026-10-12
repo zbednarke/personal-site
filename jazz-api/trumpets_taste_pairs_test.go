@@ -132,9 +132,19 @@ func TestTastePairsStrengthenAConnectedGraph(t *testing.T) {
 		if top.Reason == "structure" {
 			structures++
 			a, b := "horn-"+top.A, "horn-"+top.B
+			// Least compared among the horns not in the last few choices
+			// (those are kept out of the next pair when others exist).
+			stale := tasteRecentPairHorns(d, events, tasteFreshAfter)
 			minDegree := len(g.nodes)
 			for _, h := range g.nodes {
-				minDegree = min(minDegree, len(g.adj[h]))
+				if !stale[h] {
+					minDegree = min(minDegree, len(g.adj[h]))
+				}
+			}
+			// With 8 horns most are stale, so only the least-compared side
+			// is sure to be fresh.
+			if stale[a] && stale[b] {
+				t.Fatalf("round %d: structure pair %+v has only horns from the last %d choices", round, top, tasteFreshAfter)
 			}
 			if g.adj[a][b] || (len(g.adj[a]) != minDegree && len(g.adj[b]) != minDegree) {
 				t.Fatalf("round %d: structure pair %+v is not a least-compared horn against a horn not yet next to it", round, top)
@@ -259,5 +269,94 @@ func TestTastePairsConnectTheGraphQuickly(t *testing.T) {
 	}
 	if len(appearances) != 3 {
 		t.Fatalf("appearances %v", appearances)
+	}
+}
+
+// The owner's case: one component of 15 horns, 40 new horns, and one horn
+// whose features make it far more uncertain than the rest (a would-be hub).
+// Answering the first pair each time must not keep showing one horn, must
+// grow the component as a tree of small degree rather than a star, and must
+// still merge one island per answer.
+func TestTastePairsRotateBridgeAnchors(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	listings := comparableHorns(now, "h", 15)
+	listings = append(listings, comparableHorns(now, "s", 40)...)
+	// The hub: in the main component, with features nothing else shares.
+	listings[7] = tasteListing("h07", "Hubcraft", "One-off", "engraved copper", 9900, comparable(now), func(l *trumpetListing) {
+		l.Description = "Prototype with reversed leadpipe, engraved bell and provenance letter."
+	})
+	events := []tasteEvent{}
+	for i := 0; i < 14; i++ { // a path h00 - h01 - ... - h14
+		events = append(events, pairEvent(int64(i+1), fmt.Sprintf("h%02d", i), fmt.Sprintf("h%02d", i+1), "a", now.Add(-30*24*time.Hour)))
+	}
+	{ // Fixture: the hub is by far the most uncertain horn.
+		m, d := buildTasteModel(listings, markUndone(events), now)
+		_, hubV := m.affinity(d.keys("h07"))
+		for _, l := range listings {
+			if _, v := m.affinity(d.keys(l.ID)); l.ID != "h07" && v*1.5 > hubV {
+				t.Fatalf("fixture: %s has v %.3f, hub %.3f", l.ID, v, hubV)
+			}
+		}
+	}
+	graph := func() *tastePairGraph {
+		_, d := buildTasteModel(listings, markUndone(events), now)
+		return newTastePairGraph(d, events, now)
+	}
+	tops := []tastePair{}
+	connectedAfter := 0
+	for answer := 0; answer < 45; answer++ {
+		before := len(graph().components())
+		m, d := buildTasteModel(listings, markUndone(events), now)
+		pairs := tastePairs(m, d, events, now)
+		if len(pairs) == 0 {
+			t.Fatalf("answer %d: no pairs", answer)
+		}
+		top := pairs[0]
+		if before > 1 && top.Reason != "bridge" {
+			t.Fatalf("answer %d: %d components but the first pair is %+v", answer, before, top)
+		}
+		// No horn of the last few pairs comes straight back.
+		for k := max(0, len(tops)-tasteFreshAfter); k < len(tops); k++ {
+			for _, id := range []string{top.A, top.B} {
+				if id == tops[k].A || id == tops[k].B {
+					t.Fatalf("answer %d: %s again, from answer %d (%+v then %+v)", answer, id, k, tops[k], top)
+				}
+			}
+		}
+		tops = append(tops, top)
+		events = append(events, pairEvent(int64(len(events)+1), top.A, top.B, "a", now.Add(time.Duration(answer-60)*time.Minute)))
+		after := len(graph().components())
+		if before > 1 && after != before-1 {
+			t.Fatalf("answer %d: bridge %+v left %d components (was %d)", answer, top, after, before)
+		}
+		if before > 1 && after == 1 {
+			connectedAfter = answer + 1
+		}
+	}
+	if connectedAfter != 40 {
+		t.Fatalf("connected after %d answers, want 40 (one island per answer)", connectedAfter)
+	}
+	for i := 0; i+10 <= len(tops); i++ {
+		count := map[string]int{}
+		for _, p := range tops[i : i+10] {
+			count[p.A]++
+			count[p.B]++
+		}
+		for id, n := range count {
+			if n > 3 {
+				t.Fatalf("%s in %d of the first pairs %d..%d", id, n, i, i+9)
+			}
+		}
+	}
+	g := graph()
+	maxDegree, hub := 0, ""
+	for _, h := range g.nodes {
+		if len(g.adj[h]) > maxDegree {
+			maxDegree, hub = len(g.adj[h]), h
+		}
+	}
+	t.Logf("connected after %d answers; max degree %d (%s), hub degree %d", connectedAfter, maxDegree, hub, len(g.adj["horn-h07"]))
+	if maxDegree > 4 {
+		t.Fatalf("max degree %d (%s): the bridges form a star", maxDegree, hub)
 	}
 }
