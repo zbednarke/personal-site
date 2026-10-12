@@ -93,6 +93,13 @@ type application struct {
 	wb *workbench
 	// wbOnly serves just the Workbench routes (the separate Cloud Run service).
 	wbOnly bool
+	// counters counts 5xx and slow requests per route (nil in most tests).
+	counters *routeCounters
+	// push sends Web Push outside the Workbench service (the API's daily fix
+	// list); nil without VAPID keys. Workbench uses wb.push.
+	push wbPusher
+	// fix holds the daily fix list's automatic triggers (fixlist.go).
+	fix fixListAuto
 }
 
 type contextKey string
@@ -269,6 +276,7 @@ func main() {
 			slog.Warn("WORKBENCH_OWNER_SUBJECT is unset; relying on the gateway's sign-in allow-list alone")
 		}
 		app.wb, app.wbOnly = newWorkbench(wbCfg), true
+		app.counters = newRouteCounters(routeService(true))
 		runs, cancelRuns := context.WithCancel(context.Background())
 		app.wb.baseCtx = runs
 		go app.wbListen(ctx)
@@ -279,12 +287,18 @@ func main() {
 			for range time.Tick(time.Minute) {
 				if !app.wbIsDraining() {
 					app.wbRecover(ctx)
+					app.fixListMaybe(time.Now(), "workbench-sweep")
+					app.fixListPendingPushes(ctx, time.Now())
 				}
 			}
 		}()
 		defer cancelRuns()
 		wbCancelRuns = cancelRuns
+	} else {
+		app.counters = newRouteCounters(routeService(false))
+		app.push = pusherFromEnv()
 	}
+	app.fix.enabled = fixListOwnerSubject() != ""
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           app.routes(),
@@ -307,12 +321,24 @@ func main() {
 		go func() {
 			<-sig
 			slog.Info("workbench draining")
+			app.flushRouteCountersOnExit()
 			app.wbDrain(wbCancelRuns, 7*time.Second)
 			shutdown, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			if err := server.Shutdown(shutdown); err != nil {
 				server.Close()
 			}
+		}()
+	}
+	if !app.wbOnly {
+		// Cloud Run stops an idle API instance with SIGTERM: keep the last
+		// minute's route counts, then exit as before (no graceful drain).
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		go func() {
+			<-sig
+			app.flushRouteCountersOnExit()
+			os.Exit(0)
 		}()
 	}
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -388,11 +414,13 @@ func (app *application) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", app.health)
 	if app.wb != nil {
 		app.workbenchRoutes(mux)
+		app.fixListWorkbenchRoutes(mux)
 	}
 	if app.wbOnly {
 		return app.recoverPanic(app.logRequests(mux))
 	}
 	app.trumpetRoutes(mux)
+	app.fixListMachineRoutes(mux)
 	app.repertoireRoutes(mux)
 	app.magicFilmRoutes(mux)
 	app.commonplaceRoutes(mux)
@@ -1479,10 +1507,37 @@ func (app *application) recoverPanic(next http.Handler) http.Handler {
 	})
 }
 
+// logRequests logs each request and, with counters set, counts 5xx and slow
+// responses per route pattern (r.Pattern, set by the mux). Workbench event
+// streams are not counted. After the response it may start the fix list's
+// fallback trigger; neither waits on the database.
 func (app *application) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		next.ServeHTTP(w, r)
-		app.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
+		if app.counters == nil || wbIsEventStream(r) {
+			next.ServeHTTP(w, r)
+			app.logger.Info("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(started).Milliseconds())
+			app.fixListMaybe(time.Now(), app.fixFallbackTrigger())
+			return
+		}
+		rec := &statusRecorder{ResponseWriter: w}
+		defer func() {
+			status := rec.code()
+			recovered := recover()
+			if recovered != nil {
+				status = http.StatusInternalServerError
+			}
+			now := time.Now()
+			took := now.Sub(started)
+			if app.counters.record(r.Pattern, status, took, now) {
+				app.flushRouteCountersSoon()
+			}
+			app.logger.Info("request", "method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", took.Milliseconds())
+			if recovered != nil {
+				panic(recovered) // recoverPanic answers it
+			}
+			app.fixListMaybe(now, app.fixFallbackTrigger())
+		}()
+		next.ServeHTTP(rec, r)
 	})
 }

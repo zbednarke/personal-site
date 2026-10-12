@@ -1759,7 +1759,16 @@ def daily(client):
     report['error']='; '.join(dict.fromkeys(failures+notes))[:10000]
     if failures:report['status']='partial'
     result=submit_run(client,report);print(json.dumps(result),flush=True)
+    trigger_fix_list(client)
     return 0 if result.get('status')=='succeeded' else 2
+
+
+def trigger_fix_list(client):
+    """Ask the API to send today's fix list now that the run is stored (once
+    per UTC day server-side; the API's own fallback covers a run that never
+    gets here). Never fails the run."""
+    try: print(json.dumps({'fixList':client.call('/fixlist',{})}),flush=True)
+    except Exception as error: print(json.dumps({'note':'fix list trigger failed: '+run_reason(error)}),flush=True)
 
 
 # ---- One-time photo backfill (--backfill-images) --------------------------------

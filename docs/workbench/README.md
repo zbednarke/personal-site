@@ -97,7 +97,8 @@ code yet; that comes in phase 2 (issue #81).
 - **Web Push** (VAPID): approvals go to every subscribed device, with
   Approve / Not now buttons answered by the service worker; "ping me when
   replies are ready" is opt-in per device; "Open on my other devices" pushes a
-  deep link. Payloads carry no content.
+  deep link. Payloads carry no message content (the daily fix list below
+  carries counts, domains and routes only).
 - **Front end** (`assets/workbench/`, framework-free): a glass pill and sheet,
   a bottom sheet on phones, a split view on tablets and a side panel on
   desktops. Press `` ` `` to toggle. Each message carries the page context
@@ -106,6 +107,79 @@ code yet; that comes in phase 2 (issue #81).
   outbox lives in IndexedDB and replays with the same client ids, which the
   server deduplicates. Each app has its own installable PWA scope
   (`/<app>/manifest.webmanifest`, `/<app>/workbench-sw.js`).
+
+## Daily fix list
+
+Every morning the owner gets **"Fix list – <date>"**: a count of what failed
+in the last 24 hours, compared with the 24 hours before, so there is a short
+list of things to fix (`jazz-api/fixlist.go`, migration `035_fix_list.sql`).
+
+- **What it counts**, from Postgres only (no Cloud Logging, no GitHub API):
+  - **Trumpet runs:** whether the daily run (`externalId` `adaptive-watch-*`)
+    happened (missing when there is none by 14:30 UTC), its status and its
+    notes; failed and partial runs of any kind.
+  - **Search sources** that failed or were skipped, grouped by reason (a lead
+    whose page nobody opened yet is shown as context, not a fault).
+  - **Failed checks** by domain and reason, from the listings'
+    `last_check_error` (still failing: no successful check since), plus how
+    many listings became unverifiable. A listing keeps only its latest failed
+    attempt, so yesterday's check counts come from yesterday's stored digest.
+    Failed checks of unverified leads are one context line.
+  - **Budgets and caps** that skipped work: the Reverb request budget, the eBay
+    time budget, the OpenAI verify cap (checks left as "search-provider check
+    budget reached"), the 240-page discovery budget, the search time budget.
+  - **Magic Film** jobs that failed (by error) or are stuck over an hour.
+  - **The API itself:** 5xx responses and requests of 10 s or more per route
+    pattern and service. The request-logging middleware counts them in memory
+    (a map update; Workbench event streams are left out) and adds them to
+    `api_route_counters` (one row per UTC hour, service and route) in one
+    statement about once a minute, from a goroutine, and on SIGTERM. Both
+    services count, since they share the code (`K_SERVICE` names them).
+- **Fix next** is the single most valuable item: a base value per kind (a
+  missing daily run first, then failed runs, 5xx, failed films, partial runs,
+  unverifiable listings, failed checks and sources, slow routes, budgets),
+  raised by the count and when it is new or growing.
+- **Delivery:** a Web Push to every subscribed device of the owner, titled
+  "Fix list – <date>" with a one-line verdict and a short count summary (an
+  all-clear day still arrives, silently and at low urgency, so the owner
+  knows it is alive), and a message in a Workbench thread named **Fix list**.
+  Tapping the push opens `/jazz/#fixlist`: the full digest with per-item
+  counts and changes, Fix next, the run's notes and the last two weeks'
+  verdicts (`assets/workbench/fixlist.js`, loaded by the sheet when the hash
+  is `#fixlist`, on any private page). The thread also gets a hidden server
+  note with the digest, so asking "fix the eBay one" there gives the agent
+  the details; an unread older note is superseded by the next day's.
+- **Privacy:** pushes carry fixed words, counts, domains and route patterns
+  only. Listing titles, notes, profile text and free-form error text never
+  reach a push; the page and thread show domains, counts and reasons.
+- **When it is sent (no Cloud Scheduler).** Once per owner and UTC day: the
+  first trigger to claim the day's row in `fix_list_digests` sends it;
+  every other trigger gets the stored outcome (a claim that crashed before
+  delivery can be retaken after 15 minutes). Triggers:
+  1. **The trumpet runner** calls `POST /v1/trumpets/machine/fixlist` at the
+     end of its 13:17 UTC run (machine bearer token; nothing before 13:00
+     UTC). This is the normal path: the digest arrives about 14:00 UTC with
+     that run in it.
+  2. **Fallback:** any request to the API or to Workbench after 15:00 UTC
+     starts a background delivery if the day has not been sent (checked once
+     per instance and day), so a runner that crashed or never ran still
+     produces a fix list, flagging the missing run. Workbench's minute sweep
+     does the same while it is awake (it scales to zero, so it cannot be the
+     clock on its own).
+
+  The runner is the daily clock because it already runs on a timer and the
+  digest should follow its run; the fallback covers the day it does not.
+  The API sends pushes itself when it has the VAPID keys (deploy step 5), so
+  delivery never waits for Workbench to wake; without them it stores the
+  digest and marks the push pending, and Workbench's sweep sends it the
+  same day.
+- **Owner:** `FIX_LIST_OWNER_SUBJECT`, else `WORKBENCH_OWNER_SUBJECT`, else
+  `TRUMPETS_MACHINE_USER` (the same signed-in subject).
+- `GET /fixlist` (`?day=YYYY-MM-DD` optional) returns the latest delivered
+  digest, the thread id and recent verdicts; before the first one is sent it
+  returns a live digest marked `live`.
+
+![The fix list at 390 px](screenshots/phone-fixlist.png)
 
 ## API (`/v1/workbench`, browser path `/workbench/api/v1/workbench`)
 
@@ -122,6 +196,7 @@ code yet; that comes in phase 2 (issue #81).
 | `GET /spend`, `GET /status` | Month spend and cap; CI, PR and deploy status |
 | `GET /push/key`, `PUT/DELETE /push/subscriptions/{device}` | Web Push |
 | `POST /threads/{id}/handoff` | Push a deep link to the other devices |
+| `GET /fixlist` | The daily fix list (latest, or `?day=`), its thread and recent verdicts |
 
 ## Configuration
 
@@ -136,6 +211,8 @@ code yet; that comes in phase 2 (issue #81).
 | `WORKBENCH_VAPID_SUBJECT` | env, optional | Default `mailto:workbench@zachbednarke.com` |
 | `WORKBENCH_MONTHLY_CAP_USD` | env, optional | Default `25` |
 | `WORKBENCH_MODEL`, `WORKBENCH_GITHUB_REPO` | env, optional | Defaults `claude-opus-5-5`, `zbednarke/personal-site` |
+| `FIX_LIST_OWNER_SUBJECT` | env, optional, both services | Whose fix list; defaults to `WORKBENCH_OWNER_SUBJECT`, then `TRUMPETS_MACHINE_USER`. With none set, only the runner's trigger sends it |
+| `WORKBENCH_VAPID_PUBLIC_KEY`, `WORKBENCH_VAPID_PRIVATE_KEY` on **jazz-api** | env and secret, optional | Lets the API push the fix list itself (deploy step 5) |
 
 Everything else (`DATABASE_URL`, `GATEWAY_KEY`, `GCS_BUCKET`,
 `GCP_SERVICE_ACCOUNT`, Cloud SQL) is copied from `jazz-api`. No key is ever
@@ -177,6 +254,29 @@ runs on its startup) and the static pages:
 4. Set the repository variable `WORKBENCH_ENABLED=true`. From then on every
    deploy also ships the new image to `workbench` (keeping its settings).
 
+5. **Daily fix list** (after the deploy that adds migration 035). Give the API
+   the VAPID keys and the owner, so it pushes the fix list without waiting for
+   Workbench (the deploy keeps these settings afterwards):
+
+   ```sh
+   gcloud secrets add-iam-policy-binding workbench-vapid-private-key --project parabolio-prod \
+     --member "serviceAccount:$(gcloud run services describe jazz-api --project parabolio-prod --region us-central1 --format 'value(spec.template.spec.serviceAccountName)')" \
+     --role roles/secretmanager.secretAccessor
+   gcloud run services update jazz-api --project parabolio-prod --region us-central1 \
+     --update-secrets WORKBENCH_VAPID_PRIVATE_KEY=workbench-vapid-private-key:latest \
+     --update-env-vars WORKBENCH_VAPID_PUBLIC_KEY=<public key>,FIX_LIST_OWNER_SUBJECT=<jazz-auth User>
+   gcloud run services update workbench --project parabolio-prod --region us-central1 \
+     --update-env-vars FIX_LIST_OWNER_SUBJECT=<jazz-auth User>
+   ```
+
+   Then copy the updated `tools/trumpets/runner.py` to `/opt/trumpets/runner.py`
+   on the VM (its end-of-run call to `POST /v1/trumpets/machine/fixlist`;
+   `docs/trumpets/README.md`). Turn on notifications on each device from the
+   sheet's menu if they are not on yet. To check it end to end without waiting
+   for the timer, `systemctl start trumpets-research.service` after 13:00 UTC,
+   or call the endpoint with the machine token; a second call that day answers
+   `replayed`.
+
 ## Local preview and tests
 
 - `go test ./...` with `TRUMPETS_TEST_DATABASE_URL` covers the event log
@@ -185,10 +285,17 @@ runs on its startup) and the static pages:
   triage and the site-data tools, owner and privacy checks, and recovery. The
   Messages API is a scripted `httptest` server.
 - `node --test assets/workbench/*.test.js` covers the event fold, convergence
-  across devices, drafts, the outbox and the Markdown renderer.
+  across devices, drafts, the outbox, the Markdown renderer and the fix list's
+  page model.
+- The fix list's Go tests (`fixlist*_test.go`) cover the digest from fixture
+  runs, sources, checks, films and counters, a missing run, delivery once per
+  day under concurrent triggers, the thread message and note, the machine
+  trigger and the fallback, pending pushes, route counting (5xx, slow, panics,
+  streams left out) and the push payload's size and privacy.
 - `node tools/workbench/browser-check.cjs` starts an isolated preview
   (`TestWorkbenchBrowserPreview`: loopback, throwaway schema, fake model and
   GitHub) and checks 390, 768 and 1440 px with touch and pointer, two browser
   contexts on one thread, draft sync, a first-wins approval, the offline
-  outbox, hold-to-talk with Chromium's fake microphone and a status card.
+  outbox, hold-to-talk with Chromium's fake microphone, a status card and the
+  daily fix list at 390 px.
   Screenshots land in `docs/workbench/screenshots/`.

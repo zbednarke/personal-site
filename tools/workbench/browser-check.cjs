@@ -346,8 +346,40 @@ async function waitForServer() {
     assert.deepEqual(unsafe, [], "no event-handler attributes or script URLs in rendered replies");
     assert.ok(!(await laptop.title()).includes("PWNED"));
 
+    // ---------------- The daily fix list at phone width (#fixlist) ----------------
+    assert.equal(await (await fetch(`${base}/__preview_fixlist`, { method: "POST" })).text(), "ok", "a fictional fix list is sent");
+    {
+      const page = await newPage("phone-fixlist", 390, 844, true);
+      await page.goto(`${base}/jazz/#fixlist`);
+      await page.waitForSelector(".wb-fixlist:not([hidden]) .wb-fl-next");
+      assert.match(await page.locator(".wb-fl-title").innerText(), /^Fix list – \d{4}-\d{2}-\d{2}$/);
+      assert.match(await page.locator(".wb-fl-verdict").innerText(), /^\d+ to fix · next: /);
+      assert.equal(await page.locator(".wb-fl-next .wb-fl-kicker").innerText(), "FIX NEXT");
+      const sections = await page.locator(".wb-fl-section[data-section]").evaluateAll((n) => n.map((s) => s.dataset.section));
+      assert.deepEqual(sections, ["run", "api", "checks", "sources", "market", "films"], "every section with something in it, in order");
+      assert.match(await page.locator('.wb-fl-section[data-section="run"] .wb-fl-run').innerText(), /Daily run \d{4}-\d{2}-\d{2}: partial/);
+      const row = page.locator('.wb-fl-section[data-section="checks"] .wb-fl-item').first();
+      assert.equal(await row.locator(".wb-fl-count").innerText(), "3");
+      assert.equal(await row.locator(".wb-fl-change").innerText(), "new", "each count says how it changed");
+      await noSideScroll(page, "390px fix list");
+      for (const sel of [".wb-fl-close", ".wb-fl-next", ".wb-fl-verdict"]) inside(await page.locator(sel).boundingBox(), 390, 844, `fix list: ${sel}`);
+      const wide = await page.evaluate(() => [...document.querySelectorAll(".wb-fixlist *")].filter((n) => n.getBoundingClientRect().right > innerWidth + 0.5).map((n) => n.className));
+      assert.deepEqual(wide, [], "nothing in the fix list runs off the right edge");
+      await page.screenshot({ path: path.join(out, "phone-fixlist.png") });
+      // "Ask Workbench to fix one" opens the Fix list thread with the digest in it.
+      await page.tap(".wb-fl-thread");
+      await page.waitForFunction(() => __workbench.isOpen() && __workbench.state.thread && __workbench.state.thread.title === "Fix list");
+      await page.waitForSelector(".wb-msg-assistant >> text=Fix next:");
+      await page.touchscreen.tap(195, 30);
+      await page.waitForSelector(".wb-sheet[hidden]", { state: "attached" });
+      await page.tap(".wb-fl-close");
+      await page.waitForSelector(".wb-fixlist[hidden]", { state: "attached" });
+      assert.equal(await page.evaluate(() => location.hash), "", "closing leaves the page where it was");
+      await page.ctx.close();
+    }
+
     assert.deepEqual(errors, []);
-    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, CSP in place, no runtime errors.");
+    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, the daily fix list at 390 px (verdict, Fix next, sections, changes, its thread), CSP in place, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     try { await fetch(base + "/__preview_stop", { method: "POST" }); } catch { /* stopped */ }

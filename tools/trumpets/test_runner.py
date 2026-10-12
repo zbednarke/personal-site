@@ -354,3 +354,18 @@ class VerificationCoverageTests(unittest.TestCase):
         result=runner.recheck(listing,lambda *_:page(p),PROFILE)
         self.assertIsNotNone(result)
         self.assertEqual(result['status'],'active')
+
+class FixListTriggerTests(unittest.TestCase):
+    def test_end_of_run_asks_for_the_fix_list_and_never_fails_the_run(self):
+        calls=[]
+        class Client:
+            def __init__(self,fail):self.fail=fail
+            def call(self,path,body=None):
+                calls.append((path,body))
+                if self.fail:raise urllib.error.HTTPError(path,503,'Unavailable',None,None)
+                return {'day':'2026-10-12','sent':True}
+        with patch('builtins.print') as printed:
+            runner.trigger_fix_list(Client(False))
+            runner.trigger_fix_list(Client(True))
+        self.assertEqual(calls,[('/fixlist',{}),('/fixlist',{})])
+        self.assertIn('fix list trigger failed: API returned HTTP 503',printed.call_args_list[-1].args[0])

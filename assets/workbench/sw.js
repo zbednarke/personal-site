@@ -1,9 +1,10 @@
 /* Workbench service worker core, imported by /jazz/, /trumpets/ and
  * /commonplace/workbench-sw.js so each private app is its own installable
  * scope. It shows Web Push notifications (no message content: they only say
- * something is waiting), answers approvals from the notification's buttons,
- * and keeps a network-first copy of the app pages so the sheet opens offline
- * and its outbox can queue. API calls are never cached. */
+ * something is waiting; the daily fix list says what failed, in counts),
+ * answers approvals from the notification's buttons, and keeps a
+ * network-first copy of the app pages so the sheet opens offline and its
+ * outbox can queue. API calls are never cached. */
 "use strict";
 const WB_CACHE = "workbench-shell-v1";
 const WB_API = "/workbench/api/v1/workbench";
@@ -46,8 +47,9 @@ self.addEventListener("push", (event) => {
   // Approve / Not now only when the server allows it (never for GitHub writes).
   const actions = data.kind === "approval" && data.approvalId && data.actions ? [{ action: "approve", title: "Approve" }, { action: "reject", title: "Not now" }] : [];
   event.waitUntil(self.registration.showNotification(data.title || "Workbench", {
-    body: data.body || "Something is waiting.", tag: data.tag || "workbench", renotify: true,
-    data: { url: data.url || "/jazz/", approvalId: data.approvalId || "", threadId: data.threadId || "" }, actions,
+    // The fix list's all-clear days arrive quietly (no sound or vibration).
+    body: data.body || "Something is waiting.", tag: data.tag || "workbench", renotify: !data.quiet, silent: !!data.quiet,
+    data: { url: data.url || "/jazz/", kind: data.kind || "", approvalId: data.approvalId || "", threadId: data.threadId || "" }, actions,
   }));
 });
 
@@ -66,7 +68,8 @@ self.addEventListener("notificationclick", (event) => {
     const target = new URL(data.url || "/jazz/", location.origin);
     for (const client of await self.clients.matchAll({ type: "window", includeUncontrolled: true })) {
       if (new URL(client.url).pathname === target.pathname && "focus" in client) {
-        client.postMessage({ type: "workbench-open", threadId: data.threadId });
+        // The fix list opens its page section; everything else opens the thread.
+        client.postMessage(data.kind === "fixlist" ? { type: "workbench-fixlist", hash: target.hash } : { type: "workbench-open", threadId: data.threadId });
         return client.focus();
       }
     }
