@@ -787,13 +787,16 @@ protocol-relative Shopify JSON images were dropped, and a recheck without photos
 wiped the ones a listing had.
 
 - **Runner.** Every path that reaches a listing keeps its photos, up to 6 absolute
-  HTTPS URLs, largest variant preferred (Shopify/WordPress/Squarespace/eBay size
-  suffixes removed, Weebly `_w640`/`_w2560` variants collapsed), never logos,
+  HTTPS URLs at a bounded large size where the CDN's URL sets it (Shopify `_1600x`,
+  Squarespace `?format=1500w`, eBay `s-l1600`; other URLs as the page gives them;
+  sizes of one photo, e.g. Weebly `_w640`/`_w2560`, counted once), never logos,
   placeholders, icons, banners, `data:` URIs or tracking pixels:
   Reverb's public API (`photos[]._links.full`/`large_crop`, else `_links.photo`) on
   discovery and recheck; a page's schema.org Product `image` (a product described
-  twice counts once; a page with several products gives none), product galleries
-  (WooCommerce `data-large_image`, Squarespace `data-image`, Shopify media),
+  twice counts once; a page with several products gives none), the first main
+  product gallery only (WooCommerce `data-large_image`, Squarespace `data-image`,
+  Shopify media; never related, upsell or cross-sell sections or `ul.products`
+  loops, whose photos are other horns),
   `og:image`/`twitter:image` and microdata; Shopify's `/products/<handle>.js`;
   eBay only through the Browse API when keys exist. Lead hints carry the photos of
   the page they came from. A tracked listing without photos whose page was reached
@@ -832,8 +835,10 @@ sudo systemd-run --wait --pipe --property=EnvironmentFile=/etc/trumpets/runner.e
 ```
 
 It walks every tracked listing without photos (Reverb API, then the eBay Browse
-API with keys, then the page and a Shopify product's JSON), skipping a domain after
-it refuses once, within caps of 450 listings, 200 Reverb calls, 200 page fetches
+API with keys, then the page and a Shopify product's JSON). After a refusal (401,
+403, 429 or a bot challenge) it makes no further requests to that source for the
+rest of the run: the Reverb API, the eBay API, or that one site. It stays within
+caps of 450 listings, 200 Reverb calls, 200 page fetches
 (30 per domain, a second apart), 60 eBay calls and 25 minutes. It prints counts only
 and submits one `images` run (`image-backfill-<time>`); rerunning it later only
 tries listings that still have no photos.

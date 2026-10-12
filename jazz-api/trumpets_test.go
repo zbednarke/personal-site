@@ -190,3 +190,20 @@ func TestTrumpetAuthenticationAndPrivacy(t *testing.T) {
 		t.Fatal("empty gateway auth bypass")
 	}
 }
+
+func TestValidateImagesRunCarriesImageUpdatesOnly(t *testing.T) {
+	update := []trumpetImageUpdate{{ID: "11111111-1111-4111-8111-111111111111", Images: []string{"https://photos.test/a.jpg"}}}
+	ok := trumpetRunInput{ExternalID: "image-backfill-1", Kind: "images", Status: "succeeded", ImageUpdates: update}
+	if err := validateTrumpetRun(&ok); err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]trumpetRunInput{
+		"sources":  {ExternalID: "x", Kind: "images", Status: "succeeded", ImageUpdates: update, Sources: []trumpetSourceCheck{{Source: "Fixture dealer", Status: "checked"}}},
+		"listings": {ExternalID: "x", Kind: "images", Status: "succeeded", ImageUpdates: update, Listings: []trumpetCandidate{{Maker: "Fixture", Model: "F", Title: "F", Source: "Fixture", Currency: "USD", Status: "active"}}},
+		"failures": {ExternalID: "x", Kind: "images", Status: "succeeded", ImageUpdates: update, CheckFailures: []trumpetCheckFailure{{ID: update[0].ID, Reason: "HTTP 403"}}},
+	} {
+		if validateTrumpetRun(&run) == nil {
+			t.Errorf("images run with %s accepted", name)
+		}
+	}
+}

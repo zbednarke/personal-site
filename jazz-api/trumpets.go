@@ -1019,7 +1019,7 @@ func validateTrumpetRun(input *trumpetRunInput) error {
 		return errors.New("run too large")
 	}
 	// An image run only fills empty galleries: no offers, checks or coverage.
-	if input.Kind == "images" && (len(input.Listings) > 0 || len(input.CheckFailures) > 0) {
+	if input.Kind == "images" && (len(input.Listings) > 0 || len(input.CheckFailures) > 0 || len(input.Sources) > 0) {
 		return errors.New("an images run carries image updates only")
 	}
 	seenImages := map[string]bool{}

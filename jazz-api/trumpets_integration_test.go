@@ -669,6 +669,10 @@ func TestTrumpetPersistence(t *testing.T) {
 		ingest(bad, 400)
 		bad.ExternalID, bad.ImageUpdates, bad.Listings = "image-backfill-listings", nil, []trumpetCandidate{bare}
 		ingest(bad, 400)
+		// ... and no source coverage either (it searched nothing).
+		bad.ExternalID, bad.Listings, bad.ImageUpdates, bad.Sources = "image-backfill-sources", nil, []trumpetImageUpdate{{ID: bareID, Images: []string{"https://photos.test/c.jpg"}}}, sources
+		ingest(bad, 400)
+		bad.Sources = nil
 		bad.ExternalID, bad.Listings, bad.ImageUpdates = "image-backfill-dup", nil, []trumpetImageUpdate{{ID: bareID, Images: []string{"https://photos.test/a.jpg"}}, {ID: bareID, Images: []string{"https://photos.test/b.jpg"}}}
 		ingest(bad, 400)
 		// A daily run can carry image updates for pages it reached but could

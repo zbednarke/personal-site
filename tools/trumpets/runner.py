@@ -338,16 +338,25 @@ NOT_PHOTO_EXT=('.svg','.ico','.cur','.bmp')
 SHOPIFY_SIZE=re.compile(r'_(?:\d+x\d*|x\d+|pico|icon|thumb|small|compact|medium|large|grande|original|master)(?:_crop_[a-z_]+)?(?:@\dx)?(?=\.[a-z0-9]+$)',re.I)
 
 
+# A bounded large size: big enough for a card or a detail view, never the
+# full-size original (which can be tens of megabytes).
+IMAGE_WIDTH=1600
+
+
 def enlarge(url):
-    """The largest variant a known image CDN serves for this photo."""
+    """A bounded large variant (about IMAGE_WIDTH px) on CDNs whose size is
+    in the URL: Shopify _1600x, Squarespace ?format=1500w, eBay s-l1600.
+    Other URLs are kept as they are."""
     p=urllib.parse.urlsplit(url);host=(p.hostname or '').lower();path=p.path
     query=urllib.parse.parse_qsl(p.query,keep_blank_values=True)
     if 'shopify' in host or '/cdn/shop/' in path:
-        path=SHOPIFY_SIZE.sub('',path);query=[(k,v) for k,v in query if k not in ('width','height','crop')]
+        stripped=SHOPIFY_SIZE.sub('',path)
+        path=re.sub(r'(\.[a-z0-9]+)$',f'_{IMAGE_WIDTH}x\\1',stripped,flags=re.I) if re.search(r'\.[a-z0-9]+$',stripped,re.I) else path
+        query=[(k,v) for k,v in query if k not in ('width','height','crop')]
     elif host.endswith('ebayimg.com'):
-        path=re.sub(r'/s-l\d+\.(jpg|jpeg|png|webp)$',r'/s-l1600.\1',path,flags=re.I)
+        path=re.sub(r'/s-l\d+\.(jpg|jpeg|png|webp)$',f'/s-l{IMAGE_WIDTH}.\\1',path,flags=re.I)
     elif 'squarespace-cdn.com' in host:
-        query=[(k,v) for k,v in query if k!='format']
+        query=[(k,v) for k,v in query if k!='format']+[('format','1500w')]
     return urllib.parse.urlunsplit((p.scheme,p.netloc,path,urllib.parse.urlencode(query),''))
 
 
@@ -388,22 +397,33 @@ def clean_images(values, base=''):
 
 class PageImages(HTMLParser):
     """Photo candidates on one product page: OpenGraph/Twitter meta, schema.org
-    microdata and WooCommerce/Squarespace/Shopify product galleries."""
-    GALLERY=re.compile(r'woocommerce-product-gallery|product-gallery|productitem-gallery|product__media|product-single__photo|product-images?\b|sqs-gallery',re.I)
+    microdata and the product's own gallery (WooCommerce, Squarespace,
+    Shopify). Only the first main gallery counts, and nothing inside related,
+    upsell or cross-sell sections or product loops (other horns' photos)."""
+    GALLERY=re.compile(r'woocommerce-product-gallery|product-gallery|productitem-gallery|product__media|product-single__photo|sqs-gallery',re.I)
+    OTHERS=re.compile(r'(?:^|\s)(?:related|upsells?|cross-sells?|crosssells?|related-products?|recently-viewed|recommendations?)(?:\s|$)',re.I)
     VOID=('img','meta','link','input','br','hr','source','wbr','area','base','col','embed','track','param')
     def __init__(self):
-        super().__init__();self.meta={};self.micro=[];self.gallery=[];self.stack=[]
+        super().__init__();self.meta={};self.micro=[];self.gallery=[];self.stack=[];self.gallery_done=False
+    def other_products(self, tag, a):
+        classes=a.get('class','')
+        return bool(self.OTHERS.search(classes)) or (tag=='ul' and re.search(r'(?:^|\s)products(?:\s|$)',classes) is not None)
     def handle_starttag(self, tag, attrs):
         a={k:(v or '') for k,v in attrs}
         if tag=='meta':
             key=(a.get('property') or a.get('name') or a.get('itemprop') or '').lower()
-            if key and a.get('content'):self.meta.setdefault(key,[]).append(a['content'])
+            if key and a.get('content') and not any(f=='other' for _,f in self.stack):self.meta.setdefault(key,[]).append(a['content'])
             return
-        if a.get('itemprop','').lower()=='image':
+        elsewhere=any(f=='other' for _,f in self.stack) or self.other_products(tag,a)
+        if a.get('itemprop','').lower()=='image' and not elsewhere:
             self.micro.append(a.get('content') or a.get('src') or a.get('href') or '')
         if tag not in self.VOID:
-            self.stack.append((tag,bool(self.GALLERY.search(a.get('class','')+' '+a.get('id','')))))
-        inside=any(flag for _,flag in self.stack) or (tag=='img' and bool(self.GALLERY.search(a.get('class',''))))
+            if elsewhere and not any(f=='other' for _,f in self.stack):flag='other'
+            elif not self.gallery_done and not elsewhere and self.GALLERY.search(a.get('class','')+' '+a.get('id','')):flag='gallery'
+            else:flag=''
+            self.stack.append((tag,flag))
+        if elsewhere or self.gallery_done:return
+        inside=any(f=='gallery' for _,f in self.stack)
         if inside and tag=='img':
             self.gallery.append(a.get('data-large_image') or a.get('data-zoom-image') or a.get('data-image') or a.get('data-src') or a.get('src') or '')
         elif inside and tag=='a' and re.search(r'\.(?:jpe?g|png|webp)(?:\?|$)',a.get('href',''),re.I):
@@ -411,7 +431,10 @@ class PageImages(HTMLParser):
     def handle_endtag(self, tag):
         for i in range(len(self.stack)-1,-1,-1):
             if self.stack[i][0]==tag:
-                del self.stack[i:];break
+                closed=self.stack[i:];del self.stack[i:]
+                # The first main gallery has ended: later galleries are not this product's.
+                if any(f=='gallery' for _,f in closed) and not any(f=='gallery' for _,f in self.stack):self.gallery_done=True
+                break
     def candidates(self):
         meta=[v for k in ('og:image:secure_url','og:image','og:image:url','twitter:image','twitter:image:src') for v in self.meta.get(k,[])]
         return self.gallery+meta+self.micro
@@ -1768,8 +1791,12 @@ def backfill_images(client, get_page=None, get_api=None, ebay=None, sleep=None, 
         url=listing['url']
         domain=(urllib.parse.urlsplit(url).hostname or '').lower().removeprefix('www.')
         family='reverb' if reverb_id(url) else 'ebay' if ebay_id(url) else 'page'
+        # Reverb and eBay are one API each: a refusal stops that API for the
+        # rest of the run; a refusing site stops only that domain.
+        source=family if family!='page' else domain
         if counts['tried']>=limits['listings'] or clock()-started>BACKFILL_BUDGET:
             counts['skipped (run cap)']+=1;continue
+        if source in blocked:counts['skipped (source refused automated requests)']+=1;continue
         images=[]
         try:
             if family=='reverb':
@@ -1784,7 +1811,6 @@ def backfill_images(client, get_page=None, get_api=None, ebay=None, sleep=None, 
                 requests['ebay']+=1;counts['tried']+=1
                 images=(ebay_facts(ebay.item(ebay_id(url))) or {}).get('images') or []
             else:
-                if domain in blocked:counts['skipped (source blocks automated checks)']+=1;continue
                 if not page_request(domain):counts['skipped (request cap)']+=1;continue
                 counts['tried']+=1
                 page=get_page(url)
@@ -1795,7 +1821,7 @@ def backfill_images(client, get_page=None, get_api=None, ebay=None, sleep=None, 
                     except Exception:pass
         except Exception as error:
             if isinstance(error,ChallengePage) or (isinstance(error,urllib.error.HTTPError) and error.code in BLOCKING_CODES):
-                blocked.add(domain);counts['blocked']+=1
+                blocked.add(source);counts['blocked']+=1
             elif isinstance(error,urllib.error.HTTPError) and error.code in (404,410):counts['gone']+=1
             else:counts['failed']+=1
             continue

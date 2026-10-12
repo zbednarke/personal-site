@@ -53,10 +53,10 @@ class ImageCleaningTests(unittest.TestCase):
         product = dict(PRODUCT, image=[{'@type': 'ImageObject', 'url': '//cdn.shopify.fixtures.invalid/files/horn_1024x.jpg?v=2&width=800'},
                                        {'@type': 'ImageObject', 'contentUrl': 'https://shop.test/horn-back.jpg'}, 'https://shop.test/no-image.png'])
         self.assertEqual(runner.page_images(page(product), 'https://shop.test/products/horn'),
-                         ['https://cdn.shopify.fixtures.invalid/files/horn.jpg?v=2', 'https://shop.test/horn-back.jpg'])
+                         ['https://cdn.shopify.fixtures.invalid/files/horn_1600x.jpg?v=2', 'https://shop.test/horn-back.jpg'])
         # normalize_product (verified offers) uses the same cleaning.
         c = runner.normalize_product(product, 'https://shop.test/products/horn', 'Shop', PROFILE)
-        self.assertEqual(c['images'][0], 'https://cdn.shopify.fixtures.invalid/files/horn.jpg?v=2')
+        self.assertEqual(c['images'][0], 'https://cdn.shopify.fixtures.invalid/files/horn_1600x.jpg?v=2')
 
     def test_category_pages_give_no_photos_but_a_product_described_twice_does(self):
         other = dict(PRODUCT, name='Harrelson MUSE trumpet', image='https://shop.test/muse.jpg')
@@ -70,29 +70,51 @@ class ImageCleaningTests(unittest.TestCase):
 <div class="woocommerce-product-gallery__image"><a href="https://wp.test/wp-content/uploads/bell.jpg"><img src="https://wp.test/wp-content/uploads/bell-600x400.jpg"></a></div></div>'''
         self.assertEqual(runner.page_images(woo, 'https://wp.test/product/horn/'), ['https://wp.test/wp-content/uploads/horn.jpg', 'https://wp.test/wp-content/uploads/bell.jpg'])
         sqs = '''<div class="ProductItem-gallery"><div class="ProductItem-gallery-slides">
-<img data-image="https://images.squarespace-cdn.fixtures.invalid/content/horn.jpg" data-src="https://images.squarespace-cdn.fixtures.invalid/content/horn.jpg?format=300w" src="">
-<img data-image="https://images.squarespace-cdn.fixtures.invalid/content/valves.jpg"></div></div>
-<meta itemprop="image" content="https://images.squarespace-cdn.fixtures.invalid/content/horn.jpg?format=1500w">'''
-        self.assertEqual(runner.page_images(sqs, 'https://sqs.test/shop/p/horn'), ['https://images.squarespace-cdn.fixtures.invalid/content/horn.jpg', 'https://images.squarespace-cdn.fixtures.invalid/content/valves.jpg'])
+<img data-image="https://images.squarespace-cdn.com/content/horn.jpg" data-src="https://images.squarespace-cdn.com/content/horn.jpg?format=300w" src="">
+<img data-image="https://images.squarespace-cdn.com/content/valves.jpg"></div></div>
+<meta itemprop="image" content="https://images.squarespace-cdn.com/content/horn.jpg?format=1500w">'''
+        self.assertEqual(runner.page_images(sqs, 'https://sqs.test/shop/p/horn'), ['https://images.squarespace-cdn.com/content/horn.jpg?format=1500w', 'https://images.squarespace-cdn.com/content/valves.jpg?format=1500w'])
 
     def test_gallery_survives_nested_elements_and_ends_with_its_element(self):
         markup = '''<div class="product-gallery"><div><span><img src="https://g.test/one.jpg"></span></div><br><p><img src="https://g.test/two.jpg"></p></div>
 <div class="related"><img src="https://g.test/related.jpg"></div>'''
         self.assertEqual(runner.page_images(markup, 'https://g.test/p'), ['https://g.test/one.jpg', 'https://g.test/two.jpg'])
 
+    def test_only_the_main_gallery_never_related_or_loop_products(self):
+        # Review fix: Woodmart/Porto product loops use product-image classes;
+        # their photos are other horns and must never fill this listing's slots.
+        markup = '''<div class="woocommerce-product-gallery images">
+  <div class="woocommerce-product-gallery__image"><a href="https://wp.test/wp-content/uploads/main-1.jpg"><img src="https://wp.test/wp-content/uploads/main-1-600x400.jpg"></a></div>
+  <div class="woocommerce-product-gallery__image"><a href="https://wp.test/wp-content/uploads/main-2.jpg"><img src="https://wp.test/wp-content/uploads/main-2-600x400.jpg"></a></div>
+</div>
+<div class="product-image"><img src="https://wp.test/wp-content/uploads/porto-loop.jpg"></div>
+<section class="related products"><h2>Related products</h2>
+  <ul class="products columns-4">
+    <li class="product"><a class="product-image-link" href="/product/other"><img src="https://wp.test/wp-content/uploads/other-horn.jpg"></a>
+      <div class="product-gallery"><img src="https://wp.test/wp-content/uploads/other-gallery.jpg"></div>
+      <meta itemprop="image" content="https://wp.test/wp-content/uploads/other-micro.jpg"></li>
+  </ul>
+</section>
+<div class="upsells products"><div class="product-gallery"><img src="https://wp.test/wp-content/uploads/upsell.jpg"></div></div>
+<div class="cross-sells"><img itemprop="image" src="https://wp.test/wp-content/uploads/cross.jpg"></div>
+<div class="product-gallery"><img src="https://wp.test/wp-content/uploads/second-gallery.jpg"></div>'''
+        self.assertEqual(runner.page_images(markup, 'https://wp.test/product/horn/'), ['https://wp.test/wp-content/uploads/main-1.jpg', 'https://wp.test/wp-content/uploads/main-2.jpg'])
+        loop = '<ul class="products"><li><div class="product-gallery"><img src="https://wp.test/a.jpg"></div></li></ul><div class="product-images"><img src="https://wp.test/b.jpg"></div>'
+        self.assertEqual(runner.page_images(loop, 'https://wp.test/shop/'), [])
+
     def test_shopify_product_json(self):
-        product = {'title': 'Taylor Chicago II trumpet', 'images': ['//shop.test/cdn/shop/files/horn_grande.jpg?v=1', '//shop.test/cdn/shop/files/bell.jpg?v=1'],
-                   'media': [{'media_type': 'image', 'src': '//shop.test/cdn/shop/files/horn.jpg?v=1'}, {'media_type': 'video', 'src': '//shop.test/v.mp4'}]}
+        product = {'title': 'Taylor Chicago II trumpet', 'images': ['//shop.test/cdn/shop/files/horn_grande.jpg?v=1', '//shop.test/cdn/shop/files/bell_1600x.jpg?v=1'],
+                   'media': [{'media_type': 'image', 'src': '//shop.test/cdn/shop/files/horn_1600x.jpg?v=1'}, {'media_type': 'video', 'src': '//shop.test/v.mp4'}]}
         seen = []
         def get(url): seen.append(url); return json.dumps(product)
-        self.assertEqual(runner.shopify_images('https://shop.test/products/taylor-chicago?variant=3', get), ['https://shop.test/cdn/shop/files/horn.jpg?v=1', 'https://shop.test/cdn/shop/files/bell.jpg?v=1'])
+        self.assertEqual(runner.shopify_images('https://shop.test/products/taylor-chicago?variant=3', get), ['https://shop.test/cdn/shop/files/horn_1600x.jpg?v=1', 'https://shop.test/cdn/shop/files/bell_1600x.jpg?v=1'])
         self.assertEqual(seen, ['https://shop.test/products/taylor-chicago.js'])
         self.assertEqual(runner.shopify_images('https://shop.test/collections/trumpets', get), [])
         # A verified Shopify offer keeps its photos (they are protocol-relative in the JSON).
         offer = dict(product, id=7, vendor='Taylor', variants=[{'price': 250000, 'available': True}])
         def get_offer(url): return json.dumps({'currency': 'USD'} if url.endswith('/cart.js') else offer)
         c = runner.shopify_offer('https://shop.test/products/taylor-chicago', 'Shop', PROFILE, get_offer)
-        self.assertEqual(c['images'], ['https://shop.test/cdn/shop/files/horn.jpg?v=1', 'https://shop.test/cdn/shop/files/bell.jpg?v=1'])
+        self.assertEqual(c['images'], ['https://shop.test/cdn/shop/files/horn_1600x.jpg?v=1', 'https://shop.test/cdn/shop/files/bell_1600x.jpg?v=1'])
 
     def test_reverb_api_photos_prefer_full_and_large_crop(self):
         self.assertEqual(runner.reverb_images(REVERB_ITEM), ['https://rvb-img.fixtures.invalid/i/full-1.jpg', 'https://rvb-img.fixtures.invalid/i/crop-2.jpg'])
@@ -103,6 +125,17 @@ class ImageCleaningTests(unittest.TestCase):
     def test_ebay_image_urls_prefer_the_large_size(self):
         self.assertEqual(runner.clean_images(['https://i.ebayimg.fixtures.invalid/images/g/abc/s-l225.jpg']), ['https://i.ebayimg.fixtures.invalid/images/g/abc/s-l225.jpg'])
         self.assertEqual(runner.enlarge('https://i.ebayimg.com/images/g/abc/s-l225.jpg'), 'https://i.ebayimg.com/images/g/abc/s-l1600.jpg')
+
+    def test_sizes_are_bounded_never_full_size_originals(self):
+        # Review fix: request ~1600 px variants, not multi-megabyte originals.
+        self.assertEqual(runner.enlarge('https://shop.test/cdn/shop/files/horn.jpg?v=1&width=4000'), 'https://shop.test/cdn/shop/files/horn_1600x.jpg?v=1')
+        self.assertEqual(runner.enlarge('https://cdn.shopify.com/s/files/1/x/horn_600x600_crop_center.jpg?v=2'), 'https://cdn.shopify.com/s/files/1/x/horn_1600x.jpg?v=2')
+        self.assertEqual(runner.enlarge('https://cdn.shopify.com/s/files/1/x/horn_master.png'), 'https://cdn.shopify.com/s/files/1/x/horn_1600x.png')
+        self.assertEqual(runner.enlarge('https://images.squarespace-cdn.com/content/v1/horn.jpg'), 'https://images.squarespace-cdn.com/content/v1/horn.jpg?format=1500w')
+        self.assertEqual(runner.enlarge('https://images.squarespace-cdn.com/content/v1/horn.jpg?format=2500w'), 'https://images.squarespace-cdn.com/content/v1/horn.jpg?format=1500w')
+        # Other hosts keep the URL the page gave (no guessing at originals).
+        for url in ['https://wp.test/wp-content/uploads/horn-600x400.jpg', 'https://dealer.test/uploads/summit_w640.jpeg', 'https://rvb-img.fixtures.invalid/i/s--x--/quality=medium-low,height=800,width=800/horn.jpg']:
+            self.assertEqual(runner.enlarge(url), url)
 
 
 class RecheckPhotoTests(unittest.TestCase):
@@ -194,7 +227,7 @@ class BackfillTests(unittest.TestCase):
             seen.append(url)
             if url == 'https://dealer.test/horns/summit': return OG_PAGE
             if url == 'https://shop.test/products/taylor-chicago': return '<title>Taylor</title>'
-            if url == 'https://shop.test/products/taylor-chicago.js': return json.dumps({'images': ['//shop.test/cdn/shop/files/horn.jpg?v=1']})
+            if url == 'https://shop.test/products/taylor-chicago.js': return json.dumps({'images': ['//shop.test/cdn/shop/files/horn_1600x.jpg?v=1']})
             if url.startswith('https://blocked.test/'): raise urllib.error.HTTPError(url, 403, 'Forbidden', {}, None)
             if url == 'https://dealer.test/horns/gone': raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
             if url == 'https://dealer.test/horns/text-only': return '<title>Text only</title><p>Fixture</p>'
@@ -221,7 +254,7 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(set(updates), {self.IDS['reverb'], self.IDS['og'], self.IDS['shopify']})
         self.assertEqual(updates[self.IDS['reverb']][0], 'https://rvb-img.fixtures.invalid/i/full-1.jpg')
         self.assertEqual(updates[self.IDS['og']][0], 'https://dealer.test/uploads/summit-1_w2560.jpeg')
-        self.assertEqual(updates[self.IDS['shopify']], ['https://shop.test/cdn/shop/files/horn.jpg?v=1'])
+        self.assertEqual(updates[self.IDS['shopify']], ['https://shop.test/cdn/shop/files/horn_1600x.jpg?v=1'])
         # A refusing domain is tried once; eBay pages are never fetched; listings
         # that already have photos are left alone.
         self.assertEqual([u for u in seen if 'blocked.test' in u], ['https://blocked.test/a'])
@@ -233,7 +266,7 @@ class BackfillTests(unittest.TestCase):
         summary = json.loads(printed[0])
         self.assertEqual((summary['missing'], summary['found (reverb)'], summary['found (page)'], summary['blocked'], summary['gone'], summary['no photos (page)']), (8, 1, 2, 1, 1, 1))
         self.assertEqual(summary['skipped (eBay without API keys)'], 1)
-        self.assertEqual(summary['skipped (source blocks automated checks)'], 1)
+        self.assertEqual(summary['skipped (source refused automated requests)'], 1)
 
     def test_request_caps(self):
         code, api, seen, api_calls, printed = self.run_backfill(limits={'reverb': 0, 'pages': 1})
@@ -254,6 +287,35 @@ class BackfillTests(unittest.TestCase):
         updates = {u['id']: u['images'] for u in api.posts[0]['imageUpdates']}
         self.assertEqual(Ebay.calls, ['900000000003'])
         self.assertEqual(updates[self.IDS['ebay']], ['https://i.ebayimg.fixtures.invalid/images/g/x/s-l500.jpg'])
+
+    def test_a_refusing_api_is_not_called_again(self):
+        # Review fix: after a Reverb 429 (or 403) the rest of the Reverb listings
+        # are skipped, not retried one by one; the same for eBay.
+        board = [{'id': f'{i:08d}-0000-4000-8000-000000000001', 'url': f'https://reverb.com/item/9000{i:05d}-fixture', 'images': []} for i in range(50)]
+        board += [{'id': f'{i:08d}-0000-4000-8000-000000000002', 'url': f'https://www.ebay.com/itm/9000000{i:05d}', 'images': []} for i in range(20)]
+        board.append({'id': '00000099-0000-4000-8000-000000000003', 'url': 'https://dealer.test/horns/summit', 'images': []})
+        class Api:
+            posts = []
+            def call(s, path, body=None):
+                if path == '/listings': return {'listings': board}
+                s.posts.append(body); return {'runId': 'r', 'status': 'succeeded'}
+        reverb_calls = []
+        def always_429(url, headers=None, *_):
+            reverb_calls.append(url); raise urllib.error.HTTPError(url, 429, 'Too Many Requests', {}, None)
+        class Ebay:
+            calls = 0
+            def item(self, legacy_id):
+                Ebay.calls += 1; raise urllib.error.HTTPError('https://api.ebay.fixtures.invalid', 403, 'Forbidden', {}, None)
+        printed = []
+        with patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+            runner.backfill_images(Api(), get_page=lambda u: OG_PAGE, get_api=always_429, ebay=Ebay(), sleep=lambda s: None)
+        self.assertEqual(set(reverb_calls), {reverb_calls[0]}, 'no further Reverb calls after the first refusal')
+        self.assertLessEqual(len(reverb_calls), 3)  # the first listing's bounded backoff only
+        self.assertEqual(Ebay.calls, 1, 'no further eBay calls after the first refusal')
+        summary = json.loads(printed[0])
+        self.assertEqual((summary['blocked'], summary['skipped (source refused automated requests)']), (2, 49 + 19))
+        # A refusing API never stops page fetches on other domains.
+        self.assertEqual([u['id'] for u in Api.posts[0]['imageUpdates']], ['00000099-0000-4000-8000-000000000003'])
 
     def test_nothing_found_submits_nothing(self):
         class Empty:
