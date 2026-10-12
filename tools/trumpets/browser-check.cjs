@@ -558,7 +558,12 @@ function syntheticPng(width, height) {
     const tastePosts = () => page.waitForResponse((r) => r.url().includes("/taste/events") && r.request().method() === "POST" && r.status() < 300);
     const swipeId = () => page.locator(".swipe-card").getAttribute("data-id");
     await page.setViewportSize({ width: 1440, height: 1100 });
+    // Opening Taste reloads its state (the queue now includes the fixtures
+    // just added); read the first card only once that reply is on screen.
+    const tasteLoaded = page.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
     await page.getByRole("button", { name: /^Taste/ }).click();
+    const loadedQueue = (await (await tasteLoaded).json()).queue;
+    await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, loadedQueue[0].listingId);
     assert.equal(await page.evaluate(() => location.hash), "#taste");
     assert.equal(await page.locator("#cards").isVisible(), false);
     assert.equal(await page.locator("#inspiration-board").isVisible(), false);
