@@ -48,6 +48,9 @@ import (
 // different horns. This never reorders the phases: while the graph has
 // islands, the first pair is still a bridge.
 //
+// The bridges of one answer are pairwise non-redundant: each one joins two
+// components of the graph plus that answer's earlier bridges.
+//
 // In every case each horn appears at most twice per answer (horns not yet
 // used in this answer are preferred), and pairs compared in the last two
 // weeks are not offered again.
@@ -60,29 +63,46 @@ const (
 )
 
 // tasteRecentPairHorns is the set of horns in the latest n live pair choices
-// between two different known horns (latest by CreatedAt, then id).
+// between two different known horns (latest by CreatedAt, then id). One pass
+// keeping the n latest (n is small); correct in any order, and fast for
+// events loaded oldest first, as the scan runs backward: once n are kept,
+// older events are rejected before any lookup.
 func tasteRecentPairHorns(d *tasteData, events []tasteEvent, n int) map[string]bool {
-	pairs := []tasteEvent{}
-	for _, e := range events {
-		if e.Kind != "pair" || e.undone {
+	later := func(x, y *tasteEvent) bool {
+		if !x.CreatedAt.Equal(y.CreatedAt) {
+			return x.CreatedAt.After(y.CreatedAt)
+		}
+		return x.ID > y.ID
+	}
+	top := make([]*tasteEvent, 0, n+1) // latest first
+	for i := len(events) - 1; i >= 0; i-- {
+		e := &events[i]
+		if n <= 0 || e.Kind != "pair" || e.undone {
+			continue
+		}
+		if len(top) == n && !later(e, top[n-1]) {
 			continue
 		}
 		a, okA := d.byListing[e.ListingID]
 		b, okB := d.byListing[e.OtherListingID]
-		if okA && okB && a.HornID != b.HornID {
-			pairs = append(pairs, e)
+		if !okA || !okB || a.HornID == b.HornID {
+			continue
+		}
+		j := len(top)
+		for j > 0 && later(e, top[j-1]) {
+			j--
+		}
+		top = append(top, nil)
+		copy(top[j+1:], top[j:])
+		top[j] = e
+		if len(top) > n {
+			top = top[:n]
 		}
 	}
-	sort.SliceStable(pairs, func(i, j int) bool {
-		if !pairs[i].CreatedAt.Equal(pairs[j].CreatedAt) {
-			return pairs[i].CreatedAt.After(pairs[j].CreatedAt)
-		}
-		return pairs[i].ID > pairs[j].ID
-	})
 	out := map[string]bool{}
-	for i := 0; i < len(pairs) && i < n; i++ {
-		out[d.byListing[pairs[i].ListingID].HornID] = true
-		out[d.byListing[pairs[i].OtherListingID].HornID] = true
+	for _, e := range top {
+		out[d.byListing[e.ListingID].HornID] = true
+		out[d.byListing[e.OtherListingID].HornID] = true
 	}
 	return out
 }
@@ -100,6 +120,18 @@ func newTasteUnionFind(nodes []string) *tasteUnionFind {
 		u.parent[n], u.size[n] = n, 1
 	}
 	return u
+}
+
+// clone is an independent copy (for unions that must not touch the graph).
+func (u *tasteUnionFind) clone() *tasteUnionFind {
+	c := &tasteUnionFind{parent: make(map[string]string, len(u.parent)), size: make(map[string]int, len(u.size))}
+	for k, v := range u.parent {
+		c.parent[k] = v
+	}
+	for k, v := range u.size {
+		c.size[k] = v
+	}
+	return c
 }
 
 func (u *tasteUnionFind) find(n string) string {
@@ -314,11 +346,12 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		return cands[a].v > cands[b].v
 	}
 	// The best free horn of a group to pair with partner ("": with anyone);
-	// with fresh, only a horn that is not stale.
-	pick := func(group []string, partner string, fresh bool) string {
+	// with fresh, only a horn that is not stale; with unused, only one not
+	// yet in this answer.
+	pick := func(group []string, partner string, fresh, unused bool) string {
 		best := ""
 		for _, h := range group {
-			if fresh && stale[h] {
+			if (fresh && stale[h]) || (unused && used[h] > 0) {
 				continue
 			}
 			if (partner == "" && free(h)) || (partner != "" && ok(partner, h)) {
@@ -368,26 +401,32 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		// Islands made only of stale horns go after the others (in practice
 		// never a singleton: a horn just compared is no longer one).
 		sort.SliceStable(islands, func(i, j int) bool { return hasFresh(islands[i]) && !hasFresh(islands[j]) })
+		// joined is the graph's components plus this answer's bridges, so a
+		// later bridge never pairs two islands an earlier one already joined
+		// (possible once a smaller component anchors).
+		joined := g.uf.clone()
 		for _, island := range islands {
 			if len(out) == tastePairLimit {
 				break
 			}
-			b := pick(island, "", false) // stale only when the island has nothing else
+			b := pick(island, "", false, false) // stale only when the island has nothing else
 			if b == "" {
 				continue
 			}
-			// The anchor: a fresh horn of the largest other component that has
-			// one, else any horn of the largest other component that has one.
+			// The anchor: from the largest component not yet joined to the
+			// island in this answer, preferring a fresh horn, then one not yet
+			// used in this answer; only then a smaller component.
 			a := ""
-			for _, fresh := range []bool{true, false} {
+			for _, pass := range []struct{ fresh, unused bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
 				for _, anchor := range comps {
-					if a == "" && g.uf.find(anchor[0]) != g.uf.find(island[0]) {
-						a = pick(anchor, b, fresh)
+					if a == "" && joined.find(anchor[0]) != joined.find(b) {
+						a = pick(anchor, b, pass.fresh, pass.unused)
 					}
 				}
 			}
 			if a != "" {
 				add(a, b, "bridge")
+				joined.union(a, b)
 			}
 		}
 	}
