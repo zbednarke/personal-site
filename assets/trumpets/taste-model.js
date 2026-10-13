@@ -54,11 +54,31 @@
     const s = dragState({ dx, dy, width, axis, pointerType: opts.pointerType || "mouse", vx: opts.vx || 0 });
     return s.commit ? s.direction : null;
   }
+  // Head to head skip reasons (optional, one tap each); the codes are the
+  // server's tasteSkipReasons.
+  const SKIP_REASONS = [
+    { code: "not_comparable", label: "Not comparable" },
+    { code: "bad_info", label: "Bad or missing info" },
+    { code: "stale", label: "Sold / stale" },
+    { code: "duplicate", label: "Duplicate" },
+    { code: "not_bb", label: "Not a Bb trumpet" },
+    { code: "other", label: "Other" },
+  ];
+  const skipReasonLabel = (code) => SKIP_REASONS.find((r) => r.code === code)?.label || code;
   // Keyboard shortcuts; null when the key means nothing in that mode.
-  function keyAction(key, mode) {
+  // In Head to head, K opens the skip reasons; while they are open, 1–6 skip
+  // with that reason, K (again) skips without one and Escape closes them.
+  function keyAction(key, mode, opts = {}) {
     const k = String(key || "").toLowerCase();
+    if (mode === "pair" && opts.skipOpen) {
+      if (k === "escape") return { kind: "skip-cancel" };
+      if (k === "k") return { kind: "pair", action: "skip", reasons: [] };
+      const i = Number(k) - 1;
+      if (/^[1-9]$/.test(k) && SKIP_REASONS[i]) return { kind: "pair", action: "skip", reasons: [SKIP_REASONS[i].code] };
+    }
     if (k === "z" || k === "u" || k === "backspace") return { kind: "undo" };
     if (mode === "pair") {
+      if (k === "k") return { kind: "skip-open" };
       if (k === "arrowleft" || k === "1" || k === "a") return { kind: "pair", action: "a" };
       if (k === "arrowright" || k === "2") return { kind: "pair", action: "b" };
       if (k === "arrowup" || k === "b") return { kind: "pair", action: "both" };
@@ -169,12 +189,36 @@
   // The quiet progress line under the Head to head question. The graph's
   // nodes are horns (one comparable listing each), and "largest" counts the
   // horns in the biggest connected group, so until there is one group the
-  // line says "in the main group", not "connected". Empty without a graph
-  // or with fewer than two eligible horns.
+  // line says "in the main group", not "connected"; before any comparison
+  // links two horns it says so. Empty without a graph or with fewer than
+  // two eligible horns.
   function linkText(g) {
     if (!g || !(g.eligible >= 2)) return "";
-    if (g.components <= 1) return `All ${g.eligible} horns connected`;
+    if (g.components <= 1) return `All ${g.eligible} eligible horns connected`;
+    if (!(g.largest >= 2)) return `No horns linked yet · ${g.eligible} eligible`;
     return `Linking horns · ${g.largest} of ${g.eligible} in the main group`;
+  }
+  // What a skip investigation concluded, in a few words.
+  function skipCauseText(f) {
+    if (!f) return "Waiting for the daily check";
+    const dims = { price: "price", condition: "condition", era: "era", other: "something else" };
+    return (
+      {
+        data_problem: "Data problem" + (f.side === "a" ? " (left listing)" : f.side === "b" ? " (right listing)" : ""),
+        wrong_category: "Not a Bb trumpet",
+        stale: "Stale or gone",
+        duplicate: "Duplicate",
+        incomparable: `Genuinely different${dims[f.dimension] ? " (" + dims[f.dimension] + ")" : ""}`,
+        unclear: "Your call / unclear",
+      }[f.cause] || "Checked"
+    );
+  }
+  // A lesson rule in effect, as a sentence.
+  function lessonText(r) {
+    if (!r) return "";
+    const n = `${r.lessons} skip${r.lessons === 1 ? "" : "s"}`;
+    if (r.dimension === "price") return `Avoiding pairs whose prices are ${r.ratio}× or more apart (${n})`;
+    return `Avoiding ${r.dimension} ${String(r.classes || "").replace("|", " vs ")} pairs (${n})`;
   }
   const kindLabels = {
     maker: "maker",
@@ -245,5 +289,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { SKIP_REASONS, skipReasonLabel, skipCauseText, lessonText, gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });

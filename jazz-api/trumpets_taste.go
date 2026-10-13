@@ -77,8 +77,11 @@ type tasteEvent struct {
 
 // tasteMeta is a reaction's small metadata. HadPhoto is whether the card (for
 // a pair: both cards) showed a listing photo; nil for older events (unknown).
+// SkipReasons are the owner's optional one-tap reasons on a Head to head skip
+// (see tasteSkipReasons); only skips carry them.
 type tasteMeta struct {
-	HadPhoto *bool `json:"hadPhoto,omitempty"`
+	HadPhoto    *bool    `json:"hadPhoto,omitempty"`
+	SkipReasons []string `json:"skipReasons,omitempty"`
 }
 
 // tasteNoPhotoWeight scales a swipe or head-to-head choice made without a
@@ -822,6 +825,9 @@ func (d *tasteData) observations(events []tasteEvent, now time.Time, before *tim
 			case "neither":
 				single(e.ListingID, 0, w/2)
 				single(e.OtherListingID, 0, w/2)
+			case "skip":
+				// A skip says the pair could not be compared, not which horn
+				// is better: never model data (trumpets_taste_skips.go).
 			}
 		}
 	}
@@ -871,7 +877,9 @@ func buildTasteModelWarm(listings []trumpetListing, events []tasteEvent, now tim
 		case "swipe":
 			m.swipes++
 		case "pair":
-			m.pairs++
+			if e.Action != "skip" { // a skip is not a reaction
+				m.pairs++
+			}
 		}
 		if m.updatedAt == nil || e.CreatedAt.After(*m.updatedAt) {
 			at := e.CreatedAt
@@ -972,7 +980,10 @@ func preferPhotos[T any](items []T, photo func(T) bool) []T {
 // recently, most uncertain first; within each, horns with photos first (see
 // preferPhotos). Stale or unverified leads (tasteLead) come after all of
 // those, in the same order.
-func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) []tasteQueueItem {
+//
+// A horn whose primary listing a skip investigation excluded from Swipe too
+// (scope "all": not a Bb trumpet, or a duplicate) is left out.
+func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time, guards ...tasteGuards) []tasteQueueItem {
 	lastSwipe := map[string]time.Time{}
 	for _, e := range events {
 		if e.Kind != "swipe" || e.undone {
@@ -993,7 +1004,7 @@ func tasteQueue(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	unseen, seen := []item{}, []item{}
 	for _, horn := range d.order {
 		h := d.horns[horn]
-		if !d.eligible(h) {
+		if !d.eligible(h) || tasteExcludedEverywhere(h.primary.ID, guards) {
 			continue
 		}
 		z, v := m.affinity(d.keys(h.primary.ID))
@@ -1153,7 +1164,7 @@ func validateTasteEvent(in *tasteEventInput) error {
 	if !containsString([]string{"", "swipe", "pair"}, in.Mode) {
 		return errors.New("invalid mode")
 	}
-	in.Note = strings.TrimSpace(in.Note)
+	in.Note = strings.TrimSpace(strings.ToValidUTF8(stripNUL(in.Note), ""))
 	if len([]rune(in.Note)) > 4000 {
 		return errors.New("notes are limited to 4000 characters")
 	}
@@ -1174,8 +1185,8 @@ func validateTasteEvent(in *tasteEventInput) error {
 			return errors.New("swipe action must be right, left or up")
 		}
 	case "pair":
-		if !containsString([]string{"a", "b", "both", "neither"}, in.Action) || in.OtherListingID == "" {
-			return errors.New("pair needs both listings and a, b, both or neither")
+		if !containsString([]string{"a", "b", "both", "neither", "skip"}, in.Action) || in.OtherListingID == "" {
+			return errors.New("pair needs both listings and a, b, both, neither or skip")
 		}
 	case "tag":
 		if !containsString(tasteChips, in.Tag) || !containsString([]string{"add", "remove"}, in.Action) {
@@ -1194,6 +1205,18 @@ func validateTasteEvent(in *tasteEventInput) error {
 	}
 	if in.Meta != nil && in.Kind != "swipe" && in.Kind != "pair" {
 		return errors.New("only swipes and head-to-head choices carry meta")
+	}
+	if in.Meta != nil && len(in.Meta.SkipReasons) > 0 {
+		if in.Kind != "pair" || in.Action != "skip" {
+			return errors.New("only a skip carries skip reasons")
+		}
+		seen := map[string]bool{}
+		for _, r := range in.Meta.SkipReasons {
+			if !containsString(tasteSkipReasons, r) || seen[r] {
+				return errors.New("unknown or repeated skip reason")
+			}
+			seen[r] = true
+		}
 	}
 	return nil
 }
@@ -1241,11 +1264,16 @@ func (app *application) tasteResponse(ctx context.Context, user uuid.UUID) (map[
 		}
 	}
 	summary := tasteMachineSummary(m)
-	graph := newTastePairGraph(d, events, now)
+	guards, skips, err := app.loadTasteSkipState(ctx, user, d, events)
+	if err != nil {
+		return nil, err
+	}
+	graph := newTastePairGraph(d, events, now, guards)
 	return map[string]any{
 		"watermark": tasteStateWatermark(events, m.preferences),
 		"model":     summary, "weights": summary["weights"], "changes": tasteChanges(m, tasteCachedWeekAgo(user, m, d, events, now)),
-		"scores": scores, "queue": tasteQueue(m, d, events, now), "pairs": tastePairs(m, d, events, now),
+		"scores": scores, "queue": tasteQueue(m, d, events, now, guards), "pairs": tastePairs(m, d, events, now, guards),
+		"skips": skips, "skipReasons": tasteSkipReasons,
 		"pairEligible": len(graph.nodes), "pairMinimum": tastePairMinimum, "pairGraph": graph.stats(),
 		"tags": tags, "tagCounts": counts, "chips": tasteChips, "recent": recent, "preferences": m.preferences,
 		"noteSignals": trumpetNotePreferences(notes),

@@ -182,8 +182,9 @@ test("the comparison graph line", () => {
 test("head to head progress line: the main group until the graph is connected", () => {
   // "largest" counts horns in the biggest group, so it is "in the main group".
   assert.equal(T.linkText({ eligible: 177, components: 163, largest: 15, share: 0.085 }), "Linking horns · 15 of 177 in the main group");
-  assert.equal(T.linkText({ eligible: 177, components: 177, largest: 1, share: 0.006 }), "Linking horns · 1 of 177 in the main group");
-  assert.equal(T.linkText({ eligible: 177, components: 1, largest: 177, share: 1 }), "All 177 horns connected");
+  // Before any comparison links two horns: say so, not "1 of 177".
+  assert.equal(T.linkText({ eligible: 177, components: 177, largest: 1, share: 0.006 }), "No horns linked yet · 177 eligible");
+  assert.equal(T.linkText({ eligible: 177, components: 1, largest: 177, share: 1 }), "All 177 eligible horns connected");
   // No graph (an older API), or nothing to link: no line at all.
   assert.equal(T.linkText(undefined), "");
   assert.equal(T.linkText(null), "");
@@ -220,4 +221,32 @@ test("notes and owner preferences", () => {
   const id = T.clientId();
   assert.match(id, /^[a-z0-9]{21}$/);
   assert.notEqual(id, T.clientId());
+});
+
+test("head to head skip: K opens the reasons, then 1-6, K or Escape", () => {
+  assert.deepEqual(T.keyAction("k", "pair"), { kind: "skip-open" });
+  assert.deepEqual(T.keyAction("K", "pair"), { kind: "skip-open" });
+  assert.equal(T.keyAction("k", "swipe"), null, "no skip in Swipe");
+  // While the reasons are open, digits pick a reason instead of a side.
+  assert.deepEqual(T.keyAction("1", "pair", { skipOpen: true }), { kind: "pair", action: "skip", reasons: ["not_comparable"] });
+  assert.deepEqual(T.keyAction("5", "pair", { skipOpen: true }), { kind: "pair", action: "skip", reasons: ["not_bb"] });
+  assert.equal(T.keyAction("9", "pair", { skipOpen: true }), null);
+  assert.deepEqual(T.keyAction("k", "pair", { skipOpen: true }), { kind: "pair", action: "skip", reasons: [] });
+  assert.deepEqual(T.keyAction("Escape", "pair", { skipOpen: true }), { kind: "skip-cancel" });
+  assert.deepEqual(T.keyAction("z", "pair", { skipOpen: true }), { kind: "undo" });
+  assert.deepEqual(T.keyAction("1", "pair"), { kind: "pair", action: "a" }, "closed, 1 still picks the left horn");
+  assert.deepEqual(
+    T.SKIP_REASONS.map((r) => r.label),
+    ["Not comparable", "Bad or missing info", "Sold / stale", "Duplicate", "Not a Bb trumpet", "Other"],
+  );
+  assert.equal(T.skipReasonLabel("stale"), "Sold / stale");
+});
+
+test("skipped pairs: what the investigation found, in words", () => {
+  assert.equal(T.skipCauseText(null), "Waiting for the daily check");
+  assert.equal(T.skipCauseText({ cause: "data_problem", side: "b" }), "Data problem (right listing)");
+  assert.equal(T.skipCauseText({ cause: "incomparable", dimension: "price" }), "Genuinely different (price)");
+  assert.equal(T.skipCauseText({ cause: "wrong_category" }), "Not a Bb trumpet");
+  assert.equal(T.lessonText({ dimension: "price", ratio: 2.5, lessons: 2 }), "Avoiding pairs whose prices are 2.5× or more apart (2 skips)");
+  assert.equal(T.lessonText({ dimension: "condition", classes: "new|project", lessons: 3 }), "Avoiding condition new vs project pairs (3 skips)");
 });

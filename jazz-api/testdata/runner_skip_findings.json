@@ -1,0 +1,206 @@
+[
+ {
+  "eventId": 1,
+  "mode": "explain",
+  "checks": [
+   {
+    "code": "wrong_category",
+    "side": "b",
+    "detail": "title or model says cornet"
+   }
+  ],
+  "llmCause": "wrong_category",
+  "llmValid": true,
+  "cause": "wrong_category",
+  "side": "b",
+  "dimension": "",
+  "explanation": "The right listing is a cornet, not a B-flat trumpet.",
+  "exclude": [
+   {
+    "listingId": "00000002-0000-4000-8000-000000000000",
+    "scope": "all",
+    "reason": "wrong_category",
+    "detail": "not a B-flat trumpet"
+   }
+  ],
+  "recheck": [],
+  "lesson": false,
+  "fixText": ""
+ },
+ {
+  "eventId": 2,
+  "mode": "off",
+  "checks": [
+   {
+    "code": "duplicate_url",
+    "side": "both",
+    "detail": "same listing link"
+   }
+  ],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "duplicate",
+  "side": "both",
+  "dimension": "",
+  "explanation": "Both sides look like the same offer (same listing link).",
+  "exclude": [
+   {
+    "listingId": "00000002-0000-4000-8000-000000000000",
+    "scope": "all",
+    "reason": "duplicate",
+    "detail": "same offer as the other side"
+   }
+  ],
+  "recheck": [],
+  "lesson": false,
+  "fixText": ""
+ },
+ {
+  "eventId": 3,
+  "mode": "off",
+  "checks": [
+   {
+    "code": "gone",
+    "side": "b",
+    "detail": "status sold"
+   }
+  ],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "stale",
+  "side": "b",
+  "dimension": "",
+  "explanation": "The right listing looks sold, gone or not checked recently (status sold).",
+  "exclude": [
+   {
+    "listingId": "00000002-0000-4000-8000-000000000000",
+    "scope": "pair",
+    "reason": "stale",
+    "detail": "sold or removed"
+   }
+  ],
+  "recheck": [],
+  "lesson": false,
+  "fixText": ""
+ },
+ {
+  "eventId": 4,
+  "mode": "off",
+  "checks": [
+   {
+    "code": "not_checked_recently",
+    "side": "a",
+    "detail": "last verified 40 days ago"
+   }
+  ],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "stale",
+  "side": "a",
+  "dimension": "",
+  "explanation": "The left listing looks sold, gone or not checked recently (last verified 40 days ago).",
+  "exclude": [],
+  "recheck": [
+   "00000001-0000-4000-8000-000000000000"
+  ],
+  "lesson": false,
+  "fixText": ""
+ },
+ {
+  "eventId": 5,
+  "mode": "off",
+  "checks": [
+   {
+    "code": "missing_price",
+    "side": "a",
+    "detail": "no price"
+   },
+   {
+    "code": "missing_photos",
+    "side": "a",
+    "detail": "no photos"
+   }
+  ],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "data_problem",
+  "side": "a",
+  "dimension": "",
+  "explanation": "The left listing is missing facts needed to compare (no price; no photos).",
+  "exclude": [],
+  "recheck": [
+   "00000001-0000-4000-8000-000000000000"
+  ],
+  "lesson": false,
+  "fixText": "Head to head skip: listing has no price\nMaker1 M1 (dealer1.test)"
+ },
+ {
+  "eventId": 6,
+  "mode": "off",
+  "checks": [
+   {
+    "code": "price_gap",
+    "side": "both",
+    "detail": "prices 3.92x apart"
+   }
+  ],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "incomparable",
+  "side": "both",
+  "dimension": "price",
+  "explanation": "The two horns are too different to compare on price (prices 3.92x apart).",
+  "exclude": [],
+  "recheck": [],
+  "lesson": true,
+  "fixText": ""
+ },
+ {
+  "eventId": 7,
+  "mode": "off",
+  "checks": [],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "unclear",
+  "side": "",
+  "dimension": "",
+  "explanation": "No data problem found; this looks like your own call.",
+  "exclude": [],
+  "recheck": [],
+  "lesson": false,
+  "fixText": ""
+ },
+ {
+  "eventId": 8,
+  "mode": "explain",
+  "checks": [
+   {
+    "code": "missing_price",
+    "side": "a",
+    "detail": "no price"
+   },
+   {
+    "code": "wrong_category",
+    "side": "a",
+    "detail": "title or model says cornet"
+   },
+   {
+    "code": "llm_fallback",
+    "side": "",
+    "detail": "model call failed (JSONDecodeError)"
+   }
+  ],
+  "llmCause": "",
+  "llmValid": false,
+  "cause": "data_problem",
+  "side": "a",
+  "dimension": "",
+  "explanation": "The left listing is missing facts needed to compare (no price; title or model says cornet; model call failed (JSONDecodeError)).",
+  "exclude": [],
+  "recheck": [
+   "00000001-0000-4000-8000-000000000000"
+  ],
+  "lesson": false,
+  "fixText": "Head to head skip: listing has no price\nMakerééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+ }
+]

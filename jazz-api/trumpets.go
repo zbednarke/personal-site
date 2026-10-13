@@ -89,6 +89,9 @@ type trumpetListing struct {
 	CheckFailures    int        `json:"checkFailures"`
 	LastCheckAttempt *time.Time `json:"lastCheckAttempt"`
 	LastCheckError   string     `json:"lastCheckError"`
+	// A recheck a Head to head skip investigation asked for (it makes the
+	// listing due until a later check lands).
+	RecheckRequestedAt *time.Time `json:"recheckRequestedAt,omitempty"`
 	// Learned taste (see trumpets_taste.go): the blended score ranks Today's
 	// alerts with the same 65 threshold as the rule score.
 	TasteScore *tasteScore `json:"tasteScore,omitempty"`
@@ -163,6 +166,9 @@ func (app *application) trumpetRoutes(mux *http.ServeMux) {
 		"GET /v1/trumpets/taste/voice/{id}":  app.tasteVoice,
 		"GET /v1/trumpets/taste/preferences": app.getTastePreferences,
 		"PUT /v1/trumpets/taste/preferences": app.putTastePreferences,
+		// Switch a skip investigation's exclusion or lesson off (or on).
+		"PUT /v1/trumpets/taste/exclusions/{id}": app.putTasteGuard("exclusions"),
+		"PUT /v1/trumpets/taste/lessons/{id}":    app.putTasteGuard("lessons"),
 	}
 	for path, h := range browser {
 		mux.Handle(path, trumpetGzip(app.trumpetPrivacy(app.authenticate(h))))
@@ -180,6 +186,9 @@ func (app *application) trumpetRoutes(mux *http.ServeMux) {
 		// the owner's stated preferences after deploy.
 		"GET /v1/trumpets/machine/preferences": app.getTastePreferences,
 		"PUT /v1/trumpets/machine/preferences": app.putTastePreferences,
+		// Head to head skips for the runner to investigate, and its findings.
+		"GET /v1/trumpets/machine/taste/skips":           app.machineTasteSkips,
+		"POST /v1/trumpets/machine/taste/skips/findings": app.machineTasteSkipFinding,
 	}
 	for path, h := range machine {
 		mux.Handle(path, trumpetGzip(app.trumpetPrivacy(app.trumpetMachineAuth(h))))
@@ -728,7 +737,8 @@ func (app *application) loadTrumpetListings(ctx context.Context, user uuid.UUID,
 `+trumpetHistoryColumns(histories)+`
  (SELECT count(*) FROM horn_inspirations hi WHERE hi.horn_id=h.id AND hi.user_id=l.user_id AND hi.archived_at IS NULL),
  l.check_failures,l.last_check_attempt,l.last_check_error,
- COALESCE((SELECT o.verified_via FROM trumpet_observations o WHERE o.listing_id=l.id ORDER BY o.checked_at DESC,o.id DESC LIMIT 1),'')
+ COALESCE((SELECT o.verified_via FROM trumpet_observations o WHERE o.listing_id=l.id ORDER BY o.checked_at DESC,o.id DESC LIMIT 1),''),
+ l.recheck_requested_at
  FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 ORDER BY l.first_seen DESC,l.id`, user)
 	if err != nil {
 		return nil, err
@@ -738,7 +748,7 @@ func (app *application) loadTrumpetListings(ctx context.Context, user uuid.UUID,
 	for rows.Next() {
 		var l trumpetListing
 		var details, feedback, images, tags, prices, statuses []byte
-		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount, &l.CheckFailures, &l.LastCheckAttempt, &l.LastCheckError, &l.VerifiedVia); err != nil {
+		if err = rows.Scan(&l.ID, &l.HornID, &l.Maker, &l.Model, &l.SerialNumber, &details, &l.Title, &l.Description, &l.URL, &l.Source, &l.SourceListingID, &l.Seller, &l.Location, &l.Price, &l.Currency, &l.Shipping, &l.PostedAt, &l.Status, &l.DiscoveryType, &l.SearchScore, &l.SearchRationale, &images, &tags, &l.FirstSeen, &l.LastChecked, &l.ChangedAt, &l.Acquired, &l.VerificationState, &feedback, &prices, &statuses, &l.InspirationCount, &l.CheckFailures, &l.LastCheckAttempt, &l.LastCheckError, &l.VerifiedVia, &l.RecheckRequestedAt); err != nil {
 			return nil, err
 		}
 		for _, pair := range []struct {
@@ -860,7 +870,7 @@ func (app *application) trumpetDue(w http.ResponseWriter, r *http.Request) {
 	due := []trumpetListing{}
 	boundary := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, l := range listings {
-		if !l.Acquired && !(l.VerificationState == "candidate" && l.Feedback.InterestState == "pass") && (l.Status == "active" || l.Status == "stale" || l.Status == "unverifiable") && (l.LastChecked == nil || l.LastChecked.Before(boundary)) {
+		if tasteRecheckDue(l) || !l.Acquired && !(l.VerificationState == "candidate" && l.Feedback.InterestState == "pass") && (l.Status == "active" || l.Status == "stale" || l.Status == "unverifiable") && (l.LastChecked == nil || l.LastChecked.Before(boundary)) {
 			due = append(due, l)
 		}
 	}

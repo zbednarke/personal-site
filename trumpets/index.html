@@ -305,7 +305,17 @@
                 ><button type="button" id="pair-both" class="react" aria-label="Both (up arrow)"><b>＋</b><span>Both</span></button
                 ><button type="button" id="pair-neither" class="react" aria-label="Neither (down arrow)"><b>∅</b><span>Neither</span></button
                 ><button type="button" id="pair-b" class="react" aria-label="Right horn (right arrow)"><b>→</b><span>This one</span></button
+                ><button type="button" id="pair-skip" class="react skip" aria-label="Skip this pair (K)" aria-expanded="false" aria-controls="pair-skip-panel"><b>⤼</b><span>Skip</span></button
                 ><button type="button" id="pair-undo" class="react undo" aria-label="Undo (Z)" disabled><b>↶</b><span>Undo</span></button>
+              </div>
+              <div id="pair-skip-panel" class="pair-skip-panel" role="group" aria-labelledby="pair-skip-title" hidden>
+                <p id="pair-skip-title" class="pair-skip-title">Skip this pair — why? <span>(optional, one tap)</span></p>
+                <div id="pair-skip-reasons" class="taste-chips pair-skip-reasons"></div>
+                <div class="pair-skip-actions">
+                  <button type="button" id="pair-skip-none" class="chip">Just skip</button
+                  ><button type="button" id="pair-skip-cancel" class="chip quiet">Cancel</button>
+                </div>
+                <p class="field-help">A skip is never a preference. A note or voice note below goes with it; the daily check looks into what was wrong.</p>
               </div>
             </div>
             <div class="taste-extras">
@@ -335,6 +345,12 @@
             </div>
             <section><h3>Recent changes</h3><ul id="taste-changes" class="taste-list"></ul></section>
             <section><h3>From your notes</h3><ul id="taste-notes" class="taste-list"></ul></section>
+            <details id="taste-skips-box" class="taste-prefs-box taste-skips-box" hidden>
+              <summary>Skipped pairs <span id="taste-skips-count"></span></summary>
+              <p class="field-help">What the daily check found in each skip, and what it changed. Skips never move your taste.</p>
+              <ul id="taste-skip-rules" class="taste-list taste-skip-rules"></ul>
+              <ul id="taste-skips" class="taste-list taste-skips"></ul>
+            </details>
             <details id="taste-prefs-box" class="taste-prefs-box">
               <summary>Your stated preferences <span id="taste-prefs-count"></span></summary>
               <form id="taste-prefs" class="taste-prefs" novalidate>
