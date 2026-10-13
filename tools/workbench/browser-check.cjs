@@ -4,7 +4,10 @@
  * context and no sideways scroll; then two browser contexts on one thread
  * receive the same streamed reply, sync a half-written draft, see one
  * approval decided on the other device, replay an offline outbox, send a
- * hold-to-talk voice note and show a status card. Fails on runtime errors. */
+ * hold-to-talk voice note and show a status card. The Jazz Library view runs
+ * against a mocked /jazz/highlight-api/library with fictional titles at 390
+ * and 1440 px (nav and drawer entry, list, reader, upload, Repertoire link).
+ * Fails on runtime errors. */
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -110,7 +113,7 @@ async function waitForServer() {
     // iOS widens the layout viewport to fit anything wider than the screen, and
     // fixed bars (the top bar, this sheet) then size to the wider page, so their
     // right edge goes off-screen. Every view must fit at common iPhone widths.
-    const jazzViews = ["today", "repertoire", "guide-tones", "effects", "archive", "studio"];
+    const jazzViews = ["today", "repertoire", "library", "guide-tones", "effects", "archive", "studio"];
     const otherPages = ["/trumpets/", "/trumpets/#inspiration", "/commonplace/"];
     const inside = (b, w, h, label) => assert.ok(b && b.x >= -0.5 && b.y >= -0.5 && b.x + b.width <= w + 0.5 && b.y + b.height <= h + 0.5, `${label} is fully on screen (${JSON.stringify(b)})`);
     // Every nav item can be scrolled into view and tapped (the hit test lands on it, not on something covering it).
@@ -378,8 +381,130 @@ async function waitForServer() {
       await page.ctx.close();
     }
 
+    // ---------------- Jazz Library (#library) against a mocked shelf ----------------
+    // The real shelf is served by the highlight service on the site VM; here
+    // /jazz/highlight-api/library is answered in the browser with fictional
+    // fixtures. Service workers are blocked so every request reaches the mock.
+    {
+      const libraryPage = async (name, width, height, touch) => {
+        const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, hasTouch: touch, isMobile: touch, reducedMotion: "reduce", serviceWorkers: "block" });
+        const page = await ctx.newPage();
+        page.on("pageerror", (e) => errors.push(`${name}: ${e.message}`));
+        page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|404|502|503/.test(m.text())) errors.push(`${name} console: ${m.text()}`); });
+        const shelf = [
+          { id: "test-study-a", title: "Test Study A", author: "Fictional Author", sizeBytes: 1258291, addedAt: "2026-10-01T12:00:00Z",
+            resources: [{ title: "Test Recording One", artist: "Test Ensemble", note: "Fixture listening note.", url: "https://example.com/test-recording-one" }] },
+          { id: "test-method-b", title: "Test Method Book B", author: "Fixture Press", sizeBytes: 524288, addedAt: "2026-09-28T12:00:00Z", source: "https://example.com/test-method-b" },
+          { id: "test-lead-sheet-c", title: "Test Lead Sheet C", author: "", sizeBytes: 98304, addedAt: "2026-09-20T12:00:00Z" },
+        ];
+        const calls = [];
+        await ctx.route("**/jazz/highlight-api/library**", async (route) => {
+          const req = route.request();
+          const url = new URL(req.url());
+          calls.push({ method: req.method(), path: url.pathname, query: url.search, type: req.headers()["content-type"] || "" });
+          if (url.pathname === "/jazz/highlight-api/library" && req.method() === "GET") return route.fulfill({ json: shelf });
+          if (url.pathname === "/jazz/highlight-api/library" && req.method() === "POST") {
+            const item = { id: `test-upload-${shelf.length}`, title: url.searchParams.get("title"), author: url.searchParams.get("author") || "", sizeBytes: (req.postDataBuffer() || Buffer.alloc(0)).length, addedAt: "2026-10-13T12:00:00Z" };
+            shelf.unshift(item);
+            return route.fulfill({ status: 201, json: item });
+          }
+          if (/^\/jazz\/highlight-api\/library\/[^/]+\/file$/.test(url.pathname)) {
+            return route.fulfill({ contentType: "text/html", body: "<!doctype html><body style='margin:0;padding:40px;font:20px sans-serif;background:#f4f1ea;color:#222'>Fixture PDF stand-in</body>" });
+          }
+          return route.fulfill({ status: 404, json: { error: "not found" } });
+        });
+        page.calls = calls;
+        page.ctx = ctx;
+        return page;
+      };
+      for (const L of [{ name: "phone", width: 390, height: 844, touch: true }, { name: "desktop", width: 1440, height: 900, touch: false }]) {
+        const page = await libraryPage(`library-${L.name}`, L.width, L.height, L.touch);
+        const press = (sel) => (L.touch ? page.tap(sel) : page.click(sel));
+        await page.goto(`${base}/jazz/`);
+        await page.waitForSelector(".wb-pill");
+        assert.equal(page.calls.length, 0, `${L.name}: the library is not fetched until its view opens`);
+        if (L.touch) {
+          await page.tap("#jazz-menu-button");
+          await page.waitForSelector("body.jazz-nav-open .virtuoso-nav");
+          inside(await page.locator('.virtuoso-nav [data-jazz-view="library"]').boundingBox(), L.width, L.height, "phone drawer: the Library item");
+          await page.screenshot({ path: path.join(out, "library-phone-drawer.png") });
+        } else {
+          assert.ok(await page.locator('.virtuoso-nav [data-jazz-view="library"]').isVisible(), "desktop: Library is in the sidebar");
+        }
+        await press('.virtuoso-nav [data-jazz-view="library"]');
+        await page.waitForFunction(() => document.body.classList.contains("virtuoso-library") && !document.body.classList.contains("jazz-nav-open"));
+        await page.waitForFunction(() => document.querySelectorAll("#library-books .library-book").length === 3);
+        assert.ok(page.calls.some((c) => c.method === "GET" && c.path === "/jazz/highlight-api/library"), `${L.name}: the list comes from /jazz/highlight-api/library`);
+        assert.equal(await page.locator('.virtuoso-nav [data-jazz-view="library"]').getAttribute("aria-current"), "page");
+        if (L.touch) assert.equal(await page.locator("#mobile-view-label").innerText(), "LIBRARY");
+        assert.ok(await page.locator("#library-heading").isVisible(), `${L.name}: the Library heading shows`);
+        assert.equal(await page.locator("#today").isHidden(), true, `${L.name}: Today is hidden`);
+        assert.deepEqual(await page.locator("#library-books h2").allInnerTexts(), ["Test Study A", "Test Method Book B", "Test Lead Sheet C"]);
+        assert.equal(await page.locator("#library-count").innerText(), "3 documents · private cloud library");
+        assert.equal(await page.locator(".library-listening a").getAttribute("rel"), "noopener noreferrer");
+        await noSideScroll(page, `${L.name} library`);
+        await page.screenshot({ path: path.join(out, `library-${L.name}.png`) });
+
+        // Open: the reader frames the file endpoint.
+        await press("#library-books .library-book:first-child button");
+        await page.waitForSelector("#library-reader:not([hidden])");
+        assert.equal(await page.locator("#library-reader-title").innerText(), "Test Study A");
+        const frameSrc = await page.locator("#library-frame").evaluate((f) => f.src);
+        assert.equal(new URL(frameSrc).pathname, "/jazz/highlight-api/library/test-study-a/file");
+        await page.frameLocator("#library-frame").locator("text=Fixture PDF stand-in").waitFor();
+        await noSideScroll(page, `${L.name} reader`);
+        await page.locator("#library-reader").scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(out, `library-${L.name}-reader.png`) });
+        await press("#library-close");
+        await page.waitForSelector("#library-reader[hidden]", { state: "attached" });
+        assert.equal(await page.locator("#library-frame").getAttribute("src"), null, "closing the reader unloads the PDF");
+
+        // Upload: the form posts the PDF bytes with its title and author, then the list reloads.
+        await press("#library-add");
+        await page.waitForSelector("#library-upload:not([hidden])");
+        await page.setInputFiles("#library-file", { name: "Test Upload D.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% fictional fixture\n%%EOF\n") });
+        assert.equal(await page.locator("#library-title").inputValue(), "Test Upload D", "the title defaults to the file name");
+        await page.fill("#library-author", "Fictional Author");
+        await noSideScroll(page, `${L.name} upload form`);
+        await page.locator("#library-upload").scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(out, `library-${L.name}-upload.png`) });
+        await press("#library-submit");
+        await page.waitForFunction(() => document.getElementById("library-status").textContent === "Saved “Test Upload D” to your library.");
+        const post = page.calls.find((c) => c.method === "POST");
+        assert.ok(post && post.path === "/jazz/highlight-api/library" && post.type === "application/pdf", `${L.name}: the upload is a PDF POST to the library (${JSON.stringify(post)})`);
+        assert.equal(new URLSearchParams(post.query).get("title"), "Test Upload D");
+        assert.equal(new URLSearchParams(post.query).get("author"), "Fictional Author");
+        assert.equal(await page.locator("#library-books .library-book").count(), 4);
+        assert.equal(await page.locator("#library-upload").isHidden(), true, "the form folds away after saving");
+
+        // Search narrows the shelf.
+        await page.fill("#library-search", "method book");
+        assert.deepEqual(await page.locator("#library-books h2").allInnerTexts(), ["Test Method Book B"]);
+        await page.ctx.close();
+      }
+
+      // Repertoire's per-tune Sheet music section links to the Library, searching for the tune.
+      const page = await libraryPage("library-repertoire", 1440, 900, false);
+      const today = new Date().toISOString().slice(0, 10);
+      const created = await fetch(`${base}/jazz/api/v1/repertoire/tunes?today=${today}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Test Tune Alpha", category: "ballad", chosen: true, clientMutationId: crypto.randomUUID() }) });
+      assert.ok(created.ok, `fixture tune created (${created.status})`);
+      const tune = await created.json();
+      await page.goto(`${base}/jazz/#repertoire/${tune.tuneId}`);
+      const link = page.locator("#tune-dialog[open] .sheet-library [data-library-link]");
+      await link.waitFor();
+      assert.equal(await link.getAttribute("href"), "#library?q=Test%20Tune%20Alpha");
+      await link.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(out, "library-repertoire-link.png") });
+      await link.click();
+      await page.waitForFunction(() => document.body.classList.contains("virtuoso-library") && !document.getElementById("tune-dialog").open);
+      assert.equal(await page.locator("#library-search").inputValue(), "Test Tune Alpha");
+      await page.waitForSelector("#library-empty:not([hidden])");
+      assert.equal(await page.locator("#library-empty").innerText(), "No documents match your search.");
+      await page.ctx.close();
+    }
+
     assert.deepEqual(errors, []);
-    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, the daily fix list at 390 px (verdict, Fix next, sections, changes, its thread), CSP in place, no runtime errors.");
+    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, the daily fix list at 390 px (verdict, Fix next, sections, changes, its thread), the Jazz Library at 390 and 1440 px (nav and drawer entry, list from /jazz/highlight-api/library, reader, upload, search, Repertoire link), CSP in place, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     try { await fetch(base + "/__preview_stop", { method: "POST" }); } catch { /* stopped */ }
