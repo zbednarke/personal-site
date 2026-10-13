@@ -135,7 +135,7 @@ var fixSectionOrder = map[string]int{"run": 0, "api": 1, "checks": 2, "sources":
 // Base value of fixing each kind of item, before its count and trend.
 var fixBase = map[string]float64{
 	"run:missing": 100, "run:unfinished": 95, "run:failed": 90, "api:5xx": 70, "films:stuck": 55, "films:failed": 60, "run:partial": 45,
-	"checks:unverifiable": 40, "checks:failed": 30, "sources:failed": 30, "api:slow": 20, "market": 15, "sources:skipped": 10,
+	"checks:unverifiable": 40, "checks:failed": 30, "checks:skips": 25, "sources:failed": 30, "api:slow": 20, "market": 15, "sources:skipped": 10,
 }
 
 func fixScore(kind string, count, previous int64) float64 {
@@ -466,7 +466,7 @@ func (app *application) computeFixDigest(ctx context.Context, user uuid.UUID, no
 			seen[it.Key] = true
 		}
 		for _, it := range prevDigest.Items {
-			if it.Section == "checks" && strings.HasPrefix(it.Key, "checks:") && !strings.HasPrefix(it.Key, "checks:unverifiable") && !strings.HasPrefix(it.Key, "checks:leads") && !seen[it.Key] && it.Count > 0 {
+			if it.Section == "checks" && strings.HasPrefix(it.Key, "checks:") && !strings.HasPrefix(it.Key, "checks:unverifiable") && !strings.HasPrefix(it.Key, "checks:leads") && !strings.HasPrefix(it.Key, "checks:skips") && !seen[it.Key] && it.Count > 0 {
 				add(fixItem{Key: it.Key, Section: "checks", Label: it.Label, Short: it.Short, Count: 0, Previous: it.Count}, "checks:failed")
 			}
 		}
@@ -482,6 +482,35 @@ func (app *application) computeFixDigest(ctx context.Context, user uuid.UUID, no
 		return d, err
 	}
 	add(fixItem{Key: "checks:unverifiable", Section: "checks", Label: "Listings that became unverifiable (failed checks on consecutive days)", Short: "listings became unverifiable", Count: unvCur, Previous: unvPrev}, "checks:unverifiable")
+
+	// Data problems a Head to head skip investigation could not resolve
+	// (fixed-text first lines, tasteSkipFixLines), by that first line.
+	type skipRow struct {
+		text string
+		cur  bool
+	}
+	skipRows, err := wbCollect(wbRows(app.db.Query(ctx, `SELECT f.fix_text, f.created_at >= $3 FROM trumpet_taste_skip_findings f
+		WHERE f.user_id=$1 AND f.fix_text<>'' AND f.created_at >= $2 AND f.created_at <= $4
+		AND NOT EXISTS(SELECT 1 FROM trumpet_taste_events u WHERE u.undoes=f.event_id) LIMIT 1000`, user, ps, ws, now)), func(row pgx.Row) (skipRow, error) {
+		var s skipRow
+		return s, row.Scan(&s.text, &s.cur)
+	})
+	if err != nil {
+		return d, err
+	}
+	skipGroups, skipOrder := map[string]*fixGroup{}, []string{}
+	for _, s := range skipRows {
+		k := fixReason(s.text, false)
+		if skipGroups[k] == nil {
+			skipGroups[k] = &fixGroup{}
+			skipOrder = append(skipOrder, k)
+		}
+		skipGroups[k].add(s.cur, "")
+	}
+	for _, k := range skipOrder {
+		g := skipGroups[k]
+		add(fixItem{Key: "checks:skips:" + k, Section: "checks", Label: k, Short: "skipped pairs with data problems", Count: g.cur, Previous: g.prev}, "checks:skips")
+	}
 
 	// Marketplace notes where a budget or cap skipped work.
 	type market struct{ key, label, short string }

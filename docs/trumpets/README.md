@@ -1061,3 +1061,119 @@ set it to `off`; do not set `confirm` before the shadow agreement rate has been
 reviewed. The VM also needs outbound HTTPS to the dealers' own
 `/wp-json/wc/store/…`, `?format=json` and `www.` hosts, which are the same sites
 it already fetches.
+
+## Head to head skips and what the daily check learns from them (migration 037)
+
+**Skip.** Head to head has a **Skip** control (⤼, key **K**) next to This one /
+Both / Neither / This one / Undo. It opens optional one-tap reasons — *Not
+comparable*, *Bad or missing info*, *Sold / stale*, *Duplicate*, *Not a Bb
+trumpet*, *Other* — plus *Just skip* (no reason) and *Cancel*. With the reasons
+open, keys 1–6 pick one, K skips without one and Escape closes them. A note
+being written goes with the skip; a voice note recorded while the pair is on
+screen is stored as usual and the daily check sees that one was left. A skip is
+one pair event with `action: "skip"` and `meta.skipReasons`, undoable like any
+choice and applied through the same watermark ordering.
+
+A skip is **not a preference**: it never enters the model (no rating moves, it
+does not count as a reaction), it is no edge of the comparison graph, and the
+skipped pair (by horn) is never offered again while the skip stands. Its horns
+count as recent, and an island that holds a horn of the last answer is bridged
+last, so after a skipped bridge the next answer bridges with different horns.
+
+**Investigation (runner, before the run is stored).** `GET
+/v1/trumpets/machine/taste/skips` lists live skips without a finding (both
+listings' title, maker/model, price, currency, status, verification dates,
+photo count, URL, condition/era class and a description excerpt, plus the
+owner's reasons, note and notes saved for the pair around the skip). For each
+(at most 20 per run, 4 minutes):
+
+1. Deterministic checks: sold/removed, stale or unverifiable status, not
+   verified, last verified more than 10 days ago, no price or currency, no
+   photos, not a Bb trumpet (cornet, flugelhorn, piccolo, pocket, bugle,
+   trombone, C/D/Eb/F/G/bass trumpet in the title or model), duplicates (same
+   horn, same canonical URL, or near-identical title with the same seller and
+   price), and gaps: prices 2× or more apart (same currency), a project-condition
+   horn against a good one, vintage against modern.
+2. The run's own fresh check of each listing (this run's recheck result or
+   failure); a listing the run did not check is rechecked through the normal
+   verification path, up to 6 pages a run (verified results are stored with
+   the run like any recheck).
+3. One model call (`TRUMPETS_SKIP_LLM_MODE`, below) with the owner's reasons
+   and notes and the check results. It must answer a strict JSON schema with a
+   cause from a fixed set (`data_problem`, `wrong_category`, `stale`,
+   `duplicate`, `incomparable` with its dimension, `unclear`), a short plain
+   explanation and the facts it relied on, quoted verbatim. Each quote must be
+   at least 12 characters and found inside one single field's value. An answer
+   that quotes anything else, states a number not in the data, or breaks the
+   schema is rejected and the deterministic result is used (the finding
+   records `llm_fallback`).
+
+The investigation uses only what is left of the run's 40 minutes (at most 4),
+and each skip has its own 90-second deadline that its rechecks, model call and
+POST all start within.
+
+`POST /v1/trumpets/machine/taste/skips/findings` stores one finding per skip
+(replays return the stored one; a skip undone meanwhile is a 404). The API
+applies only stored, reversible actions and never changes a listing's price,
+title or status:
+
+- **Exclusion** (`trumpet_taste_exclusions`): a listing whose *title or model*
+  names another instrument or key, or a duplicate by *the same link or horn*
+  (the copy with fewer photos), leaves Head to head and Swipe — but only when
+  the owner's own reason agrees (*Not a Bb trumpet* / *Duplicate*); otherwise
+  the finding becomes a fix-list entry ("listing details look wrong") and
+  nothing is excluded. A sold or removed one leaves Head to head. Only a
+  listing of that pair (any other id is a 400), only when the reason is the
+  finding's cause, never on a model's answer or a listing's own description,
+  in any mode. An exclusion applies only while its skip stands (undo the skip
+  and the listing is back; a new skip of the pair can exclude it again); a
+  stale one lifts itself once a later check verifies the listing active. The
+  owner can undo any exclusion under **Skipped pairs** (each has its own
+  toggle); a listing the owner put back is never excluded again.
+  Accessory context ("with pocket mute", "cornet mouthpiece included") and
+  "Bb/C" do not count as another instrument.
+- **Recheck** (`trumpet_listings.recheck_requested_at`): a listing that looks
+  stale is due on the next run (first in the recheck order) until a check
+  lands, for at most 7 days.
+- **Comparability lesson** (`trumpet_taste_lessons`): a genuinely
+  incomparable skip records the gap the API measures itself from the stored
+  listings (price ratio, at least 1.5×; condition or era classes). Pair
+  selection uses a dimension only once two live lessons agree (prices: pairs at
+  least as far apart as the smallest agreeing ratio; classes: the same pair of
+  classes), and a bridge ignores lessons when nothing else joins an island, so
+  lessons never stall connectivity; when lessons leave an answer short, the
+  remaining pairs ignore them (they come last), so they never empty Head to
+  head. Lessons can be switched off and on again.
+- **Fix list**: an unresolved data problem (no price, no photos, not verified)
+  adds an entry whose first line is fixed text (`Head to head skip: listing has
+  no price`, …) and whose second line is maker, model and domain; the daily fix
+  list groups by the first line (`checks:skips:…`).
+
+The taste page shows **Skipped pairs** under What I've learned: each standing
+skip with the owner's reasons and note, what the check found, what changed
+(with **Undo exclusion**), and the lessons in use.
+
+**Modes** (`TRUMPETS_SKIP_LLM_MODE`, like `TRUMPETS_PAGE_LLM_MODE`):
+
+- `off`: no model call; deterministic cause and fixed wording.
+- `explain` (default): the model writes the explanation and its cause is
+  recorded (`llm_cause`). Actions follow the deterministic evidence only: no
+  exclusion, recheck or lesson on the model's word alone. Where the checks
+  found nothing, the model's cause is shown but nothing changes.
+- `act`: the model's validated cause may drive rechecks and lessons too;
+  exclusions still need the structured signal and the owner's reason above.
+  Only for after explain-mode findings have been reviewed.
+
+Optional: `TRUMPETS_SKIP_MODEL` (else `TRUMPETS_VERIFY_MODEL` /
+`TRUMPETS_SEARCH_MODEL`). Every string sent to the API is cut to its byte limit
+without NUL or control characters (`clip_bytes`, `bound_finding`), and the API
+strips them again (`tasteSkipClean`). A failing skip is counted and retried on
+the next run; the investigation never fails the run, and the run note carries
+counts only (no titles or notes).
+
+**Deploy.** API first: migration `037_trumpet_taste_skips.sql` (replay-safe)
+replaces the unnamed kind/action check of `trumpet_taste_events` with a named
+one that allows `skip`, and adds the findings, exclusions and lessons tables and
+`recheck_requested_at`. Then the static taste page, then copy
+`tools/trumpets/runner.py` to `/opt/trumpets/runner.py` (an older API answers
+404 for the skip list and the runner moves on).

@@ -9,7 +9,9 @@
     boardState = "loading", // loading | ready | failed: listings come from the main board
     active = false,
     loading = null,
-    mode = "swipe";
+    mode = "swipe",
+    // Head to head: the optional skip reasons are showing for the current pair.
+    skipOpen = false;
   const doneCards = new Set(),
     donePairs = new Set(),
     undoStack = [];
@@ -258,7 +260,9 @@
     const box = $("#pair-cards");
     box.replaceChildren();
     const p = currentPair();
-    for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither"]) $(id).disabled = !p;
+    for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither", "#pair-skip"]) $(id).disabled = !p;
+    if (!p) skipOpen = false;
+    renderSkipPanel();
     if (!p) {
       const empty = el("div", "taste-empty");
       const shortage = T.pairShortage(data);
@@ -291,6 +295,120 @@
       if (view && !view.parentNode) slot.append(view);
       box.append(slot);
     }
+  }
+  // The skip reasons under the choices: one tap skips with that reason;
+  // "Just skip" skips without one. Built once; shown while skipOpen.
+  function renderSkipPanel() {
+    const panel = $("#pair-skip-panel"),
+      box = $("#pair-skip-reasons");
+    if (!box.children.length) {
+      T.SKIP_REASONS.forEach((r, i) => {
+        // The number is the key that picks it while the reasons are open.
+        const b = el("button", "chip");
+        b.append(el("b", "chip-key", String(i + 1)), document.createTextNode(" " + r.label));
+        b.type = "button";
+        b.dataset.reason = r.code;
+        b.setAttribute("aria-label", `Skip: ${r.label} (${i + 1})`);
+        b.addEventListener("click", () => react({ kind: "pair", action: "skip", reasons: [r.code] }));
+        box.append(b);
+      });
+    }
+    panel.hidden = !skipOpen;
+    $("#pair-skip").setAttribute("aria-expanded", String(skipOpen));
+    $("#pair-skip").classList.toggle("open", skipOpen);
+  }
+  function openSkip(on = !skipOpen) {
+    if (on && !currentPair()) return;
+    skipOpen = on;
+    renderSkipPanel();
+    // Focus lands on Cancel, so a stray Enter or Space never skips.
+    if (on) $("#pair-skip-cancel").focus({ preventScroll: true });
+  }
+  // A short name for a listing in the skipped-pairs list.
+  function shortName(id) {
+    const l = listing(id);
+    return l ? `${l.maker} ${l.model}`.trim() : "a listing no longer on the board";
+  }
+  async function setGuard(kind, id, active, button) {
+    button.disabled = true;
+    try {
+      accept(await api(`/taste/${kind}/${id}`, { active }, "PUT"));
+      status(kind === "exclusions" ? (active ? "Excluded again." : "Put back into Head to head.") : active ? "Lesson in use again." : "Lesson switched off.");
+    } catch (e) {
+      button.disabled = false;
+      status(e.message, true);
+    }
+  }
+  // "Skipped pairs": each live skip with what the daily check found and
+  // changed, exclusions the owner can undo, and lessons in use.
+  function renderSkips() {
+    const v = data?.skips,
+      box = $("#taste-skips-box");
+    const any = v && (v.total || v.exclusions?.length || v.lessons?.length);
+    box.hidden = !any;
+    if (!any) return;
+    $("#taste-skips-count").textContent = `· ${v.total}${v.pending ? ` · ${v.pending} waiting for the daily check` : ""}`;
+    const exclusions = new Map((v.exclusions || []).map((x) => [x.id, x]));
+    const rules = $("#taste-skip-rules");
+    rules.replaceChildren();
+    for (const r of v.rules || []) li(rules, T.lessonText(r), "In use for picking pairs", "rule");
+    for (const l of (v.lessons || []).filter((l) => l.live)) {
+      const item = el("li", "lesson");
+      const what = "Lesson: " + (l.dimension === "price" ? `prices ${l.ratio}× apart` : `${l.dimension} ${String(l.classes).replace("|", " vs ")}`);
+      item.append(el("span", "", what), el("small", "", !l.active ? "Switched off" : l.inEffect ? "In use (it recurred)" : "Recorded; used once another skip agrees"));
+      const b = el("button", "chip quiet", l.active ? "Stop using" : "Use again");
+      b.type = "button";
+      b.addEventListener("click", () => setGuard("lessons", l.id, !l.active, b));
+      item.append(b);
+      rules.append(item);
+    }
+    rules.hidden = !rules.children.length;
+    // Every exclusion that is on (or that you switched off), each with its
+    // own toggle, whether or not its skip is among those listed below.
+    const excluded = $("#taste-exclusions");
+    excluded.replaceChildren();
+    for (const x of (v.exclusions || []).filter((x) => x.active || x.changedBy === "owner")) {
+      const item = el("li", "exclusion");
+      item.dataset.exclusion = x.id;
+      const where = x.scope === "all" ? "Head to head and Swipe" : "Head to head";
+      const state = !x.active ? "you put it back" : x.inForce ? `out of ${where}` : `no longer applies: ${x.lifted}`;
+      item.append(el("span", "", `Excluded: ${shortName(x.listingId)}`), el("small", "", `${String(x.reason).replace("_", " ")} · ${state}`));
+      if (x.active ? x.inForce : true) {
+        const b = el("button", "chip quiet", x.active ? "Undo exclusion" : "Exclude again");
+        b.type = "button";
+        b.setAttribute("aria-label", `${x.active ? "Undo exclusion of" : "Exclude again"} ${shortName(x.listingId)}`);
+        b.addEventListener("click", () => setGuard("exclusions", x.id, !x.active, b));
+        item.append(b);
+      }
+      excluded.append(item);
+    }
+    excluded.hidden = !excluded.children.length;
+    const list = $("#taste-skips");
+    list.replaceChildren();
+    for (const s of v.items || []) {
+      const item = el("li", "skip-item");
+      item.dataset.event = s.eventId;
+      item.append(el("span", "skip-pair", `${shortName(s.a)} vs ${shortName(s.b)}`));
+      const said = [...(s.reasons || []).map(T.skipReasonLabel), s.note ? `“${s.note}”` : ""].filter(Boolean).join(" · ");
+      if (said) item.append(el("small", "", `You: ${said}`));
+      const f = s.finding;
+      item.append(el("p", "skip-finding", T.skipCauseText(f) + (f?.explanation ? ` — ${f.explanation}` : "")));
+      for (const a of f?.actions || []) {
+        const row = el("div", "skip-action");
+        const x = a.exclusionId ? exclusions.get(a.exclusionId) : null;
+        row.append(el("small", "", x && !x.active ? `${a.text} · you put it back` : x && !x.inForce ? `${a.text} · no longer applies: ${x.lifted}` : a.text));
+        if (x && (x.inForce || !x.active)) {
+          const b = el("button", "chip quiet", x.active ? "Undo exclusion" : "Exclude again");
+          b.type = "button";
+          b.setAttribute("aria-label", `${x.active ? "Undo exclusion of" : "Exclude again"} ${shortName(x.listingId)}`);
+          b.addEventListener("click", () => setGuard("exclusions", x.id, !x.active, b));
+          row.append(b);
+        }
+        item.append(row);
+      }
+      list.append(item);
+    }
+    if (!list.children.length) li(list, "No skips standing.", "", "none");
   }
   function renderChips() {
     const box = $("#taste-chips");
@@ -352,6 +470,7 @@
       notes.append(item);
     }
     if (!notes.children.length) li(notes, "Notes are optional; patterns in them show up here.", "", "none");
+    renderSkips();
     renderPrefs();
   }
   let prefsDirty = false;
@@ -371,7 +490,7 @@
     $("#pair-stage").hidden = swipe;
     $("#taste-mode-swipe").setAttribute("aria-pressed", String(swipe));
     $("#taste-mode-pair").setAttribute("aria-pressed", String(!swipe));
-    $("#taste-keys").textContent = swipe ? "← not for me · → cool · ↑ must see · Z undo" : "← / → pick a side · ↑ both · ↓ neither · Z undo";
+    $("#taste-keys").textContent = swipe ? "← not for me · → cool · ↑ must see · Z undo" : "← / → pick a side · ↑ both · ↓ neither · K skip · Z undo";
     renderSwipe();
     renderPair();
     renderChips();
@@ -398,14 +517,27 @@
       const p = currentPair();
       if (!p) return;
       body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action, meta: { hadPhoto: photoShown($("#pair-cards")) } };
+      if (r.action === "skip") {
+        // Not a choice: optional reasons, and the note being written (if
+        // any) goes with the skip for the daily check to read.
+        if (r.reasons?.length) body.meta.skipReasons = r.reasons;
+        const note = $("#taste-note").value.trim();
+        if (note) body.note = note;
+      }
+      skipOpen = false;
       donePairs.add(T.pairKey(p));
-      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair, gen: pinnedGen };
+      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair, gen: pinnedGen, note: body.note };
       if (entry.front) frontPair = null;
     }
     $("#taste-note").value = "";
     entry.pending = post(body);
     undoStack.push(entry);
-    const said = r.kind === "swipe" ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action] : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action];
+    const said =
+      r.kind === "swipe"
+        ? { right: "Cool.", left: "Not for me.", up: "Must see!" }[r.action]
+        : r.action === "skip"
+          ? `Skipped${r.reasons?.length ? " · " + r.reasons.map(T.skipReasonLabel).join(", ") : ""}. It won't count.`
+          : { a: "Left one.", b: "Right one.", both: "Both.", neither: "Neither." }[r.action];
     status(said);
     showUndoToast(said, entry);
     render();
@@ -420,6 +552,8 @@
       hideUndoToast(entry);
       if (entry.kind === "swipe") doneCards.delete(entry.listingId);
       else donePairs.delete(entry.key);
+      // A skip's note is not lost with a failed request.
+      if (entry.note && !$("#taste-note").value) $("#taste-note").value = entry.note;
       // A failed reaction to a card an undo brought back leaves it in front,
       // unless a newer undo has pinned another card since.
       if (entry.front && pinnedGen === entry.gen) pin(entry, entry.gen);
@@ -615,16 +749,21 @@
   }
   document.addEventListener("keydown", (e) => {
     if (!active || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
-    const a = T.keyAction(e.key, mode);
+    // A focused "Open listing" link keeps its keys (Enter opens it; nothing
+    // else is a reaction while it has focus).
+    if (e.target.closest?.("input, textarea, select, [contenteditable], .taste-view-listing") || document.querySelector("dialog[open]")) return;
+    const a = T.keyAction(e.key, mode, { skipOpen: mode === "pair" && skipOpen });
     if (!a) return;
     e.preventDefault();
     if (a.kind === "undo") undo();
+    else if (a.kind === "skip-open") openSkip();
+    else if (a.kind === "skip-cancel") openSkip(false);
     else if (a.kind === mode) react(a);
   });
 
   $("#taste-mode-swipe").addEventListener("click", () => {
     mode = "swipe";
+    skipOpen = false;
     render();
   });
   $("#taste-mode-pair").addEventListener("click", () => {
@@ -641,6 +780,9 @@
     ["#pair-neither", "neither"],
   ])
     $(id).addEventListener("click", () => react({ kind: "pair", action }));
+  $("#pair-skip").addEventListener("click", () => openSkip());
+  $("#pair-skip-none").addEventListener("click", () => react({ kind: "pair", action: "skip", reasons: [] }));
+  $("#pair-skip-cancel").addEventListener("click", () => openSkip(false));
   $("#taste-undo").addEventListener("click", undo);
   $("#pair-undo").addEventListener("click", undo);
   $("#taste-note-save").addEventListener("click", saveNote);

@@ -656,7 +656,8 @@ function syntheticPng(width, height) {
     assert.match(await page.locator("#taste-graph").innerText(), /^Comparisons connect (all \d+|\d+ of \d+) eligible horns( \(\d+ islands?\))?$/, "the learned panel says how well comparisons connect the horns");
     await page.getByRole("button", { name: "Swipe", exact: true }).click();
     await page.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 20));
-    await page.screenshot({ path: path.join(out, "taste-desktop.png") });    // Too few comparable listings: Head to head explains why instead of
+    await page.screenshot({ path: path.join(out, "taste-desktop.png") });
+    // Too few comparable listings: Head to head explains why instead of
     // pairing weak ones.
     {
       const short = async (route) => {
@@ -751,6 +752,12 @@ function syntheticPng(width, height) {
       await page.waitForTimeout(500);
       assert.equal(posted.length, before, "opening the listing POSTs no reaction");
       assert.equal(await swipeId(), linkedId, "opening the listing keeps the card");
+      // While the link has focus no key is a reaction (the keydown bail-out),
+      // so focus moves off it first.
+      await page.keyboard.press("ArrowLeft");
+      await page.waitForTimeout(300);
+      assert.equal(posted.length, before, "keys on the focused Open listing link are not reactions");
+      await page.evaluate(() => document.activeElement?.blur());
       await Promise.all([tastePosts(), page.keyboard.press("ArrowLeft")]);
       assert.deepEqual(posted.at(-1).meta, { hadPhoto: false }, "a reaction without a photo says so");
       // Head to head: the same link beside a photo-less side, never a choice.
@@ -871,18 +878,19 @@ function syntheticPng(width, height) {
       // Head to head (on screen from the screenshot above).
       const progress = mobile.locator("#pair-progress");
       assert.equal(await progress.isVisible(), true, "Head to head shows the progress line");
-      assert.match(await progress.innerText(), /^(Linking horns · \d+ of \d+ in the main group|All \d+ horns connected)$/);
+      assert.match(await progress.innerText(), /^(Linking horns · \d+ of \d+ in the main group|All \d+ eligible horns connected|No horns linked yet · \d+ eligible)$/);
       // It follows the newest applied state after every answer.
       const before = await pairLabels();
       const [answer] = await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), mobile.locator(".pair-card").first().tap()]);
       const g = (await answer.json()).pairGraph;
       await mobile.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.getAttribute("aria-label")).join("|") !== p, before);
-      assert.equal(await progress.innerText(), g.components <= 1 ? `All ${g.eligible} horns connected` : `Linking horns · ${g.largest} of ${g.eligible} in the main group`);
+      assert.equal(await progress.innerText(), g.components <= 1 ? `All ${g.eligible} eligible horns connected` : g.largest < 2 ? `No horns linked yet · ${g.eligible} eligible` : `Linking horns · ${g.largest} of ${g.eligible} in the main group`);
       assert.equal(posts, 1);
       // Disconnected, connected and missing graphs (the reply is rewritten).
       for (const [graph, text] of [
         [{ eligible: 177, components: 12, largest: 15, share: 0.085 }, "Linking horns · 15 of 177 in the main group"],
-        [{ eligible: 177, components: 1, largest: 177, share: 1 }, "All 177 horns connected"],
+        [{ eligible: 177, components: 1, largest: 177, share: 1 }, "All 177 eligible horns connected"],
+        [{ eligible: 177, components: 177, largest: 1, share: 0.006 }, "No horns linked yet · 177 eligible"],
         [undefined, ""],
       ]) {
         const rewrite = async (route) => {
@@ -1037,6 +1045,159 @@ function syntheticPng(width, height) {
       mobile.off("request", countPost);
       await tdp.detach();
       await phone.unroute("**/*", sourcePage);
+    }
+    // ---- Phone (390 px): Skip in Head to head. Each skip records exactly
+    // one pair event with action "skip" and never a preference, with or
+    // without a reason (and the note being written goes with it); it can be
+    // undone; K opens the reasons; "Skipped pairs" shows what the daily check
+    // found and undoes an exclusion. ----
+    {
+      await mobile.setViewportSize({ width: 390, height: 844 });
+      const posted = [];
+      const record = (r) => r.method() === "POST" && r.url().includes("/taste/events") && posted.push(JSON.parse(r.postData() || "{}"));
+      mobile.on("request", record);
+      const answered = () => mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.request().method() === "POST" && r.status() < 300);
+      const labels = () => mobile.locator(".pair-card").evaluateAll((n) => n.map((c) => c.getAttribute("aria-label")).join("|"));
+      const changedFrom = (p) => mobile.waitForFunction((p) => document.querySelectorAll(".pair-card").length === 2 && [...document.querySelectorAll(".pair-card")].map((c) => c.getAttribute("aria-label")).join("|") !== p, p);
+      const reactions = () => mobile.locator("#taste-confidence-text").innerText();
+      const panel = mobile.locator("#pair-skip-panel");
+      const machine = async (pathname, body) => {
+        const r = await fetch(base + "/trumpets/api/v1/trumpets/machine" + pathname, {
+          method: body ? "POST" : "GET",
+          headers: { Authorization: "Bearer " + token, ...(body ? { "Content-Type": "application/json" } : {}) },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        assert.ok(r.ok, `machine ${pathname}: ${r.status} ${await r.clone().text()}`);
+        return r.json();
+      };
+      await mobile.getByRole("button", { name: "Head to head", exact: true }).tap();
+      await mobile.waitForSelector(".pair-card");
+      const skip = mobile.getByRole("button", { name: "Skip this pair (K)" });
+      await skip.scrollIntoViewIfNeeded();
+      const sb = await skip.boundingBox();
+      assert.ok(sb.height >= 44 && sb.width >= 44, `Skip is ${sb.width}x${sb.height}px`);
+      const reacted = await reactions();
+      const beforeState = await mobile.evaluate(async () => (await fetch("/trumpets/api/v1/trumpets/taste")).json());
+      const before = beforeState.model;
+      // 1. Skip without a reason: Skip, then "Just skip".
+      const first = await labels();
+      await skip.tap();
+      assert.equal(await panel.isVisible(), true, "Skip offers the optional reasons");
+      assert.equal(await skip.getAttribute("aria-expanded"), "true");
+      assert.deepEqual((await mobile.locator("#pair-skip-reasons .chip").allInnerTexts()).map((t) => t.replace(/\s+/g, " ")), ["1 Not comparable", "2 Bad or missing info", "3 Sold / stale", "4 Duplicate", "5 Not a Bb trumpet", "6 Other"], "each reason shows the key that picks it");
+      const chipHeights = await mobile.locator("#pair-skip-panel .chip").evaluateAll((n) => n.map((x) => x.getBoundingClientRect().height));
+      assert.ok(chipHeights.every((h) => h >= 44), `skip chips ${chipHeights}`);
+      assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "skip panel overflows at 390px");
+      assert.equal(posted.length, 0, "opening the reasons records nothing");
+      await mobile.evaluate(() => scrollTo(0, document.querySelector("#pair-cards").getBoundingClientRect().top + scrollY - 8));
+      await mobile.screenshot({ path: path.join(out, "taste-skip-mobile.png") });
+      const [r1] = await Promise.all([answered(), mobile.getByRole("button", { name: "Just skip" }).tap()]);
+      const s1 = await r1.json();
+      await changedFrom(first);
+      assert.equal(posted.length, 1, "one event per skip");
+      assert.equal(posted[0].kind, "pair");
+      assert.equal(posted[0].action, "skip");
+      assert.equal(posted[0].meta.skipReasons, undefined, "no reason picked, none sent");
+      assert.equal(s1.event.action, "skip");
+      assert.equal(s1.model.pairs, before.pairs, "a skip is not a head-to-head choice");
+      assert.deepEqual(s1.model.weights, before.weights, "a skip moves no rating");
+      assert.equal(s1.pairGraph.components, beforeState.pairGraph.components, "a skip joins no horns");
+      assert.equal(await reactions(), reacted, "the reaction count does not move");
+      assert.equal(await panel.isVisible(), false);
+      const key = (a, b) => [a, b].sort().join("|");
+      assert.ok(!s1.pairs.some((p) => key(p.a, p.b) === key(s1.event.listingId, s1.event.otherListingId)), "the skipped pair is not offered again");
+      // 2. With a reason, and the note being written goes with the skip.
+      await mobile.locator("#taste-note-box").evaluate((d) => (d.open = true));
+      await mobile.locator("#taste-note").fill("One of these reads like a cornet · TEST FIXTURE");
+      const second = await labels();
+      await skip.tap();
+      const [r2] = await Promise.all([answered(), mobile.locator("#pair-skip-reasons").getByRole("button", { name: /Not a Bb trumpet/ }).tap()]);
+      const s2 = await r2.json();
+      await changedFrom(second);
+      assert.equal(posted.length, 2);
+      assert.deepEqual(posted[1].meta.skipReasons, ["not_bb"]);
+      assert.equal(posted[1].note, "One of these reads like a cornet · TEST FIXTURE");
+      assert.equal(await mobile.locator("#taste-note").inputValue(), "");
+      assert.equal(s2.model.pairs, before.pairs);
+      assert.match(await mobile.locator("#taste-status").innerText(), /^Skipped · Not a Bb trumpet\. It won't count\.$/);
+      // 3. Undo brings the skipped pair back in front.
+      await Promise.all([answered(), mobile.locator("#pair-undo").tap()]);
+      await mobile.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.getAttribute("aria-label")).join("|") === p, second);
+      assert.equal(posted[2].kind, "undo");
+      assert.equal(posted[2].undoes, s2.event.id);
+      await mobile.locator("#taste-note-box").evaluate((d) => (d.open = false));
+      // 4. The K shortcut: K opens the reasons with focus on Cancel (a stray
+      // Enter never skips), Escape closes them, K then 5 skips as "Not a Bb
+      // trumpet".
+      await mobile.evaluate(() => document.activeElement?.blur());
+      await mobile.keyboard.press("k");
+      await mobile.waitForFunction(() => !document.querySelector("#pair-skip-panel").hidden);
+      assert.equal(await mobile.evaluate(() => document.activeElement?.id), "pair-skip-cancel");
+      await mobile.keyboard.press("Enter");
+      await mobile.waitForFunction(() => document.querySelector("#pair-skip-panel").hidden);
+      await mobile.keyboard.press("k");
+      await mobile.waitForFunction(() => !document.querySelector("#pair-skip-panel").hidden);
+      await mobile.keyboard.press("Escape");
+      await mobile.waitForFunction(() => document.querySelector("#pair-skip-panel").hidden);
+      assert.equal(posted.length, 3, "K, Enter on Cancel and Escape record nothing");
+      const third = await labels();
+      const [r3] = await Promise.all([
+        answered(),
+        (async () => {
+          await mobile.keyboard.press("k");
+          await mobile.keyboard.press("5");
+        })(),
+      ]);
+      const s3 = await r3.json();
+      await changedFrom(third);
+      assert.equal(posted.length, 4);
+      assert.equal(posted[3].action, "skip");
+      assert.deepEqual(posted[3].meta.skipReasons, ["not_bb"]);
+      assert.equal(s3.model.pairs, before.pairs, "still no preference after three skips");
+      // 5. The daily check's findings show under "Skipped pairs", with an undo
+      // for the exclusion it made.
+      const listed = await machine("/taste/skips");
+      const forEvent = (id) => listed.skips.find((s) => s.eventId === id);
+      assert.ok(forEvent(s1.event.id) && forEvent(s3.event.id), "both standing skips are listed for the runner");
+      assert.equal(forEvent(s2.event.id), undefined, "an undone skip is not investigated");
+      // (An exclusion for a wrong category needs the owner's own "Not a Bb
+      // trumpet", which the K-5 skip has.)
+      await machine("/taste/skips/findings", {
+        eventId: s3.event.id, cause: "wrong_category", side: "b", llmCause: "wrong_category", llmValid: true, mode: "explain",
+        explanation: "The right listing's title says cornet · TEST FIXTURE", checks: [{ code: "wrong_category", side: "b", detail: "title keyword" }],
+        exclude: [{ listingId: s3.event.otherListingId, scope: "all", reason: "wrong_category", detail: "cornet" }],
+      });
+      await machine("/taste/skips/findings", { eventId: s1.event.id, cause: "incomparable", dimension: "price", mode: "explain", explanation: "Very different prices · TEST FIXTURE", lesson: true });
+      const reloaded = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+      await mobile.evaluate(() => window.TasteBoard.setActive(true));
+      await (await reloaded).finished();
+      const box = mobile.locator("#taste-skips-box");
+      await box.evaluate((d) => (d.open = true));
+      assert.equal(await box.isVisible(), true);
+      const found = mobile.locator(`#taste-skips li[data-event="${s3.event.id}"]`);
+      assert.match(await found.innerText(), /Not a Bb trumpet — The right listing's title says cornet · TEST FIXTURE/);
+      assert.match(await found.innerText(), /Excluded from Head to head and Swipe \(wrong category\)/);
+      assert.match(await mobile.locator(`#taste-skips li[data-event="${s1.event.id}"]`).innerText(), /Genuinely different \(price\) — Very different prices/);
+      // Every exclusion in force is also listed on its own, with its toggle.
+      assert.equal(await mobile.locator("#taste-exclusions li.exclusion").count(), 1);
+      assert.match(await mobile.locator("#taste-exclusions li.exclusion").innerText(), /out of Head to head and Swipe/);
+      assert.equal(await mobile.locator("#taste-exclusions").getByRole("button", { name: /^Undo exclusion of / }).count(), 1);
+      assert.equal(await mobile.locator(`#taste-skips li[data-event="${s2.event.id}"]`).count(), 0, "undone skips are not listed");
+      const undoExclusion = found.getByRole("button", { name: /^Undo exclusion of / });
+      await undoExclusion.scrollIntoViewIfNeeded();
+      assert.ok((await undoExclusion.boundingBox()).height >= 44);
+      assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "skipped pairs overflow at 390px");
+      await mobile.evaluate(() => scrollTo(0, document.querySelector("#taste-skips-box").getBoundingClientRect().top + scrollY - 8));
+      await mobile.screenshot({ path: path.join(out, "taste-skipped-pairs-mobile.png") });
+      const [put] = await Promise.all([
+        mobile.waitForResponse((r) => r.url().includes("/taste/exclusions/") && r.request().method() === "PUT"),
+        undoExclusion.tap(),
+      ]);
+      assert.equal(put.status(), 200);
+      await mobile.waitForFunction((id) => /you put it back/.test(document.querySelector(`#taste-skips li[data-event="${id}"]`)?.textContent || ""), s3.event.id);
+      assert.equal(await found.getByRole("button", { name: /^Exclude again / }).count(), 1);
+      await box.evaluate((d) => (d.open = false));
+      mobile.off("request", record);
     }
     // Touch drags (the iPhone report): partial drags and page scrolls over the
     // card never commit; only a deliberate drag does, with a one-tap undo.
@@ -1331,7 +1492,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line, progress line for connected/disconnected/missing graphs), Open listing on every card with a URL opens a new page on tap/Enter and never votes (taps, Space, drags that start on it, presses released on the card or choice button), photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line, progress line for connected/disconnected/missing graphs), Open listing on every card with a URL opens a new page on tap/Enter and never votes (taps, Space, drags that start on it, presses released on the card or choice button), photo-less cards link to the listing without reacting and reactions record hadPhoto, Head to head skip (with and without a reason, a note goes with it, one event and no preference, undo, K shortcut, skipped-pairs findings and exclusion undo), stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

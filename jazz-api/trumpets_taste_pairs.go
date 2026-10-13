@@ -54,6 +54,16 @@ import (
 // In every case each horn appears at most twice per answer (horns not yet
 // used in this answer are preferred), and pairs compared in the last two
 // weeks are not offered again.
+//
+// Skips (action "skip", trumpets_taste_skips.go) are not choices: they are
+// never edges and never counted as choices, so a skipped bridge leaves its
+// islands apart and the next answer bridges them again. A skipped pair (by
+// horn) is never offered again while the skip stands, and its horns count
+// as recent ("stale") like a choice's, so the next answer shows different
+// horns. Listings a skip investigation excluded are not nodes, and
+// comparability lessons that recur (tasteGuards) keep pairs with the same gap
+// out, except where a bridge has no other partner: lessons never stall
+// connectivity.
 
 const (
 	tasteStructureEvery = 5
@@ -63,7 +73,8 @@ const (
 )
 
 // tasteRecentPairHorns is the set of horns in the latest n live pair choices
-// between two different known horns (latest by CreatedAt, then id). One pass
+// or skips between two different known horns (latest by CreatedAt, then
+// id). One pass
 // keeping the n latest (n is small); correct in any order, and fast for
 // events loaded oldest first, as the scan runs backward: once n are kept,
 // older events are rejected before any lookup.
@@ -162,12 +173,21 @@ func (u *tasteUnionFind) union(a, b string) bool {
 // tasteComparableListing is the listing that represents a horn in Head to
 // head: its primary when that is comparable, else its first comparable other
 // listing (a stale primary must not hide a horn that has a live offer).
-func tasteComparableListing(h *tasteHorn, now time.Time) (trumpetListing, bool) {
-	if tasteComparable(h.primary, now) {
+// A listing a skip investigation excluded never represents its horn.
+func tasteComparableListing(h *tasteHorn, now time.Time, guards ...tasteGuards) (trumpetListing, bool) {
+	excluded := func(l trumpetListing) bool {
+		for _, g := range guards {
+			if g.Excluded[l.ID] != "" {
+				return true
+			}
+		}
+		return false
+	}
+	if tasteComparable(h.primary, now) && !excluded(h.primary) {
 		return h.primary, true
 	}
 	for _, l := range h.listings {
-		if tasteComparable(l, now) {
+		if tasteComparable(l, now) && !excluded(l) {
 			return l, true
 		}
 	}
@@ -187,7 +207,7 @@ type tastePairGraph struct {
 	live   int // live (not undone) pair choices between two different horns
 }
 
-func newTastePairGraph(d *tasteData, events []tasteEvent, now time.Time) *tastePairGraph {
+func newTastePairGraph(d *tasteData, events []tasteEvent, now time.Time, guards ...tasteGuards) *tastePairGraph {
 	g := &tastePairGraph{adj: map[string]map[string]bool{}, listed: map[string]trumpetListing{}}
 	for _, horn := range d.order {
 		g.all = append(g.all, horn)
@@ -196,14 +216,14 @@ func newTastePairGraph(d *tasteData, events []tasteEvent, now time.Time) *tasteP
 		if !d.eligible(h) {
 			continue
 		}
-		if l, ok := tasteComparableListing(h, now); ok {
+		if l, ok := tasteComparableListing(h, now, guards...); ok {
 			g.nodes = append(g.nodes, horn)
 			g.listed[horn] = l
 		}
 	}
 	g.uf = newTasteUnionFind(g.all)
 	for _, e := range events {
-		if e.Kind != "pair" || e.undone {
+		if e.Kind != "pair" || e.undone || e.Action == "skip" { // a skip is no edge
 			continue
 		}
 		a, okA := d.byListing[e.ListingID]
@@ -280,8 +300,8 @@ func (g *tastePairGraph) stats() tastePairGraphStats {
 // file). Both sides must be tasteComparable, and with fewer than
 // tastePairMinimum such horns there are no pairs at all (the page explains
 // why) rather than weak ones.
-func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time) []tastePair {
-	g := newTastePairGraph(d, events, now)
+func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time, guards ...tasteGuards) []tastePair {
+	g := newTastePairGraph(d, events, now, guards...)
 	if len(g.nodes) < tastePairMinimum {
 		return []tastePair{}
 	}
@@ -291,16 +311,36 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		}
 		return a + "|" + b
 	}
-	recent := map[string]bool{}
+	// recent: compared in the last two weeks; skipped: skipped at any time
+	// (a live skip), never offered again.
+	recent, skipped := map[string]bool{}, map[string]bool{}
 	for _, e := range events {
-		if e.Kind != "pair" || e.undone || now.Sub(e.CreatedAt) > tasteReseeAfter {
+		if e.Kind != "pair" || e.undone {
 			continue
 		}
 		a, okA := d.byListing[e.ListingID]
 		b, okB := d.byListing[e.OtherListingID]
-		if okA && okB {
+		if !okA || !okB {
+			continue
+		}
+		if e.Action == "skip" {
+			skipped[pairKey(a.HornID, b.HornID)] = true
+		} else if now.Sub(e.CreatedAt) <= tasteReseeAfter {
 			recent[pairKey(a.HornID, b.HornID)] = true
 		}
+	}
+	// Recurring comparability lessons; lenient (bridges only, when nothing
+	// else joins an island) ignores them.
+	lenient := false
+	fits := func(a, b string) bool {
+		for _, gd := range guards {
+			for _, r := range gd.Rules {
+				if r.avoids(d, g.listed[a], g.listed[b]) {
+					return false
+				}
+			}
+		}
+		return true
 	}
 	type cand struct {
 		id   string
@@ -320,7 +360,8 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	out := []tastePair{}
 	free := func(h string) bool { return used[h] < 2 }
 	ok := func(a, b string) bool {
-		return a != b && free(a) && free(b) && !recent[pairKey(a, b)] && !offered[pairKey(a, b)]
+		k := pairKey(a, b)
+		return a != b && free(a) && free(b) && !recent[k] && !skipped[k] && !offered[k] && (lenient || fits(a, b))
 	}
 	add := func(a, b, reason string) {
 		ca, cb := cands[a], cands[b]
@@ -401,6 +442,19 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 		// Islands made only of stale horns go after the others (in practice
 		// never a singleton: a horn just compared is no longer one).
 		sort.SliceStable(islands, func(i, j int) bool { return hasFresh(islands[i]) && !hasFresh(islands[j]) })
+		// And an island with a horn of the very last answer (a choice or a
+		// skip) goes last of all, so a skipped bridge is followed by a
+		// bridge to another island whenever there is one.
+		last := tasteRecentPairHorns(d, events, 1)
+		touches := func(c []string) bool {
+			for _, h := range c {
+				if last[h] {
+					return true
+				}
+			}
+			return false
+		}
+		sort.SliceStable(islands, func(i, j int) bool { return !touches(islands[i]) && touches(islands[j]) })
 		// joined is the graph's components plus this answer's bridges, so a
 		// later bridge never pairs two islands an earlier one already joined
 		// (possible once a smaller component anchors).
@@ -409,21 +463,37 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 			if len(out) == tastePairLimit {
 				break
 			}
-			b := pick(island, "", false, false) // stale only when the island has nothing else
-			if b == "" {
-				continue
+			// The island's side: its free horns in `better` order (stale
+			// only when the island has nothing else), trying each until one
+			// has an anchor: a horn skipped against every anchor must not
+			// keep its island from ever being bridged.
+			sides := []string{}
+			for _, h := range island {
+				if free(h) {
+					sides = append(sides, h)
+				}
 			}
+			sort.SliceStable(sides, func(i, j int) bool { return better(sides[i], sides[j]) })
 			// The anchor: from the largest component not yet joined to the
 			// island in this answer, preferring a fresh horn, then one not yet
 			// used in this answer; only then a smaller component.
-			a := ""
-			for _, pass := range []struct{ fresh, unused bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
-				for _, anchor := range comps {
-					if a == "" && joined.find(anchor[0]) != joined.find(b) {
-						a = pick(anchor, b, pass.fresh, pass.unused)
+			// Lessons first; a bridge ignores them only when nothing else fits.
+			a, b := "", ""
+			for _, ignore := range []bool{false, true} {
+				lenient = ignore
+				for _, side := range sides {
+					for _, pass := range []struct{ fresh, unused bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+						for _, anchor := range comps {
+							if a == "" && joined.find(anchor[0]) != joined.find(side) {
+								if a = pick(anchor, side, pass.fresh, pass.unused); a != "" {
+									b = side
+								}
+							}
+						}
 					}
 				}
 			}
+			lenient = false
 			if a != "" {
 				add(a, b, "bridge")
 				joined.union(a, b)
@@ -492,7 +562,7 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	for i := range pool {
 		for j := i + 1; j < len(pool); j++ {
 			a, b := pool[i], pool[j]
-			if recent[pairKey(a, b)] {
+			if recent[pairKey(a, b)] || skipped[pairKey(a, b)] {
 				continue
 			}
 			ca, cb := cands[a], cands[b]
@@ -512,18 +582,24 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time)
 	})
 	// Pairs of two fresh horns first, then the rest, so a stale horn comes
 	// back only when nothing else is left.
-	for _, fresh := range []bool{true, false} {
-		for _, o := range options {
-			if len(out) == tastePairLimit {
-				break
-			}
-			if fresh && (stale[o.a] || stale[o.b]) {
-				continue
-			}
-			if ok(o.a, o.b) {
-				add(o.a, o.b, "uncertain")
+	// Pairs the lessons allow first; when they leave the answer short, the
+	// rest ignore them, so lessons never empty Head to head.
+	for _, ignore := range []bool{false, true} {
+		lenient = ignore
+		for _, fresh := range []bool{true, false} {
+			for _, o := range options {
+				if len(out) == tastePairLimit {
+					break
+				}
+				if fresh && (stale[o.a] || stale[o.b]) {
+					continue
+				}
+				if ok(o.a, o.b) {
+					add(o.a, o.b, "uncertain")
+				}
 			}
 		}
 	}
+	lenient = false
 	return out
 }
