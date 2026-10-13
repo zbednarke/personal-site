@@ -15,16 +15,20 @@ Clip Studio has two film buttons:
 
 The film service was built and deployed outside this repository between
 September 11 and October 5, 2026 and restored here from its last release.
-The release archive was truncated: the release's `worker.py`,
-`test_highlight.py`, `test_publish.py` and the end of `test_edit_api.py` were
-lost, so this directory still has the September 11 versions of the first
-three. A read-only comparison with `/opt/jazz-highlights` on the VM (Oct 13)
-found every other file here identical to what runs there. The VM also has
-`worker.py`, the full `test_edit_api.py`, `test_highlight.py`,
-`test_publish.py`, and `test_exact_render.py`, `test_film_edits.py`,
-`test_hosted.py`, `test_library.py` and `test_note_map.py`. Copy those back
-(with fixture IDs and personal strings replaced) before changing or
-redeploying the service from this repository.
+This directory matches the code the VM runs at `/opt/jazz-highlights`. It
+was synced on October 13, 2026 from a read-only copy of that directory
+(uncompressed, name-sorted tar, sha256
+`0bac167e4b612d4058c0c57dbab727267e71629857d66d64461e7090ad43e91c`, verified on
+both ends). The only intended differences are this README (the VM still has
+an October 3 version) and test fixtures, where real job IDs and personal
+strings were replaced with fictional ones. The VM was not changed.
+
+Run the suite (needs FFmpeg, NumPy, Pillow and DejaVu fonts):
+
+```sh
+python3 -m pip install -r tools/highlight/requirements.txt
+python3 -m unittest discover -s tools/highlight -p 'test_*.py'
+```
 
 See the [Jazz workflow guide](../../docs/jazz-workflows.md) for current status, exact-edit pitch overlays, storage and rendering decisions.
 

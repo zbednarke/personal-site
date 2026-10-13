@@ -3,6 +3,7 @@ import argparse
 import array
 import hashlib
 import hmac
+import signal
 import json
 import math
 import os
@@ -18,6 +19,8 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from model import snapshot, validate_plan, schema
+from audio_map import cached_analysis, candidates as note_candidates, summarize, select_plan
+from note_map import render_note_map
 
 HERE = Path(__file__).resolve().parent
 MODEL = 'gpt-6-astra'
@@ -56,7 +59,7 @@ class Worker:
             jid = str(uuid4())
             folder = self.root / jid
             folder.mkdir()
-            job = dict(id=jid, date=manifest['date'], targetSeconds=manifest.get('targetSeconds', 120), phase='preparing', message='Preparing candidate moments', model=MODEL, effort='medium')
+            job = dict(id=jid, createdAt=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), date=manifest['date'], targetSeconds=manifest.get('targetSeconds', 120), phase='preparing', message='Preparing candidate moments', model='audio-map-v1' if manifest.get('analyzeAll') else MODEL, effort=None if manifest.get('analyzeAll') else 'medium')
             self.jobs[jid] = job
             self.active = jid
             self.cancelled = threading.Event()
@@ -64,11 +67,33 @@ class Worker:
             threading.Thread(target=self.run, args=(job, manifest), daemon=True).start()
             return dict(job)
 
+    def create_analysis(self, payload):
+        manifest = snapshot(payload)
+        with self.lock:
+            identity=sorted(r['id'] for r in manifest['recordings'])
+            for prior in self.jobs.values():
+                if prior.get('kind')=='day-analysis' and prior.get('date')==manifest['date'] and prior.get('recordingIds')==identity and prior.get('phase') in ('preparing','complete'):
+                    return dict(prior)
+            if self.active:
+                raise ValueError('Another film or analysis is already running. Finish or cancel it first.')
+            jid = str(uuid4())
+            folder = self.root / jid
+            folder.mkdir()
+            job = dict(id=jid, createdAt=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                       date=manifest['date'], phase='preparing', kind='day-analysis',
+                       message='Preparing pitch analysis for every recording', model='audio-map-v1',recordingIds=identity)
+            self.jobs[jid] = job
+            self.active = jid
+            self.cancelled = threading.Event()
+            self.status(job, 'preparing', 'Downloading recordings for note analysis')
+            threading.Thread(target=self.run, args=(job, manifest), daemon=True).start()
+            return dict(job)
+
     def command(self, args, folder, timeout=900, stdin=None):
         if self.cancelled.is_set():
             raise InterruptedError('Cancelled')
         with subprocess.Popen(args, cwd=folder, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)) as proc:
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name != 'nt', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)) as proc:
             deadline = time.monotonic()+timeout
             first = True
             while True:
@@ -81,7 +106,7 @@ class Worker:
                         if os.name == 'nt':
                             subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                         else:
-                            proc.kill()
+                            os.killpg(proc.pid, signal.SIGKILL)
                         proc.communicate()
                         raise InterruptedError('Cancelled' if self.cancelled.is_set() else 'Job timed out; start a new draft')
             if proc.returncode:
@@ -115,33 +140,39 @@ class Worker:
         evidence = folder / 'editor'
         evidence.mkdir()
         sources = {}
-        for r in manifest['recordings']:
-            if shutil.disk_usage(folder).free < 10*1024**3:
-                raise RuntimeError('Keep at least 10 GB free for local editing')
+        required = sum(r.get('videoSizeBytes',0) or r.get('sizeBytes',0) for r in manifest['recordings']) + 2*1024**3
+        if shutil.disk_usage(folder).free < required:
+            raise RuntimeError('Not enough disk space for source media, rendering and a 2 GB reserve')
+        for index, r in enumerate(manifest['recordings']):
+            if self.active: self.status(self.jobs[self.active], 'preparing', f'Downloading recording {index+1} of {len(manifest["recordings"])}')
             audio = media / (r['id']+'.wav')
-            self.download(r['audioUrl'], audio)
+            if not r['videoUrl']:
+                self.download(r['audioUrl'], audio)
             video = None
             if r['videoUrl']:
                 video = media / (r['id']+'.video')
                 self.download(r['videoUrl'], video)
-            sources[r['id']] = dict(audio=audio, video=video)
-        for i, c in enumerate(manifest['candidates']):
-            source = sources[c['recordingId']]
-            duration = (c['endMs']-c['startMs'])/1000
-            raw = self.command(['ffmpeg', '-v', 'error', '-ss', str(c['startMs']/1000), '-i', str(source['audio']),
-                                '-t', str(duration), '-ac', '1', '-ar', '8000', '-f', 'f32le', '-'], folder)
-            values = array.array('f', raw)
-            hop = max(2000, math.ceil(len(values)/400))
-            bins = [round(math.sqrt(sum(v*v for v in values[n:n+hop])/len(values[n:n+hop])), 5) for n in range(0, len(values), hop)]
-            c['activity'] = dict(binMs=round(hop/8, 3), rms=bins, meaning='Signal energy only, not musical quality. Low-energy boundaries can help preserve phrase endings.')
-            c['frames'] = []
-            if source['video']:
-                for index, fraction in enumerate((.15, .5, .85)):
-                    frame = evidence / f'{i:03d}-{index}.jpg'
-                    self.command(['ffmpeg', '-v', 'error', '-ss', str((c['startMs']+fraction*(c['endMs']-c['startMs']))/1000),
-                                  '-i', str(source['video']), '-frames:v', '1', '-vf', 'scale=480:-2', '-y', str(frame)], folder)
-                    if frame.exists():
-                        c['frames'].append(frame.name)
+            sources[r['id']] = dict(audio=video or audio, video=video)
+        maps = {}
+        generated = []
+        for index, r in enumerate(manifest['recordings']):
+            if self.active: self.status(self.jobs[self.active], 'preparing', f'Analyzing recording {index+1} of {len(manifest["recordings"])}')
+            analysis = cached_analysis(sources[r['id']]['audio'], self.root / 'analysis-cache', self.cancelled.is_set)
+            maps[r['id']] = {**analysis, 'title':r['title'], 'section':r['section']}
+            if manifest.get('analyzeAll'):
+                exclusions = [(c['startMs'],c['endMs']) for c in manifest.get('excluded',[]) if c['recordingId']==r['id']]
+                generated.extend(note_candidates(r, analysis, exclusions))
+        for c in manifest['candidates']:
+            analysis = maps[c['recordingId']]
+            c['audioEvidence'] = summarize(analysis['frames'], c['startMs'], c['endMs'])
+            c['detectedNotes'] = [n for n in analysis['notes'] if c['startMs'] <= n['startMs'] and n['endMs'] <= c['endMs']]
+            c['section'] = next(r['section'] for r in manifest['recordings'] if r['id']==c['recordingId'])
+            c['score'] = c['audioEvidence']['voicedFraction']
+        # User curation survives even when pitch cannot be estimated. Automatic
+        # waveform suggestions with poor pitch evidence do not override this gate.
+        manifest['candidates'] = [c for c in manifest['candidates'] if c['manual'] or c['liked'] or (c['audioEvidence']['readableFraction'] >= .8 and c['audioEvidence']['voicedFraction'] >= .65 and c['audioEvidence']['clippingFraction'] < .01)] + generated
+        write_json(folder / 'analysis.json', maps)
+        (folder / 'note-map.html').write_text(render_note_map(maps, manifest['date']), encoding='utf-8')
         # No signed URLs or whole recordings in the agent's evidence manifest.
         write_json(evidence / 'candidates.json', dict(date=manifest['date'], candidates=manifest['candidates']))
         return sources, evidence
@@ -201,14 +232,14 @@ class Worker:
             if not src['video']:
                 import textwrap
                 (folder / f'slate-{i}.txt').write_text('\n'.join(textwrap.wrap(c['title'], 36))+'\n\n'+manifest['date']+' · Practice recording', encoding='utf-8')
-                font = 'C\\:/Windows/Fonts/georgia.ttf' if os.name == 'nt' else '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
+                font = 'C\\:/Windows/Fonts/georgia.ttf' if os.name == 'nt' else '/System/Library/Fonts/Supplemental/Georgia.ttf' if Path('/System/Library/Fonts/Supplemental/Georgia.ttf').exists() else '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
                 vf += f",drawtext=fontfile='{font}':textfile=slate-{i}.txt:expansion=none:fontcolor=0xe4edda:fontsize=54:line_spacing=18:x=(w-tw)/2:y=(h-th)/2"
             args += ['-t', str(duration), '-vf', vf,
                      '-af', 'aresample=48000', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-threads', '2', '-c:a', 'aac', '-b:a', '320k', '-ac', '1',
                      '-movflags', '+faststart', str(folder / f'cut-{i:02d}.mp4')]
             self.command(args, folder)
             clips.append(dict(id=str(uuid4()), candidateId=c['id'], recordingId=c['recordingId'], startMs=cut['startMs'], endMs=cut['endMs'],
-                              title=c['title'], liked=c['liked'], notes=cut['reason']))
+                              title=c['title'], liked=c['liked'], notes=cut['reason'], generated=c.get('generated',False)))
         (folder / 'concat.txt').write_text('\n'.join(f"file 'cut-{i:02d}.mp4'" for i in range(len(clips))), encoding='utf-8')
         self.command(['ffmpeg', '-v', 'error', '-y', '-f', 'concat', '-safe', '1', '-i', 'concat.txt', '-c', 'copy', '-movflags', '+faststart', 'highlight.mp4'], folder)
         self.command(['ffmpeg', '-v', 'error', '-i', 'highlight.mp4', '-enc_time_base', '-1', '-fps_mode', 'passthrough', '-f', 'null', '-'], folder)
@@ -225,8 +256,10 @@ class Worker:
         folder = self.root / job['id']
         try:
             sources, evidence = self.prepare(manifest, folder)
-            self.status(job, 'editing', 'Astra · medium is reviewing manual and liked moments, then assembling the edit')
-            plan = self.edit(manifest, evidence, folder)
+            self.status(job, 'editing', 'Balancing clear phrases across recordings and practice sections')
+            plan = select_plan(manifest) if manifest.get('analyzeAll') else self.edit(manifest, evidence, folder)
+            validate_plan(plan, manifest)
+            write_json(folder / 'plan.json', plan)
             self.status(job, 'rendering', 'Rendering and checking your 1080p highlight on this PC')
             project, duration = self.render(plan, manifest, sources, folder)
             self.status(job, 'complete', 'Your draft is ready', project=project, summary=plan['summary'], reviews=plan['reviews'], durationMs=duration)
@@ -295,7 +328,7 @@ def handler(worker, port):
             if path == '/jobs' and self.authorized():
                 return self.send(list(worker.jobs.values()))
             parts = path.strip('/').split('/')
-            if len(parts) == 3 and parts[0] == 'jobs' and parts[1] in worker.jobs and parts[2] in ('highlight.mp4', 'project.json'):
+            if len(parts) == 3 and parts[0] == 'jobs' and parts[1] in worker.jobs and parts[2] in ('highlight.mp4', 'project.json', 'analysis.json', 'note-map.html'):
                 if self.headers.get('Sec-Fetch-Site') not in (None, 'same-origin', 'none'):
                     return self.send({'error': 'Local access only'}, 403)
                 if worker.jobs[parts[1]]['phase'] != 'complete':
@@ -314,7 +347,7 @@ def handler(worker, port):
                         return self.send({'error': 'Invalid range'}, 416)
                     end = min(end, size-1)
                 self.send_response(206 if range_header else 200)
-                self.send_header('Content-Type', 'video/mp4' if file.suffix == '.mp4' else 'application/json')
+                self.send_header('Content-Type', 'video/mp4' if file.suffix == '.mp4' else 'text/html; charset=utf-8' if file.suffix == '.html' else 'application/json')
                 self.send_header('Accept-Ranges', 'bytes')
                 self.send_header('Cache-Control', 'no-store')
                 self.send_header('Content-Length', str(end-start+1))

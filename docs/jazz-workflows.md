@@ -9,8 +9,8 @@ Last reconciled: 2026-09-30. Start here when continuing Jazz development.
 > page and API and hid it. It was restored by merging its last release
 > (`archive-note-map-v1`, Oct 5) into `main`. Its database migrations 021-025
 > are now 039-043; production already had their tables. The release archive
-> was truncated, so `tools/highlight/worker.py` and two of its tests here are
-> older than the VM's copy at `/opt/jazz-highlights`; see
+> was truncated, so `tools/highlight` was then synced from the VM's
+> `/opt/jazz-highlights` (October 13); see
 > [tools/highlight/README.md](../tools/highlight/README.md). Clip Studio's
 > **Make today's film** is now the cloud Magic Film; this guide's film service
 > is the **Make note-map film** button.
