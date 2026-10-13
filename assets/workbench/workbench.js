@@ -613,7 +613,7 @@
 
   function registerWorker() {
     if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
-    navigator.serviceWorker.register(`/${APP}/workbench-sw.js`, { scope: `/${APP}/` }).then(() => {
+    navigator.serviceWorker.register(`/${APP}/workbench-sw.js`, { scope: `/${APP}/`, updateViaCache: "none" }).then(() => {
       if (window.Notification && Notification.permission === "granted") enablePush(true);
     }).catch(() => { /* optional */ });
     navigator.serviceWorker.addEventListener("message", (e) => {

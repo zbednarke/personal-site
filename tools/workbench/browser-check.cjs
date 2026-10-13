@@ -509,12 +509,21 @@ async function waitForServer() {
       // Chromium bypass service workers, so this part uses no routes: a small
       // loopback proxy in front of the preview answers the private paths with
       // fictional fixtures in the worst case for a cache (real PDF and video
-      // types, no Cache-Control at all) and drops the preview's no-store from
-      // the shell, so the worker does cache /jazz/ itself, showing it was active.
+      // types, no Cache-Control at all) and passes everything else through
+      // with the preview's real headers (app pages are no-store, as in
+      // production). The shell page must still be cached and reload offline.
       {
         const upstream = new URL(base);
         const pdf = Buffer.from("%PDF-1.4\n% fictional fixture, not a real document\n%%EOF\n");
         const hits = [];
+        const shellCacheControl = [];
+        let proxyOpen = true;
+        const stopProxy = async () => {
+          if (!proxyOpen) return;
+          proxyOpen = false;
+          proxy.closeAllConnections?.();
+          await new Promise((resolve) => proxy.close(resolve));
+        };
         const proxy = http.createServer((req, res) => {
           const u = new URL(req.url, "http://proxy");
           hits.push(u.pathname + u.search);
@@ -532,9 +541,8 @@ async function waitForServer() {
             return res.end(json ? "[]" : Buffer.alloc(2048));
           }
           const forward = http.request({ host: upstream.hostname, port: upstream.port, path: req.url, method: req.method, headers: req.headers }, (up) => {
-            const headers = { ...up.headers };
-            if (u.pathname === "/jazz/" || u.pathname.startsWith("/assets/workbench/")) delete headers["cache-control"];
-            res.writeHead(up.statusCode, headers);
+            if (u.pathname === "/jazz/") shellCacheControl.push(up.headers["cache-control"] || "");
+            res.writeHead(up.statusCode, up.headers);
             up.pipe(res);
           });
           forward.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
@@ -579,10 +587,23 @@ async function waitForServer() {
           assert.deepEqual(leaked, [], `no private response in Cache Storage (${JSON.stringify(cached)})`);
           assert.ok(cached.includes("workbench-shell-v2 /jazz/"), `the worker was active and cached the shell page (${JSON.stringify(cached)})`);
           assert.ok(cached.every((entry) => entry.startsWith("workbench-shell-v2 ")), "only the current shell cache exists");
+          assert.ok(cached.includes("workbench-shell-v2 /assets/workbench/workbench.js"), "the sheet's script is cached for offline use");
+          assert.ok(shellCacheControl.length > 0 && shellCacheControl.every((v) => /no-store/.test(v)), `the shell page arrived with its real no-store header (${JSON.stringify(shellCacheControl)})`);
+
+          // Offline: with the network gone (emulated offline and the server
+          // stopped), a reload is answered from the cached shell and the
+          // Workbench pill renders.
+          await ctx.setOffline(true);
+          await stopProxy();
+          const reloaded = await sw.reload();
+          assert.ok(reloaded && reloaded.ok(), "the page reloads offline from the cached shell");
+          await sw.waitForSelector(".wb-pill", { timeout: 15000 });
+          assert.ok(await sw.locator(".wb-pill").isVisible(), "the Workbench pill renders offline");
+          assert.ok(await sw.locator("#jazz-nav").count(), "the shell HTML is the Jazz page");
+          await sw.screenshot({ path: path.join(out, "offline-reload-jazz.png") });
           await ctx.close();
         } finally {
-          proxy.closeAllConnections?.();
-          await new Promise((resolve) => proxy.close(resolve));
+          await stopProxy();
         }
       }
     }

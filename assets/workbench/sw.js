@@ -4,10 +4,10 @@
  * something is waiting; the daily fix list says what failed, in counts),
  * answers approvals from the notification's buttons, and keeps a
  * network-first copy of the app pages so the sheet opens offline and its
- * outbox can queue. Only shell HTML and the sheet's own public assets are
- * cached (sw-cache-policy.js); APIs, the highlight service and its PDF
- * library, films, share links and anything no-store or not HTML are left to
- * the network and never stored. */
+ * outbox can queue. Only the allowlisted static shell pages and the sheet's
+ * own public assets are cached (sw-cache-policy.js); APIs, the highlight
+ * service and its PDF library, films, share links, any other page and any
+ * response of another type are left to the network and never stored. */
 "use strict";
 importScripts("/assets/workbench/sw-cache-policy.js");
 // v2: v1 could also keep private navigations (library PDFs, films); activate deletes it.
