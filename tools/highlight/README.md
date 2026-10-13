@@ -18,8 +18,13 @@ September 11 and October 5, 2026 and restored here from its last release.
 The release archive was truncated: the release's `worker.py`,
 `test_highlight.py`, `test_publish.py` and the end of `test_edit_api.py` were
 lost, so this directory still has the September 11 versions of the first
-three. Copy `worker.py` and the tests back from `/opt/jazz-highlights` on the
-VM before changing or redeploying the service from this repository.
+three. A read-only comparison with `/opt/jazz-highlights` on the VM (Oct 13)
+found every other file here identical to what runs there. The VM also has
+`worker.py`, the full `test_edit_api.py`, `test_highlight.py`,
+`test_publish.py`, and `test_exact_render.py`, `test_film_edits.py`,
+`test_hosted.py`, `test_library.py` and `test_note_map.py`. Copy those back
+(with fixture IDs and personal strings replaced) before changing or
+redeploying the service from this repository.
 
 See the [Jazz workflow guide](../../docs/jazz-workflows.md) for current status, exact-edit pitch overlays, storage and rendering decisions.
 
