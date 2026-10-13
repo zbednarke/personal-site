@@ -26,6 +26,13 @@ class ValidationTests(unittest.TestCase):
         self.plan = dict(title='Practice', reviews=[dict(candidateId='manual', reason='Keep the selected phrase'), dict(candidateId='liked', reason='Contrast')],
                          clips=[dict(candidateId='manual', startMs=1000, endMs=20000, reason='Opening')])
 
+    def test_full_day_analysis_keeps_sources_without_prior_candidates(self):
+        value=fixture();value['analyzeAll']=True;value['candidates']=[]
+        self.assertEqual(len(snapshot(value)['recordings']),1)
+        value=fixture();value['analyzeAll']=True
+        result=snapshot(value)
+        self.assertEqual(result['excluded'],[dict(recordingId='r1',startMs=42000,endMs=50000)])
+
     def test_excludes_rejected_manual_and_reviews_every_priority(self):
         self.assertEqual({c['id'] for c in self.manifest['candidates']}, {'manual', 'liked'})
         self.assertEqual(validate_plan(self.plan, self.manifest), 19000)

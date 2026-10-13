@@ -35,8 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install FFmpeg (long-tone, caption and film-service media tests)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install FFmpeg and DejaVu fonts (media tests, film-service rendering)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - name: All Go and database tests
         working-directory: jazz-api
         run: go test ./...
