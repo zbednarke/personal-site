@@ -18,9 +18,17 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    the publish script as one tar on an ssh session's stdin (not
    `gcloud compute scp`, which through the IAP tunnel intermittently sat about
    240 s before exiting, even for 32 KB). On the VM the tar's SHA-256 must
-   equal the runner's before it is unpacked into `/tmp/site-release-<sha>`;
-   each attempt is capped at 120 s and retried once, and if no attempt
-   verifies, the step fails and nothing is published. The log prints each
+   equal the runner's before it is unpacked into `/tmp/site-release-<sha>`
+   (refused if it is a symlink or not the ssh user's; made 700). Each attempt
+   is capped at 120 s plus 1 s per 4 KB (at most 900 s, so a full-archive
+   fallback at a few KB/s still fits) and retried once; a session that hangs
+   only after the VM confirmed the hash counts as done. If no attempt
+   verifies, the remote directory is removed and nothing is published. Before
+   anything runs with sudo, the publish call re-checks that the directory is
+   still the ssh user's and not a symlink, and that the archive and the
+   publish script there have the runner's SHA-256s; it is capped at 300 s and
+   removes the directory however the publish ends. The hash read is capped at
+   120 s (falling back to uploading every file). The log prints each
    part's time and, per attempt, how long the VM took to receive the bytes
    (`received N bytes in M ms`), which tells a slow transfer from a session
    that will not close. Films in

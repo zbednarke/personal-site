@@ -27,7 +27,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,32 +90,31 @@ jobs:
         # differ from the live release are packaged; publish-static-release.sh
         # still copies the live release and overlays them, so the published
         # files are the same as with the full archive. If the live hashes
-        # cannot be read, every file is packaged. upload-static-release.sh
-        # streams the archive and the publish script over an ssh session's
-        # stdin (gcloud compute scp sat ~240 s through the tunnel whatever the
-        # size), checks their SHA-256 on the VM, and caps each attempt at
-        # 120 s with one retry; nothing is published unless the bytes match.
+        # cannot be read (or the read takes over 120 s), every file is
+        # packaged. upload-static-release.sh streams the archive and the
+        # publish script over an ssh session's stdin (gcloud compute scp sat
+        # ~240 s through the tunnel whatever the size) and checks their SHA-256
+        # on the VM; each attempt is capped at 120 s plus 1 s per 4 KB (at most
+        # 900 s), with one retry. Its publish re-checks the files before sudo
+        # and is capped at 300 s. Nothing is published unless the bytes match.
         # Each part's time is printed.
         run: |
           sha=${{ steps.commit.outputs.sha }}
           paths=(index.html .nojekyll assets jazz trumpets commonplace privacy)
           flags=(--project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet)
+          ssh=(gcloud compute ssh "$SITE_VM" "${flags[@]}" --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
           remote=/tmp/site-release-$sha
           t=$SECONDS
-          if ! gcloud compute ssh "$SITE_VM" "${flags[@]}" \
+          if ! timeout -k 10 120 "${ssh[@]}" < /dev/null \
               --command "cd /srv/zachbednarke.com/current && find ${paths[*]} -type f -exec sha256sum {} + 2>/dev/null; true" > live.sha256; then
             echo "Could not read the live release's hashes; uploading every file."
             : > live.sha256
           fi
           echo "Read live hashes: $((SECONDS - t)) s"; t=$SECONDS
           python3 deploy/package-static-release.py --live live.sha256 --out "site-$sha.tar.gz" "${paths[@]}"
-          UPLOAD_TIMEOUT=120 UPLOAD_ATTEMPTS=2 bash deploy/upload-static-release.sh "$remote" \
-            "site-$sha.tar.gz" deploy/publish-static-release.sh \
-            -- gcloud compute ssh "$SITE_VM" "${flags[@]}" \
-            --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4
+          bash deploy/upload-static-release.sh upload "$remote" "site-$sha.tar.gz" deploy/publish-static-release.sh -- "${ssh[@]}"
           echo "Upload: $((SECONDS - t)) s"; t=$SECONDS
-          gcloud compute ssh "$SITE_VM" "${flags[@]}" --command \
-            "sudo bash $remote/publish-static-release.sh $remote/site-$sha.tar.gz $sha; s=\$?; rm -rf $remote; exit \$s"
+          bash deploy/upload-static-release.sh publish "$remote" "site-$sha.tar.gz" deploy/publish-static-release.sh "$sha" -- "${ssh[@]}"
           echo "Switch release: $((SECONDS - t)) s"
       - name: Check the site
         run: curl --fail --silent --show-error --output /dev/null --retry 3 https://zachbednarke.com/
