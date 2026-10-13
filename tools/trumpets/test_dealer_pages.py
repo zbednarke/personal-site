@@ -1036,6 +1036,13 @@ class ApiByteLimitTests(unittest.TestCase):
         self.assertEqual(len(report['error']), 12000)  # the original is untouched
 
     def shadow_run(self, listings, readings):
+        # The run is pinned to the day the shared payload fixture was made: the
+        # search plan rotates makers by UTC date, so an unpinned run only
+        # matched the fixture on that one day.
+        class FrozenDateTime(runner.dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 10, 12, 13, 41, 34, tzinfo=runner.dt.timezone.utc).astimezone(tz) if tz else cls(2026, 10, 12, 13, 41, 34)
         class Client:
             report = None
             def call(self, path, body=None):
@@ -1048,7 +1055,8 @@ class ApiByteLimitTests(unittest.TestCase):
         client = Client()
         with patch.dict('os.environ', {'BRAVE_SEARCH_API_KEY': '', 'OPENAI_API_KEY': '', 'EBAY_CLIENT_ID': ''}), \
                 patch.object(runner, 'reverb_search', return_value=[]), patch.object(runner, 'fetch', side_effect=lambda url, *a, **k: LLM_PAGE.replace('taylor-fixture-chicago', url.rsplit('/', 1)[-1])), \
-                patch.object(runner.PageLLM, 'from_env', classmethod(lambda cls: cls('test-only', post=fake, sleep=lambda _: None))), patch('builtins.print'):
+                patch.object(runner.PageLLM, 'from_env', classmethod(lambda cls: cls('test-only', post=fake, sleep=lambda _: None))), patch('builtins.print'), \
+                patch.object(runner.dt, 'datetime', FrozenDateTime):
             runner.daily(client)
         return client.report
 

@@ -179,6 +179,19 @@ test("the comparison graph line", () => {
   assert.equal(T.graphText({ eligible: 12, components: 1, largest: 12 }), "Comparisons connect all 12 eligible horns");
 });
 
+test("head to head progress line: the main group until the graph is connected", () => {
+  // "largest" counts horns in the biggest group, so it is "in the main group".
+  assert.equal(T.linkText({ eligible: 177, components: 163, largest: 15, share: 0.085 }), "Linking horns · 15 of 177 in the main group");
+  assert.equal(T.linkText({ eligible: 177, components: 177, largest: 1, share: 0.006 }), "Linking horns · 1 of 177 in the main group");
+  assert.equal(T.linkText({ eligible: 177, components: 1, largest: 177, share: 1 }), "All 177 horns connected");
+  // No graph (an older API), or nothing to link: no line at all.
+  assert.equal(T.linkText(undefined), "");
+  assert.equal(T.linkText(null), "");
+  assert.equal(T.linkText({}), "");
+  assert.equal(T.linkText({ eligible: 0, components: 0, largest: 0, share: 0 }), "");
+  assert.equal(T.linkText({ eligible: 1, components: 1, largest: 1, share: 1 }), "");
+});
+
 test("learned panel lists strongest liked and disliked traits", () => {
   const weights = [
     { feature: "finish:raw brass", kind: "finish", label: "Raw brass", weight: 0.9, sd: 0.4 },

@@ -118,7 +118,8 @@
   // ---- Rendering ------------------------------------------------------------
   const listing = (id) => window.TrumpetApp?.listing(id);
   // The listing photo; without one (or when it fails to load), the card shows
-  // the placeholder drawing and onMissing() adds a "View listing" link.
+  // the placeholder drawing and onMissing() can put the "Open listing" link
+  // on it.
   function visual(l, className, onMissing) {
     const v = el("div", className);
     const missing = () => {
@@ -143,19 +144,37 @@
     } else missing();
     return v;
   }
-  // Opens the source page in a new tab. Never a reaction: the press and the
-  // click stop here, so the card's drag (and a pair card's choice) never sees them.
+  // "Open listing ↗": the source page in a new tab, on every card that has a
+  // URL. Never a reaction. The press, release and click stop here, so the
+  // swipe card's drag never starts (a press that wanders off the link and is
+  // released on the card finds no drag to end), and in Head to head the link
+  // sits beside the choice button, never inside it. Enter and Space open the
+  // link and never reach the keyboard shortcuts. It sits under the card's
+  // facts, off the photo; only a card without a photo shows it on the
+  // placeholder drawing (onPlaceholder), where it is the obvious next step.
   function viewListing(l) {
     const url = M.safeURL(l.url);
     if (!url || url === "#") return null;
-    const a = el("a", "taste-view-listing", "View listing ↗");
+    const a = el("a", "taste-view-listing", "Open listing ↗");
     a.href = url;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
-    a.title = "No photo here: open the listing in a new tab";
-    a.setAttribute("aria-label", `View listing for ${l.maker} ${l.model} (opens in a new tab)`);
+    a.draggable = false;
+    a.title = "Open the listing in a new tab (not a reaction)";
+    a.setAttribute("aria-label", `Open listing for ${l.maker} ${l.model} (opens in a new tab, not a reaction)`);
     for (const type of ["pointerdown", "pointerup", "click"]) a.addEventListener(type, (e) => e.stopPropagation());
+    a.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+    });
+    a.addEventListener("dragstart", (e) => e.preventDefault());
     return a;
+  }
+  // Puts the link on a photo-less card's placeholder (once).
+  function onPlaceholder(view, parent) {
+    if (!view || view.parentNode) return; // placed already (the card may not be on the page yet)
+    view.classList.add("on-placeholder");
+    view.title = "No photo here: open the listing in a new tab";
+    parent.append(view);
   }
   // Whether the reaction was made looking at a photo (every card involved).
   const photoShown = (box) => {
@@ -212,7 +231,10 @@
     card.tabIndex = 0;
     card.setAttribute("aria-label", `${l.maker} ${l.model}, ${M.money(l.price, l.currency)}. Swipe right for cool, left for not for me, up for must see.`);
     const view = viewListing(l);
-    card.append(visual(l, "swipe-visual", (v) => view && !view.isConnected && v.append(view)), facts(l,{ ...(data.scores?.[l.id] || { taste: 50, sd: 1 }), reason: q.reason === "new" ? "new to you" : "model unsure" }));
+    const photo = visual(l, "swipe-visual", (v) => onPlaceholder(view, v));
+    const body = facts(l, { ...(data.scores?.[l.id] || { taste: 50, sd: 1 }), reason: q.reason === "new" ? "new to you" : "model unsure" });
+    if (view && !view.parentNode) body.append(view);
+    card.append(photo, body);
     for (const [cls, text] of [
       ["stamp right", "COOL"],
       ["stamp left", "NOT FOR ME"],
@@ -222,7 +244,17 @@
     attachDrag(card);
     deck.append(card);
   }
+  // How far the choices have linked the comparable horns, from the newest
+  // applied state (render runs after accept, which honours the watermark).
+  // Nothing without a graph, or while Head to head explains a shortage.
+  function renderProgress() {
+    const line = $("#pair-progress");
+    const text = data && !T.pairShortage(data) ? T.linkText(data.pairGraph) : "";
+    line.textContent = text;
+    line.hidden = !text;
+  }
   function renderPair() {
+    renderProgress();
     const box = $("#pair-cards");
     box.replaceChildren();
     const p = currentPair();
@@ -244,17 +276,19 @@
       ["b", p.b],
     ]) {
       const l = listing(id);
-      // The link sits beside the choice button (never inside it), over the
-      // placeholder, so opening the listing is not a choice.
+      // The link sits beside the choice button (never inside it): under the
+      // card, or over a missing photo's placeholder, so opening the listing
+      // is not a choice.
       const slot = el("div", "pair-slot");
       const b = el("button", "pair-card");
       b.type = "button";
       b.dataset.side = side;
       b.setAttribute("aria-label", `Choose ${l.maker} ${l.model}`);
       const view = viewListing(l);
-      b.append(visual(l, "pair-visual", () => view && !view.isConnected && slot.append(view)), facts(l));
+      b.append(visual(l, "pair-visual", () => onPlaceholder(view, slot)), facts(l));
       b.addEventListener("click", () => react({ kind: "pair", action: side }));
       slot.prepend(b);
+      if (view && !view.parentNode) slot.append(view);
       box.append(slot);
     }
   }

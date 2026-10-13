@@ -656,8 +656,7 @@ function syntheticPng(width, height) {
     assert.match(await page.locator("#taste-graph").innerText(), /^Comparisons connect (all \d+|\d+ of \d+) eligible horns( \(\d+ islands?\))?$/, "the learned panel says how well comparisons connect the horns");
     await page.getByRole("button", { name: "Swipe", exact: true }).click();
     await page.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 20));
-    await page.screenshot({ path: path.join(out, "taste-desktop.png") });
-    // Too few comparable listings: Head to head explains why instead of
+    await page.screenshot({ path: path.join(out, "taste-desktop.png") });    // Too few comparable listings: Head to head explains why instead of
     // pairing weak ones.
     {
       const short = async (route) => {
@@ -678,8 +677,8 @@ function syntheticPng(width, height) {
       await page.unroute("**/trumpets/api/v1/trumpets/taste", short);
       await page.getByRole("button", { name: "Swipe", exact: true }).click();
     }
-    // ---- No photo: an obvious "View listing" link (new tab) that is never a
-    // reaction; reactions record whether the card showed a photo. ----
+    // ---- No photo: the "Open listing" link (new tab, never a reaction) sits
+    // on the placeholder; reactions record whether the card showed a photo. ----
     {
       const noPhoto = await fetch(base + "/trumpets/api/v1/trumpets/machine/runs", {
         method: "POST",
@@ -715,7 +714,7 @@ function syntheticPng(width, height) {
       await page.reload();
       await page.waitForSelector(".swipe-card");
       // Cards with photos come first; react until a photo-less card with a link.
-      for (let i = 0; i < 30 && !(await page.locator(".swipe-card .taste-view-listing").count()); i++) {
+      for (let i = 0; i < 30 && !(await page.locator(".swipe-card .taste-view-listing.on-placeholder").count()); i++) {
         const id = await swipeId();
         const hadPhoto = (await page.locator(".swipe-card .swipe-visual:not(.no-photo)").count()) === 1;
         assert.equal(await page.locator(".swipe-card .swipe-visual.no-photo").count(), hadPhoto ? 0 : 1);
@@ -723,13 +722,15 @@ function syntheticPng(width, height) {
         await page.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, id);
         assert.deepEqual(posted.at(-1).meta, { hadPhoto }, "each swipe records whether its card had a photo");
       }
-      const link = page.locator(".swipe-card .taste-view-listing");
-      assert.equal(await link.count(), 1, "a photo-less card shows a View listing link");
-      assert.equal(await link.innerText(), "View listing ↗");
+      const link = page.locator(".swipe-card .taste-view-listing.on-placeholder");
+      assert.equal(await link.count(), 1, "a photo-less card shows the Open listing link on its placeholder");
+      assert.equal(await link.innerText(), "Open listing ↗");
       assert.equal(await link.getAttribute("target"), "_blank");
       assert.match(await link.getAttribute("rel"), /noopener/);
       assert.match(await link.getAttribute("href"), /^https:\/\/fixtures\.invalid\/products\//);
       assert.equal(await page.locator(".swipe-card .swipe-visual.no-photo").count(), 1);
+      assert.equal(await page.locator(".swipe-card .swipe-visual.no-photo > .taste-view-listing").count(), 1, "the link sits on the placeholder itself");
+      assert.equal(await page.locator(".swipe-card .taste-view-listing").count(), 1, "one link per card");
       const linkedId = await swipeId();
       const before = posted.length;
       const [tab] = await Promise.all([page.context().waitForEvent("page"), link.click()]);
@@ -764,9 +765,9 @@ function syntheticPng(width, height) {
       await page.waitForSelector(".swipe-card, .taste-empty");
       await page.getByRole("button", { name: "Head to head" }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pair-card").length === 2);
-      const pairLink = page.locator(".pair-slot .taste-view-listing");
-      assert.equal(await pairLink.count(), 1, "only the photo-less side has the link");
-      assert.equal(await page.locator(".pair-slot").nth(1).locator(".taste-view-listing").count(), 1);
+      const pairLink = page.locator(".pair-slot .taste-view-listing.on-placeholder");
+      assert.equal(await pairLink.count(), 1, "only the photo-less side has it on the placeholder");
+      assert.equal(await page.locator(".pair-slot").nth(1).locator(".taste-view-listing.on-placeholder").count(), 1);
       assert.equal(await page.locator(".pair-card .taste-view-listing").count(), 0, "the link is not inside the choice button");
       const pairBefore = await page.locator(".pair-card").evaluateAll((n) => n.map((c) => c.getAttribute("aria-label")).join("|"));
       const pairPosts = posted.length;
@@ -817,7 +818,7 @@ function syntheticPng(width, height) {
         assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `taste ${m} overflow at ${width}px`);
         const small = await mobile.locator("#taste-board textarea, #taste-board input").evaluateAll((n) => n.filter((x) => x.offsetParent && parseFloat(getComputedStyle(x).fontSize) < 16).length);
         assert.equal(small, 0, `taste fields under 16px at ${width}px`);
-        const targets = await mobile.locator("#taste-board .react:not([hidden]), #taste-board .chip, .taste-modes button").evaluateAll((n) => n.filter((x) => x.offsetParent).map((x) => x.getBoundingClientRect().height));
+        const targets = await mobile.locator("#taste-board .react:not([hidden]), #taste-board .chip, .taste-modes button, #taste-board .taste-view-listing").evaluateAll((n) => n.filter((x) => x.offsetParent).map((x) => x.getBoundingClientRect().height));
         assert.ok(targets.every((h) => h >= 44), `small taste target at ${width}px: ${targets}`);
       }
     }
@@ -835,6 +836,208 @@ function syntheticPng(width, height) {
     await mobile.waitForSelector(".pair-card");
     await mobile.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 8));
     await mobile.screenshot({ path: path.join(out, "taste-pair-mobile.png") });
+    // ---- Phone: "Open listing ↗" opens the source page and is never a vote;
+    // Head to head shows how far the choices link the horns. ----
+    {
+      let posts = 0;
+      const countPost = (r) => r.method() === "POST" && r.url().includes("/taste/events") && posts++;
+      mobile.on("request", countPost);
+      // Source pages open as served-locally stand-ins (never fetched); other
+      // requests (photos, the API) go on as before.
+      const sourcePage = (r) =>
+        r.request().isNavigationRequest() && !r.request().url().startsWith(base)
+          ? r.fulfill({ contentType: "text/html", body: "<title>Listing page · TEST FIXTURE</title>" })
+          : r.fallback();
+      await phone.route("**/*", sourcePage);
+      const tdp = await phone.newCDPSession(mobile);
+      const finger = (type, x, y) => tdp.send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y }] });
+      const pairLabels = () => mobile.locator(".pair-card").evaluateAll((n) => n.map((c) => c.getAttribute("aria-label")).join("|"));
+      const settle = () => mobile.waitForTimeout(500);
+      // The action opens the link's listing in a new page (closed again).
+      const opens = async (link, action) => {
+        const href = await link.getAttribute("href");
+        assert.match(href, /^https?:\/\//);
+        const [tab] = await Promise.all([phone.waitForEvent("page"), action()]);
+        await tab.waitForLoadState();
+        assert.equal(tab.url(), href, "the listing opens in a new page");
+        await tab.close();
+      };
+      const center = async (loc) => {
+        await loc.scrollIntoViewIfNeeded();
+        const b = await loc.boundingBox();
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2, b };
+      };
+
+      // Head to head (on screen from the screenshot above).
+      const progress = mobile.locator("#pair-progress");
+      assert.equal(await progress.isVisible(), true, "Head to head shows the progress line");
+      assert.match(await progress.innerText(), /^(Linking horns · \d+ of \d+ in the main group|All \d+ horns connected)$/);
+      // It follows the newest applied state after every answer.
+      const before = await pairLabels();
+      const [answer] = await Promise.all([mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.status() < 300), mobile.locator(".pair-card").first().tap()]);
+      const g = (await answer.json()).pairGraph;
+      await mobile.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.getAttribute("aria-label")).join("|") !== p, before);
+      assert.equal(await progress.innerText(), g.components <= 1 ? `All ${g.eligible} horns connected` : `Linking horns · ${g.largest} of ${g.eligible} in the main group`);
+      assert.equal(posts, 1);
+      // Disconnected, connected and missing graphs (the reply is rewritten).
+      for (const [graph, text] of [
+        [{ eligible: 177, components: 12, largest: 15, share: 0.085 }, "Linking horns · 15 of 177 in the main group"],
+        [{ eligible: 177, components: 1, largest: 177, share: 1 }, "All 177 horns connected"],
+        [undefined, ""],
+      ]) {
+        const rewrite = async (route) => {
+          const response = await route.fetch();
+          const json = await response.json();
+          if (graph) json.pairGraph = graph;
+          else delete json.pairGraph;
+          await route.fulfill({ response, json });
+        };
+        await mobile.route("**/trumpets/api/v1/trumpets/taste", rewrite);
+        const reloaded = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+        await mobile.evaluate(() => window.TasteBoard.setActive(true));
+        await (await reloaded).finished();
+        await mobile.evaluate(() => new Promise((r) => setTimeout(r, 0)));
+        assert.equal(await progress.isVisible(), !!text, `progress line ${text ? "shown" : "hidden"} for ${JSON.stringify(graph)}`);
+        if (text) assert.equal(await progress.innerText(), text);
+        if (graph?.components === 12) {
+          await mobile.evaluate(() => scrollTo(0, document.querySelector(".taste-modes").getBoundingClientRect().top + scrollY - 8));
+          await mobile.screenshot({ path: path.join(out, "taste-pair-progress-mobile.png") });
+        }
+        await mobile.unroute("**/trumpets/api/v1/trumpets/taste", rewrite);
+      }
+      await mobile.evaluate(() => window.TasteBoard.setActive(true));
+      await mobile.waitForFunction(() => !document.querySelector("#pair-progress").hidden);
+      // Each side has the link, beside the choice button (never inside it),
+      // under the card, 44 px tall.
+      const pairLinks = mobile.locator(".pair-slot > .taste-view-listing");
+      assert.equal(await pairLinks.count(), 2);
+      assert.equal(await mobile.locator(".pair-card .taste-view-listing").count(), 0);
+      for (let i = 0; i < 2; i++) {
+        const link = pairLinks.nth(i);
+        assert.equal(await link.innerText(), "Open listing ↗");
+        assert.equal(await link.getAttribute("target"), "_blank");
+        assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+        const lb = await link.boundingBox(),
+          cb = await mobile.locator(".pair-card").nth(i).boundingBox();
+        assert.ok(lb.height >= 44, `pair link is ${lb.height}px tall`);
+        assert.ok(lb.y >= cb.y + cb.height, "the pair link sits under the card, off the photo");
+      }
+      const pairShown = await pairLabels();
+      await opens(pairLinks.first(), () => pairLinks.first().tap());
+      // Enter on the focused link opens it; neither key is a choice.
+      await pairLinks.nth(1).focus();
+      await opens(pairLinks.nth(1), () => mobile.keyboard.press("Enter"));
+      await pairLinks.nth(1).focus();
+      await mobile.keyboard.press(" ");
+      // A press on the link released on the choice button is not a choice.
+      {
+        const { x, y } = await center(pairLinks.first());
+        const cb = await mobile.locator(".pair-card").first().boundingBox();
+        await finger("touchStart", x, y);
+        await finger("touchMove", x + 2, y - 12);
+        await finger("touchMove", x + 4, cb.y + cb.height - 10);
+        await finger("touchEnd");
+      }
+      await settle();
+      for (const p of phone.pages().filter((p) => p !== mobile)) await p.close();
+      assert.equal(posts, 1, "opening a listing from head to head is not a choice");
+      assert.equal(await pairLabels(), pairShown, "the same pair stays on screen");
+
+      // Swipe: the link sits under the card's facts, off the photo. The queue
+      // is rewritten to start with a listing that has a photo and a URL.
+      const shownId = await mobile.evaluate(async () => (await (await fetch("/trumpets/api/v1/trumpets/listings")).json()).listings.find((l) => l.images.length && l.url && !l.acquired).id);
+      const photoFirst = async (route) => {
+        const response = await route.fetch();
+        const json = await response.json();
+        json.queue = [{ listingId: shownId, reason: "new", taste: 50, sd: 1 }, ...json.queue.filter((q) => q.listingId !== shownId)];
+        await route.fulfill({ response, json });
+      };
+      await mobile.route("**/trumpets/api/v1/trumpets/taste", photoFirst);
+      await mobile.evaluate(() => window.TasteBoard.setActive(true));
+      await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
+      await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, shownId);
+      const cardId = () => mobile.locator(".swipe-card").getAttribute("data-id");
+      const link = mobile.locator(".swipe-card .taste-card-body > .taste-view-listing");
+      assert.equal(await mobile.locator(".swipe-card .swipe-visual:not(.no-photo) img").count(), 1, "this card shows a photo");
+      assert.equal(await link.count(), 1, "a card with a photo has the link too");
+      assert.equal(await link.innerText(), "Open listing ↗");
+      assert.equal(await link.getAttribute("rel"), "noopener noreferrer");
+      await link.scrollIntoViewIfNeeded();
+      const lb = await link.boundingBox(),
+        vb = await mobile.locator(".swipe-card .swipe-visual").boundingBox();
+      assert.ok(lb.height >= 44 && lb.width >= 44, `swipe link is ${lb.width}x${lb.height}px`);
+      assert.ok(lb.y >= vb.y + vb.height, "the swipe link does not cover the photo used for swiping");
+      // A tap opens the listing in a new page and records nothing.
+      await opens(link, () => link.tap());
+      await settle();
+      assert.equal(posts, 1, "a tap on the link records no taste event");
+      assert.equal(await cardId(), shownId);
+      // Enter and Space on the focused link never vote.
+      await link.focus();
+      await opens(link, () => mobile.keyboard.press("Enter"));
+      await link.focus();
+      await mobile.keyboard.press(" ");
+      await settle();
+      assert.equal(posts, 1, "Enter and Space on the link are not reactions");
+      // A long sideways touch drag that starts on the link never moves the card.
+      {
+        const { x, y } = await center(link);
+        await finger("touchStart", x, y);
+        for (let i = 1; i <= 8; i++) {
+          await finger("touchMove", x + 25 * i, y);
+          await mobile.waitForTimeout(40);
+        }
+        await finger("touchEnd");
+      }
+      // A press that moves slightly off the link and is released on the card.
+      {
+        const { x, y, b } = await center(link);
+        await finger("touchStart", x, y);
+        await finger("touchMove", x + 6, y - 8);
+        await finger("touchMove", x + 12, b.y - 14);
+        await finger("touchEnd");
+      }
+      // The same with a mouse: a 260 px drag from the link, released on the card.
+      {
+        const { x, y } = await center(link);
+        await mobile.mouse.move(x, y);
+        await mobile.mouse.down();
+        await mobile.mouse.move(x + 260 > 380 ? x - 260 : x + 260, y - 40, { steps: 10 });
+        await mobile.mouse.up();
+      }
+      await settle();
+      for (const p of phone.pages().filter((p) => p !== mobile)) await p.close();
+      assert.equal(posts, 1, "a drag that starts on the link records no event");
+      assert.equal(await cardId(), shownId, "the card stays");
+      assert.equal(await mobile.locator(".swipe-card").evaluate((c) => c.style.transform + (c.classList.contains("dragging") ? " dragging" : "")), "", "the card never followed");
+      // A listing without a usable URL has no link.
+      const noURL = async (route) => {
+        const response = await route.fetch();
+        const json = await response.json();
+        for (const l of json.listings) l.url = "";
+        await route.fulfill({ response, json });
+      };
+      await mobile.route("**/trumpets/api/v1/trumpets/listings", noURL);
+      await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
+      await mobile.waitForFunction(() => document.querySelector(".swipe-card") && !document.querySelector(".taste-view-listing"));
+      await mobile.getByRole("button", { name: "Head to head", exact: true }).tap();
+      await mobile.waitForSelector(".pair-card");
+      assert.equal(await mobile.locator(".taste-view-listing").count(), 0, "no URL, no link");
+      await mobile.unroute("**/trumpets/api/v1/trumpets/listings", noURL);
+      await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
+      await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
+      await mobile.waitForSelector(".swipe-card .taste-card-body > .taste-view-listing");
+      await mobile.evaluate(() => scrollTo(0, document.querySelector(".swipe-card .taste-view-listing").getBoundingClientRect().bottom + scrollY - innerHeight + 24));
+      await mobile.screenshot({ path: path.join(out, "taste-open-link-mobile.png") });
+      assert.equal(posts, 1);
+      await mobile.unroute("**/trumpets/api/v1/trumpets/taste", photoFirst);
+      const real = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+      await mobile.evaluate(() => window.TasteBoard.setActive(true));
+      await (await real).finished();
+      mobile.off("request", countPost);
+      await tdp.detach();
+      await phone.unroute("**/*", sourcePage);
+    }
     // Touch drags (the iPhone report): partial drags and page scrolls over the
     // card never commit; only a deliberate drag does, with a one-tap undo.
     await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
@@ -1128,7 +1331,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line), photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line, progress line for connected/disconnected/missing graphs), Open listing on every card with a URL opens a new page on tap/Enter and never votes (taps, Space, drags that start on it, presses released on the card or choice button), photo-less cards link to the listing without reacting and reactions record hadPhoto, stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

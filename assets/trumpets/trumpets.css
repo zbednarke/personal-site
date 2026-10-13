@@ -1234,18 +1234,27 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
 .swipe-visual:not(.no-photo), .pair-visual:not(.no-photo) { background: #22261f; }
 .swipe-visual { height: 280px; }
 .pair-visual { height: var(--pair-visual-h, 170px); }
-/* No photo: an obvious link to the source page (new tab). It is not a reaction. */
+/* "Open listing ↗": the source page in a new tab, never a reaction. Under the
+   card's facts (off the photo, so it never blocks a swipe), 44 px tall. */
 .taste-view-listing {
-  position: absolute; z-index: 2; left: 50%; transform: translateX(-50%);
-  display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px;
-  border-radius: 22px; background: var(--brass); color: #151b14; font-weight: 700; font-size: 14px;
-  text-decoration: none; white-space: nowrap; box-shadow: 0 2px 10px #0006; cursor: pointer; touch-action: manipulation;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 44px; padding: 0 14px;
+  border: 1px solid var(--line); border-radius: 22px; color: var(--brass); font-size: 13px;
+  text-decoration: none; white-space: nowrap; cursor: pointer; touch-action: manipulation; -webkit-user-drag: none;
 }
-.taste-view-listing:hover, .taste-view-listing:focus-visible { filter: brightness(1.08); outline: 2px solid var(--ink, #151b14); outline-offset: 2px; }
-.swipe-visual .taste-view-listing { bottom: 16px; }
-.pair-slot { position: relative; display: flex; min-width: 0; }
+.taste-view-listing:hover, .taste-view-listing:focus-visible { border-color: var(--brass); outline: 2px solid var(--brass); outline-offset: 2px; }
+.taste-card-body > .taste-view-listing { margin-top: 12px; }
+.pair-slot > .taste-view-listing { align-self: flex-start; margin-top: 6px; max-width: 100%; }
+/* No photo: the link sits on the placeholder drawing, as the obvious next step. */
+.taste-view-listing.on-placeholder {
+  position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); margin: 0; padding: 0 18px;
+  border: 0; background: var(--brass); color: #151b14; font-weight: 700; font-size: 14px; box-shadow: 0 2px 10px #0006;
+}
+.taste-view-listing.on-placeholder:hover, .taste-view-listing.on-placeholder:focus-visible { filter: brightness(1.08); outline-color: var(--ink, #151b14); }
+.swipe-visual .taste-view-listing.on-placeholder { bottom: 16px; }
+.pair-slot { position: relative; display: flex; flex-direction: column; min-width: 0; }
 .pair-slot > .pair-card { flex: 1; }
-.pair-slot > .taste-view-listing { top: calc(var(--pair-visual-h, 170px) - 56px); max-width: calc(100% - 16px); padding: 0 12px; }
+.pair-slot > .taste-view-listing.on-placeholder { top: calc(var(--pair-visual-h, 170px) - 56px); max-width: calc(100% - 16px); padding: 0 12px; }
+.pair-progress { margin: -6px 0 12px; font-size: 12px; color: var(--muted); }
 .swipe-visual > img, .pair-visual > img { width: 100%; height: 100%; object-fit: contain; background: #e7e3d8; pointer-events: none; }
 .taste-card-body { padding: 16px 18px 14px; min-width: 0; text-align: left; }
 .taste-card-body .model { margin: 8px 0 10px; min-height: 0; font: 400 24px/1.15 Georgia, serif; overflow-wrap: anywhere; }
@@ -1329,7 +1338,8 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
   .swipe-deck { min-height: 0; }
   .swipe-visual { height: 230px; }
   .pair-cards { --pair-visual-h: 120px; }
-  .pair-slot > .taste-view-listing { font-size: 13px; }
+  .pair-slot > .taste-view-listing.on-placeholder { font-size: 13px; }
+  .pair-slot > .taste-view-listing:not(.on-placeholder) { align-self: stretch; padding: 0 8px; }
   .pair-cards { gap: 10px; }
   .pair-card .taste-card-body { padding: 10px 10px 10px; }
   .pair-card .taste-card-body .model { font-size: 16px; margin: 6px 0; }
