@@ -1102,21 +1102,36 @@ owner's reasons, note and notes saved for the pair around the skip). For each
    and notes and the check results. It must answer a strict JSON schema with a
    cause from a fixed set (`data_problem`, `wrong_category`, `stale`,
    `duplicate`, `incomparable` with its dimension, `unclear`), a short plain
-   explanation and the facts it relied on, quoted verbatim. An answer that
-   quotes anything not in the data, states a number not in the data, or breaks
-   the schema is rejected and the deterministic result is used (the finding
+   explanation and the facts it relied on, quoted verbatim. Each quote must be
+   at least 12 characters and found inside one single field's value. An answer
+   that quotes anything else, states a number not in the data, or breaks the
+   schema is rejected and the deterministic result is used (the finding
    records `llm_fallback`).
+
+The investigation uses only what is left of the run's 40 minutes (at most 4),
+and each skip has its own 90-second deadline that its rechecks, model call and
+POST all start within.
 
 `POST /v1/trumpets/machine/taste/skips/findings` stores one finding per skip
 (replays return the stored one; a skip undone meanwhile is a 404). The API
 applies only stored, reversible actions and never changes a listing's price,
 title or status:
 
-- **Exclusion** (`trumpet_taste_exclusions`): a listing that is clearly not a
-  Bb trumpet, or a duplicate (the copy with fewer photos), leaves Head to head
-  and Swipe; a sold or removed one leaves Head to head. Only a listing of that
-  pair, and only when the reason is the finding's cause. The owner can undo it
-  under **Skipped pairs**; a listing the owner put back is never excluded again.
+- **Exclusion** (`trumpet_taste_exclusions`): a listing whose *title or model*
+  names another instrument or key, or a duplicate by *the same link or horn*
+  (the copy with fewer photos), leaves Head to head and Swipe — but only when
+  the owner's own reason agrees (*Not a Bb trumpet* / *Duplicate*); otherwise
+  the finding becomes a fix-list entry ("listing details look wrong") and
+  nothing is excluded. A sold or removed one leaves Head to head. Only a
+  listing of that pair (any other id is a 400), only when the reason is the
+  finding's cause, never on a model's answer or a listing's own description,
+  in any mode. An exclusion applies only while its skip stands (undo the skip
+  and the listing is back; a new skip of the pair can exclude it again); a
+  stale one lifts itself once a later check verifies the listing active. The
+  owner can undo any exclusion under **Skipped pairs** (each has its own
+  toggle); a listing the owner put back is never excluded again.
+  Accessory context ("with pocket mute", "cornet mouthpiece included") and
+  "Bb/C" do not count as another instrument.
 - **Recheck** (`trumpet_listings.recheck_requested_at`): a listing that looks
   stale is due on the next run (first in the recheck order) until a check
   lands, for at most 7 days.
@@ -1126,7 +1141,9 @@ title or status:
   selection uses a dimension only once two live lessons agree (prices: pairs at
   least as far apart as the smallest agreeing ratio; classes: the same pair of
   classes), and a bridge ignores lessons when nothing else joins an island, so
-  lessons never stall connectivity. Lessons can be switched off and on again.
+  lessons never stall connectivity; when lessons leave an answer short, the
+  remaining pairs ignore them (they come last), so they never empty Head to
+  head. Lessons can be switched off and on again.
 - **Fix list**: an unresolved data problem (no price, no photos, not verified)
   adds an entry whose first line is fixed text (`Head to head skip: listing has
   no price`, …) and whose second line is maker, model and domain; the daily fix
@@ -1143,8 +1160,9 @@ skip with the owner's reasons and note, what the check found, what changed
   recorded (`llm_cause`). Actions follow the deterministic evidence only: no
   exclusion, recheck or lesson on the model's word alone. Where the checks
   found nothing, the model's cause is shown but nothing changes.
-- `act`: the model's validated cause may drive the (still reversible)
-  actions. Only for after explain-mode findings have been reviewed.
+- `act`: the model's validated cause may drive rechecks and lessons too;
+  exclusions still need the structured signal and the owner's reason above.
+  Only for after explain-mode findings have been reviewed.
 
 Optional: `TRUMPETS_SKIP_MODEL` (else `TRUMPETS_VERIFY_MODEL` /
 `TRUMPETS_SEARCH_MODEL`). Every string sent to the API is cut to its byte limit

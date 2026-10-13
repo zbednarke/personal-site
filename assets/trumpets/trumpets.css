@@ -1303,8 +1303,9 @@ dialog .chip-input input:not([type="checkbox"]) { flex: 1 1 140px; margin: 0; bo
 .pair-skip-panel .field-help { margin: 8px 0; }
 .taste-skips-box .skip-pair { color: var(--ink); }
 .taste-skips-box .skip-finding { margin: 2px 0 0; font-size: 12px; }
-.taste-skips-box .skip-action, .taste-skips-box li.lesson { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
-.taste-skips-box li.lesson > span { flex: 1 1 100%; }
+.pair-skip-reasons .chip-key { font: 10px monospace; color: var(--brass); margin-right: 2px; }
+.taste-skips-box .skip-action, .taste-skips-box li.lesson, .taste-skips-box li.exclusion { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
+.taste-skips-box li.lesson > span, .taste-skips-box li.exclusion > span { flex: 1 1 100%; }
 .taste-skip-rules li.rule { color: var(--brass); }
 .taste-empty { text-align: center; padding: 60px 20px; color: var(--muted); border: 1px dashed var(--line); width: 100%; max-width: 440px; grid-column: 1 / -1; }
 .taste-empty h3 { font: 400 26px Georgia, serif; color: var(--ink); margin: 10px 0; }

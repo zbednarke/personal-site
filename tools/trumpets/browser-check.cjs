@@ -1084,7 +1084,7 @@ function syntheticPng(width, height) {
       await skip.tap();
       assert.equal(await panel.isVisible(), true, "Skip offers the optional reasons");
       assert.equal(await skip.getAttribute("aria-expanded"), "true");
-      assert.deepEqual(await mobile.locator("#pair-skip-reasons .chip").allInnerTexts(), ["Not comparable", "Bad or missing info", "Sold / stale", "Duplicate", "Not a Bb trumpet", "Other"]);
+      assert.deepEqual((await mobile.locator("#pair-skip-reasons .chip").allInnerTexts()).map((t) => t.replace(/\s+/g, " ")), ["1 Not comparable", "2 Bad or missing info", "3 Sold / stale", "4 Duplicate", "5 Not a Bb trumpet", "6 Other"], "each reason shows the key that picks it");
       const chipHeights = await mobile.locator("#pair-skip-panel .chip").evaluateAll((n) => n.map((x) => x.getBoundingClientRect().height));
       assert.ok(chipHeights.every((h) => h >= 44), `skip chips ${chipHeights}`);
       assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "skip panel overflows at 390px");
@@ -1126,25 +1126,33 @@ function syntheticPng(width, height) {
       assert.equal(posted[2].kind, "undo");
       assert.equal(posted[2].undoes, s2.event.id);
       await mobile.locator("#taste-note-box").evaluate((d) => (d.open = false));
-      // 4. The K shortcut: K opens the reasons, Escape closes them, K K skips.
+      // 4. The K shortcut: K opens the reasons with focus on Cancel (a stray
+      // Enter never skips), Escape closes them, K then 5 skips as "Not a Bb
+      // trumpet".
       await mobile.evaluate(() => document.activeElement?.blur());
+      await mobile.keyboard.press("k");
+      await mobile.waitForFunction(() => !document.querySelector("#pair-skip-panel").hidden);
+      assert.equal(await mobile.evaluate(() => document.activeElement?.id), "pair-skip-cancel");
+      await mobile.keyboard.press("Enter");
+      await mobile.waitForFunction(() => document.querySelector("#pair-skip-panel").hidden);
       await mobile.keyboard.press("k");
       await mobile.waitForFunction(() => !document.querySelector("#pair-skip-panel").hidden);
       await mobile.keyboard.press("Escape");
       await mobile.waitForFunction(() => document.querySelector("#pair-skip-panel").hidden);
-      assert.equal(posted.length, 3, "K and Escape record nothing");
+      assert.equal(posted.length, 3, "K, Enter on Cancel and Escape record nothing");
       const third = await labels();
       const [r3] = await Promise.all([
         answered(),
         (async () => {
           await mobile.keyboard.press("k");
-          await mobile.keyboard.press("k");
+          await mobile.keyboard.press("5");
         })(),
       ]);
       const s3 = await r3.json();
       await changedFrom(third);
       assert.equal(posted.length, 4);
       assert.equal(posted[3].action, "skip");
+      assert.deepEqual(posted[3].meta.skipReasons, ["not_bb"]);
       assert.equal(s3.model.pairs, before.pairs, "still no preference after three skips");
       // 5. The daily check's findings show under "Skipped pairs", with an undo
       // for the exclusion it made.
@@ -1152,22 +1160,28 @@ function syntheticPng(width, height) {
       const forEvent = (id) => listed.skips.find((s) => s.eventId === id);
       assert.ok(forEvent(s1.event.id) && forEvent(s3.event.id), "both standing skips are listed for the runner");
       assert.equal(forEvent(s2.event.id), undefined, "an undone skip is not investigated");
+      // (An exclusion for a wrong category needs the owner's own "Not a Bb
+      // trumpet", which the K-5 skip has.)
       await machine("/taste/skips/findings", {
-        eventId: s1.event.id, cause: "wrong_category", side: "b", llmCause: "wrong_category", llmValid: true, mode: "explain",
+        eventId: s3.event.id, cause: "wrong_category", side: "b", llmCause: "wrong_category", llmValid: true, mode: "explain",
         explanation: "The right listing's title says cornet · TEST FIXTURE", checks: [{ code: "wrong_category", side: "b", detail: "title keyword" }],
-        exclude: [{ listingId: s1.event.otherListingId, scope: "all", reason: "wrong_category", detail: "cornet" }],
+        exclude: [{ listingId: s3.event.otherListingId, scope: "all", reason: "wrong_category", detail: "cornet" }],
       });
-      await machine("/taste/skips/findings", { eventId: s3.event.id, cause: "incomparable", dimension: "price", mode: "explain", explanation: "Very different prices · TEST FIXTURE", lesson: true });
+      await machine("/taste/skips/findings", { eventId: s1.event.id, cause: "incomparable", dimension: "price", mode: "explain", explanation: "Very different prices · TEST FIXTURE", lesson: true });
       const reloaded = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
       await mobile.evaluate(() => window.TasteBoard.setActive(true));
       await (await reloaded).finished();
       const box = mobile.locator("#taste-skips-box");
       await box.evaluate((d) => (d.open = true));
       assert.equal(await box.isVisible(), true);
-      const found = mobile.locator(`#taste-skips li[data-event="${s1.event.id}"]`);
+      const found = mobile.locator(`#taste-skips li[data-event="${s3.event.id}"]`);
       assert.match(await found.innerText(), /Not a Bb trumpet — The right listing's title says cornet · TEST FIXTURE/);
       assert.match(await found.innerText(), /Excluded from Head to head and Swipe \(wrong category\)/);
-      assert.match(await mobile.locator(`#taste-skips li[data-event="${s3.event.id}"]`).innerText(), /Genuinely different \(price\) — Very different prices/);
+      assert.match(await mobile.locator(`#taste-skips li[data-event="${s1.event.id}"]`).innerText(), /Genuinely different \(price\) — Very different prices/);
+      // Every exclusion in force is also listed on its own, with its toggle.
+      assert.equal(await mobile.locator("#taste-exclusions li.exclusion").count(), 1);
+      assert.match(await mobile.locator("#taste-exclusions li.exclusion").innerText(), /out of Head to head and Swipe/);
+      assert.equal(await mobile.locator("#taste-exclusions").getByRole("button", { name: /^Undo exclusion of / }).count(), 1);
       assert.equal(await mobile.locator(`#taste-skips li[data-event="${s2.event.id}"]`).count(), 0, "undone skips are not listed");
       const undoExclusion = found.getByRole("button", { name: /^Undo exclusion of / });
       await undoExclusion.scrollIntoViewIfNeeded();
@@ -1180,7 +1194,7 @@ function syntheticPng(width, height) {
         undoExclusion.tap(),
       ]);
       assert.equal(put.status(), 200);
-      await mobile.waitForFunction((id) => /you put it back/.test(document.querySelector(`#taste-skips li[data-event="${id}"]`)?.textContent || ""), s1.event.id);
+      await mobile.waitForFunction((id) => /you put it back/.test(document.querySelector(`#taste-skips li[data-event="${id}"]`)?.textContent || ""), s3.event.id);
       assert.equal(await found.getByRole("button", { name: /^Exclude again / }).count(), 1);
       await box.evaluate((d) => (d.open = false));
       mobile.off("request", record);

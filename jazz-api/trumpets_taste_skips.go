@@ -270,6 +270,42 @@ type tasteExclusion struct {
 	ChangedBy string    `json:"changedBy"`
 	CreatedAt time.Time `json:"createdAt"`
 	ChangedAt time.Time `json:"changedAt"`
+	EventID   *int64    `json:"eventId,omitempty"` // the skip behind it
+	// InForce: active, its skip still stands, and (for a stale one) no later
+	// check verified the listing active again. Lifted says why not, if so.
+	InForce bool   `json:"inForce"`
+	Lifted  string `json:"lifted,omitempty"`
+}
+
+// tasteExclusionsInForce decides which exclusions apply (setting InForce and
+// Lifted on each) and returns listing id -> scope ("all" wins). An undone
+// skip takes its exclusion with it (and a redo brings it back); a stale
+// exclusion lifts itself once a check after it verifies the listing active.
+func tasteExclusionsInForce(xs []tasteExclusion, live map[int64]bool, d *tasteData) map[string]string {
+	out := map[string]string{}
+	for i := range xs {
+		x := &xs[i]
+		x.InForce, x.Lifted = false, ""
+		switch {
+		case !x.Active:
+			x.Lifted = "switched off"
+			continue
+		case x.EventID != nil && !live[*x.EventID]:
+			x.Lifted = "its skip was undone"
+			continue
+		}
+		if x.Reason == "stale" && d != nil {
+			if l, ok := d.byListing[x.ListingID]; ok && l.Status == "active" && l.VerificationState == "verified" && l.LastChecked != nil && l.LastChecked.After(x.CreatedAt) {
+				x.Lifted = "verified active again"
+				continue
+			}
+		}
+		x.InForce = true
+		if out[x.ListingID] != "all" {
+			out[x.ListingID] = x.Scope
+		}
+	}
+	return out
 }
 
 type tasteSkipItem struct {
@@ -306,10 +342,10 @@ func scanTasteFinding(row pgx.Row) (tasteSkipFinding, error) {
 }
 
 func (app *application) loadTasteExclusions(ctx context.Context, user uuid.UUID) ([]tasteExclusion, error) {
-	return wbCollect(wbRows(app.db.Query(ctx, `SELECT id,listing_id::text,finding_id,scope,reason,detail,active,changed_by,created_at,changed_at
-		FROM trumpet_taste_exclusions WHERE user_id=$1 ORDER BY id`, user)), func(row pgx.Row) (tasteExclusion, error) {
+	return wbCollect(wbRows(app.db.Query(ctx, `SELECT x.id,x.listing_id::text,x.finding_id,x.scope,x.reason,x.detail,x.active,x.changed_by,x.created_at,x.changed_at,f.event_id
+		FROM trumpet_taste_exclusions x LEFT JOIN trumpet_taste_skip_findings f ON f.id=x.finding_id WHERE x.user_id=$1 ORDER BY x.id`, user)), func(row pgx.Row) (tasteExclusion, error) {
 		var x tasteExclusion
-		return x, row.Scan(&x.ID, &x.ListingID, &x.FindingID, &x.Scope, &x.Reason, &x.Detail, &x.Active, &x.ChangedBy, &x.CreatedAt, &x.ChangedAt)
+		return x, row.Scan(&x.ID, &x.ListingID, &x.FindingID, &x.Scope, &x.Reason, &x.Detail, &x.Active, &x.ChangedBy, &x.CreatedAt, &x.ChangedAt, &x.EventID)
 	})
 }
 
@@ -350,11 +386,7 @@ func (app *application) loadTasteSkipState(ctx context.Context, user uuid.UUID, 
 	if view.Exclusions, err = app.loadTasteExclusions(ctx, user); err != nil {
 		return guards, view, err
 	}
-	for _, x := range view.Exclusions {
-		if x.Active && guards.Excluded[x.ListingID] != "all" {
-			guards.Excluded[x.ListingID] = x.Scope
-		}
-	}
+	guards.Excluded = tasteExclusionsInForce(view.Exclusions, live, d)
 	if view.Lessons, err = app.loadTasteLessons(ctx, user, live); err != nil {
 		return guards, view, err
 	}
@@ -588,7 +620,19 @@ func validateTasteSkipFinding(in *tasteSkipFindingInput) error {
 		if !containsString([]string{"pair", "all"}, x.Scope) || !containsString([]string{"wrong_category", "stale", "duplicate"}, x.Reason) {
 			return errors.New("invalid exclusion")
 		}
+		id, err := uuid.Parse(x.ListingID)
+		if err != nil {
+			return errors.New("exclude listingId must be a listing id")
+		}
+		x.ListingID = id.String()
 		x.Detail = tasteSkipClean(x.Detail, 300, false)
+	}
+	for i, raw := range in.Recheck {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return errors.New("recheck must name listing ids")
+		}
+		in.Recheck[i] = id.String()
 	}
 	fix := tasteSkipClean(in.FixText, 500, true)
 	if fix != "" && !containsString(tasteSkipFixLines, strings.TrimSpace(strings.SplitN(fix, "\n", 2)[0])) {
@@ -601,7 +645,29 @@ func validateTasteSkipFinding(in *tasteSkipFindingInput) error {
 	return nil
 }
 
-var errTasteSkipGone = errors.New("skip not found or undone")
+var (
+	errTasteSkipGone      = errors.New("skip not found or undone")
+	errTasteSkipNotInPair = errors.New("exclude and recheck must name a listing of the skipped pair")
+)
+
+func tasteSkipReasonLabel(code string) string {
+	return map[string]string{"not_comparable": "Not comparable", "bad_info": "Bad or missing info", "stale": "Sold / stale",
+		"duplicate": "Duplicate", "not_bb": "Not a Bb trumpet", "other": "Other"}[code]
+}
+
+// tasteSkipPairListings reads the two listings of a skip inside the
+// finding's transaction (only the fields tasteGap needs).
+func tasteSkipPairListings(ctx context.Context, tx pgx.Tx, user uuid.UUID, a, b string) ([]trumpetListing, error) {
+	return wbCollect(wbRows(tx.Query(ctx, `SELECT l.id::text,h.maker,h.model,h.details,l.title,l.description,l.price,l.currency
+		FROM trumpet_listings l JOIN trumpet_horns h ON h.id=l.horn_id WHERE l.user_id=$1 AND l.id IN ($2,$3)`, user, a, b)), func(row pgx.Row) (trumpetListing, error) {
+		var l trumpetListing
+		var details []byte
+		if err := row.Scan(&l.ID, &l.Maker, &l.Model, &details, &l.Title, &l.Description, &l.Price, &l.Currency); err != nil {
+			return l, err
+		}
+		return l, json.Unmarshal(details, &l.Details)
+	})
+}
 
 // saveTasteSkipFinding stores one finding and applies its actions in one
 // transaction. replayed: the skip already had a finding (returned as is).
@@ -615,13 +681,27 @@ func (app *application) saveTasteSkipFinding(ctx context.Context, user uuid.UUID
 		return tasteSkipFinding{}, false, err
 	}
 	var a, b string
-	err = tx.QueryRow(ctx, `SELECT listing_id::text,other_listing_id::text FROM trumpet_taste_events e WHERE e.id=$1 AND e.user_id=$2 AND e.kind='pair' AND e.action='skip'
-		AND NOT EXISTS(SELECT 1 FROM trumpet_taste_events u WHERE u.undoes=e.id)`, in.EventID, user).Scan(&a, &b)
+	var rawMeta []byte
+	err = tx.QueryRow(ctx, `SELECT listing_id::text,other_listing_id::text,meta FROM trumpet_taste_events e WHERE e.id=$1 AND e.user_id=$2 AND e.kind='pair' AND e.action='skip'
+		AND NOT EXISTS(SELECT 1 FROM trumpet_taste_events u WHERE u.undoes=e.id)`, in.EventID, user).Scan(&a, &b, &rawMeta)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tasteSkipFinding{}, false, errTasteSkipGone
 	}
 	if err != nil {
 		return tasteSkipFinding{}, false, err
+	}
+	var meta tasteMeta
+	_ = json.Unmarshal(rawMeta, &meta)
+	inPair := func(id string) bool { return id != "" && (id == a || id == b) }
+	for _, x := range in.Exclude {
+		if !inPair(x.ListingID) {
+			return tasteSkipFinding{}, false, errTasteSkipNotInPair
+		}
+	}
+	for _, id := range in.Recheck {
+		if !inPair(id) {
+			return tasteSkipFinding{}, false, errTasteSkipNotInPair
+		}
 	}
 	if existing, err := scanTasteFinding(tx.QueryRow(ctx, `SELECT `+tasteFindingColumns+` FROM trumpet_taste_skip_findings WHERE event_id=$1 AND user_id=$2`, in.EventID, user)); err == nil {
 		return existing, true, nil
@@ -638,17 +718,23 @@ func (app *application) saveTasteSkipFinding(ctx context.Context, user uuid.UUID
 		return tasteSkipFinding{}, false, err
 	}
 	actions := []tasteSkipAction{}
-	inPair := func(id string) bool { return id != "" && (id == a || id == b) }
 	// Exclusions: only for a clearly bad listing of this pair, when the
-	// finding's cause is that very reason.
+	// finding's cause is that very reason, and, for a wrong category or a
+	// duplicate, only when the owner said so too (reason not_bb / duplicate).
+	ownerSays := map[string]string{"wrong_category": "not_bb", "duplicate": "duplicate"}
 	for _, x := range in.Exclude {
-		if !inPair(x.ListingID) || x.Reason != in.Cause {
-			actions = append(actions, tasteSkipAction{Kind: "note", ListingID: x.ListingID, Text: "exclusion not applied (it must name a listing of this pair and match the cause)"})
+		if x.Reason != in.Cause {
+			actions = append(actions, tasteSkipAction{Kind: "note", ListingID: x.ListingID, Text: "Not excluded: the exclusion must match the cause"})
+			continue
+		}
+		if want := ownerSays[x.Reason]; want != "" && !containsString(meta.SkipReasons, want) {
+			actions = append(actions, tasteSkipAction{Kind: "note", ListingID: x.ListingID, Text: "Not excluded: you did not mark this skip " + tasteSkipReasonLabel(want)})
 			continue
 		}
 		var restored, already bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM trumpet_taste_exclusions WHERE user_id=$1 AND listing_id=$2 AND changed_by='owner' AND NOT active),
-			EXISTS(SELECT 1 FROM trumpet_taste_exclusions WHERE user_id=$1 AND listing_id=$2 AND active AND (scope='all' OR scope=$3))`, user, x.ListingID, x.Scope).Scan(&restored, &already); err != nil {
+			EXISTS(SELECT 1 FROM trumpet_taste_exclusions x JOIN trumpet_taste_skip_findings f ON f.id=x.finding_id WHERE x.user_id=$1 AND x.listing_id=$2 AND x.active AND (x.scope='all' OR x.scope=$3)
+				AND NOT EXISTS(SELECT 1 FROM trumpet_taste_events u WHERE u.undoes=f.event_id))`, user, x.ListingID, x.Scope).Scan(&restored, &already); err != nil {
 			return tasteSkipFinding{}, false, err
 		}
 		switch {
@@ -670,9 +756,6 @@ func (app *application) saveTasteSkipFinding(ctx context.Context, user uuid.UUID
 		}
 	}
 	for _, id := range in.Recheck {
-		if !inPair(id) {
-			continue
-		}
 		if _, err = tx.Exec(ctx, `UPDATE trumpet_listings SET recheck_requested_at=now() WHERE id=$1 AND user_id=$2`, id, user); err != nil {
 			return tasteSkipFinding{}, false, err
 		}
@@ -681,7 +764,7 @@ func (app *application) saveTasteSkipFinding(ctx context.Context, user uuid.UUID
 	if in.Lesson && in.Cause == "incomparable" && containsString([]string{"price", "condition", "era"}, in.Dimension) {
 		// The gap is measured here from the stored listings, never taken
 		// from the runner or a model.
-		listings, err := app.loadTrumpetsForTaste(ctx, user)
+		listings, err := tasteSkipPairListings(ctx, tx, user, a, b)
 		if err != nil {
 			return tasteSkipFinding{}, false, err
 		}
@@ -722,6 +805,9 @@ func (app *application) saveTasteSkipFinding(ctx context.Context, user uuid.UUID
 	if in.FixText != "" {
 		actions = append(actions, tasteSkipAction{Kind: "fix", Text: "Added to the daily fix list"})
 	}
+	for i := range actions {
+		actions[i].Text = tasteSkipClean(actions[i].Text, 300, false)
+	}
 	raw, _ := json.Marshal(actions)
 	if _, err = tx.Exec(ctx, `UPDATE trumpet_taste_skip_findings SET actions=$1 WHERE id=$2`, raw, findingID); err != nil {
 		return tasteSkipFinding{}, false, err
@@ -752,6 +838,9 @@ func (app *application) machineTasteSkipFinding(w http.ResponseWriter, r *http.R
 	switch {
 	case errors.Is(err, errTasteSkipGone):
 		writeError(w, 404, err.Error())
+		return
+	case errors.Is(err, errTasteSkipNotInPair):
+		writeError(w, 400, err.Error())
 		return
 	case err != nil:
 		app.serverError(w, err)
@@ -816,5 +905,6 @@ const tasteRecheckLapse = 7 * 24 * time.Hour
 
 func tasteRecheckDue(l trumpetListing) bool {
 	return l.RecheckRequestedAt != nil && !l.Acquired && time.Since(*l.RecheckRequestedAt) < tasteRecheckLapse &&
+		(l.Status == "active" || l.Status == "stale" || l.Status == "unverifiable") && l.Feedback.InterestState != "pass" &&
 		(l.LastChecked == nil || l.LastChecked.Before(*l.RecheckRequestedAt))
 }

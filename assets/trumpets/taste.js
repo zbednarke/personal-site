@@ -303,7 +303,9 @@
       box = $("#pair-skip-reasons");
     if (!box.children.length) {
       T.SKIP_REASONS.forEach((r, i) => {
-        const b = el("button", "chip", r.label);
+        // The number is the key that picks it while the reasons are open.
+        const b = el("button", "chip");
+        b.append(el("b", "chip-key", String(i + 1)), document.createTextNode(" " + r.label));
         b.type = "button";
         b.dataset.reason = r.code;
         b.setAttribute("aria-label", `Skip: ${r.label} (${i + 1})`);
@@ -319,7 +321,8 @@
     if (on && !currentPair()) return;
     skipOpen = on;
     renderSkipPanel();
-    if (on) $("#pair-skip-reasons .chip")?.focus({ preventScroll: true });
+    // Focus lands on Cancel, so a stray Enter or Space never skips.
+    if (on) $("#pair-skip-cancel").focus({ preventScroll: true });
   }
   // A short name for a listing in the skipped-pairs list.
   function shortName(id) {
@@ -360,6 +363,26 @@
       rules.append(item);
     }
     rules.hidden = !rules.children.length;
+    // Every exclusion that is on (or that you switched off), each with its
+    // own toggle, whether or not its skip is among those listed below.
+    const excluded = $("#taste-exclusions");
+    excluded.replaceChildren();
+    for (const x of (v.exclusions || []).filter((x) => x.active || x.changedBy === "owner")) {
+      const item = el("li", "exclusion");
+      item.dataset.exclusion = x.id;
+      const where = x.scope === "all" ? "Head to head and Swipe" : "Head to head";
+      const state = !x.active ? "you put it back" : x.inForce ? `out of ${where}` : `no longer applies: ${x.lifted}`;
+      item.append(el("span", "", `Excluded: ${shortName(x.listingId)}`), el("small", "", `${String(x.reason).replace("_", " ")} · ${state}`));
+      if (x.active ? x.inForce : true) {
+        const b = el("button", "chip quiet", x.active ? "Undo exclusion" : "Exclude again");
+        b.type = "button";
+        b.setAttribute("aria-label", `${x.active ? "Undo exclusion of" : "Exclude again"} ${shortName(x.listingId)}`);
+        b.addEventListener("click", () => setGuard("exclusions", x.id, !x.active, b));
+        item.append(b);
+      }
+      excluded.append(item);
+    }
+    excluded.hidden = !excluded.children.length;
     const list = $("#taste-skips");
     list.replaceChildren();
     for (const s of v.items || []) {
@@ -373,8 +396,8 @@
       for (const a of f?.actions || []) {
         const row = el("div", "skip-action");
         const x = a.exclusionId ? exclusions.get(a.exclusionId) : null;
-        row.append(el("small", "", x && !x.active ? `${a.text} · you put it back` : a.text));
-        if (x) {
+        row.append(el("small", "", x && !x.active ? `${a.text} · you put it back` : x && !x.inForce ? `${a.text} · no longer applies: ${x.lifted}` : a.text));
+        if (x && (x.inForce || !x.active)) {
           const b = el("button", "chip quiet", x.active ? "Undo exclusion" : "Exclude again");
           b.type = "button";
           b.setAttribute("aria-label", `${x.active ? "Undo exclusion of" : "Exclude again"} ${shortName(x.listingId)}`);

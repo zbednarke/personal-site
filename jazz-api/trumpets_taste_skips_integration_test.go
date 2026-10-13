@@ -182,14 +182,22 @@ func TestTrumpetTasteSkipInvestigation(t *testing.T) {
 	finding := map[string]any{"eventId": skipID, "cause": "wrong_category", "side": "b", "llmCause": "wrong_category", "llmValid": true, "mode": "explain",
 		"explanation": "The right listing\x00 is a cornet.", "checks": []map[string]any{{"code": "wrong_category", "side": "b", "detail": "title says cornet"}},
 		"exclude": []map[string]any{{"listingId": b, "scope": "all", "reason": "wrong_category", "detail": "cornet"}, {"listingId": ids[7], "scope": "all", "reason": "wrong_category"}}}
+	// A listing outside the pair, or not a listing id at all, is refused.
+	if ids[7] == a || ids[7] == b {
+		t.Fatal("fixture: ids[7] must not be in the first pair")
+	}
+	call("POST", "/v1/trumpets/machine/taste/skips/findings", finding, token, 400)
+	call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": skipID, "cause": "wrong_category", "exclude": []map[string]any{{"listingId": "not-a-uuid", "scope": "all", "reason": "wrong_category"}}}, token, 400)
+	call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": skipID, "cause": "stale", "recheck": []string{ids[7]}}, token, 400)
+	finding["exclude"] = finding["exclude"].([]map[string]any)[:1]
 	saved := call("POST", "/v1/trumpets/machine/taste/skips/findings", finding, token, 201)
 	f := saved["finding"].(map[string]any)
 	if f["explanation"] != "The right listing is a cornet." {
 		t.Fatalf("explanation %q", f["explanation"])
 	}
 	actions := f["actions"].([]any)
-	if len(actions) != 2 || actions[0].(map[string]any)["kind"] != "exclude" || actions[1].(map[string]any)["kind"] != "note" {
-		t.Fatalf("actions %v (a listing outside the pair is never excluded)", actions)
+	if len(actions) != 1 || actions[0].(map[string]any)["kind"] != "exclude" {
+		t.Fatalf("actions %v", actions)
 	}
 	if replay := call("POST", "/v1/trumpets/machine/taste/skips/findings", finding, token, 200); replay["replayed"] != true {
 		t.Fatal("finding replay")
@@ -211,9 +219,34 @@ func TestTrumpetTasteSkipInvestigation(t *testing.T) {
 		t.Fatalf("view %v", view)
 	}
 	exclusion := view["exclusions"].([]any)[0].(map[string]any)
-	if exclusion["active"] != true || exclusion["listingId"] != b || exclusion["scope"] != "all" {
+	if exclusion["active"] != true || exclusion["inForce"] != true || exclusion["listingId"] != b || exclusion["scope"] != "all" {
 		t.Fatalf("exclusion %v", exclusion)
 	}
+	// Undoing the skip takes its exclusion with it: b is back in Head to
+	// head and Swipe (the row stays; it no longer applies).
+	undoSkip := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "skip-undo-0", "kind": "undo", "undoes": skipID}, "", 201)
+	if undoSkip["pairEligible"].(float64) != 8 || !queued(undoSkip, b) {
+		t.Fatalf("an undone skip's exclusion still applies: eligible %v queued %v", undoSkip["pairEligible"], queued(undoSkip, b))
+	}
+	if x := str(undoSkip, "skips").(map[string]any)["exclusions"].([]any)[0].(map[string]any); x["inForce"] != false || x["lifted"] != "its skip was undone" {
+		t.Fatalf("exclusion after undo %v", x)
+	}
+	// Skip the pair again (not_bb) and investigate: excluded again, as a
+	// new exclusion of the live skip.
+	reskip := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "skip-00001b", "kind": "pair", "mode": "pair", "listingId": a, "otherListingId": b, "action": "skip", "meta": map[string]any{"skipReasons": []string{"not_bb"}}}, "", 201)
+	finding["eventId"] = str(reskip, "event", "id")
+	call("POST", "/v1/trumpets/machine/taste/skips/findings", finding, token, 201)
+	state = call("GET", "/v1/trumpets/taste", nil, "", 200)
+	if state["pairEligible"].(float64) != 7 || queued(state, b) {
+		t.Fatal("the re-skipped listing is not excluded again")
+	}
+	var inForce map[string]any
+	for _, x := range str(state, "skips").(map[string]any)["exclusions"].([]any) {
+		if x.(map[string]any)["inForce"] == true {
+			inForce = x.(map[string]any)
+		}
+	}
+	exclusion = inForce
 	// The owner puts it back: offered again, and a later finding does not
 	// re-exclude it.
 	restored := call("PUT", fmt.Sprintf("/v1/trumpets/taste/exclusions/%v", exclusion["id"]), map[string]any{"active": false}, "", 200)
@@ -229,11 +262,19 @@ func TestTrumpetTasteSkipInvestigation(t *testing.T) {
 	if other == a || other == b {
 		other = ids[2]
 	}
-	second := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "skip-00002", "kind": "pair", "mode": "pair", "listingId": other, "otherListingId": b, "action": "skip"}, "", 201)
+	second := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "skip-00002", "kind": "pair", "mode": "pair", "listingId": other, "otherListingId": b, "action": "skip", "meta": map[string]any{"skipReasons": []string{"not_bb"}}}, "", 201)
 	again := call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": str(second, "event", "id"), "cause": "wrong_category",
 		"exclude": []map[string]any{{"listingId": b, "scope": "all", "reason": "wrong_category"}}}, token, 201)
 	if k := again["finding"].(map[string]any)["actions"].([]any)[0].(map[string]any)["kind"]; k != "kept" {
 		t.Fatalf("an owner-restored listing was excluded again: %v", k)
+	}
+	// Without the owner's own "Not a Bb trumpet" or "Duplicate", a wrong
+	// category or duplicate finding excludes nothing.
+	third := call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "skip-00002b", "kind": "pair", "mode": "pair", "listingId": other, "otherListingId": ids[6], "action": "skip"}, "", 201)
+	plain := call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": str(third, "event", "id"), "cause": "duplicate",
+		"exclude": []map[string]any{{"listingId": ids[6], "scope": "all", "reason": "duplicate"}}, "fixText": tasteSkipFixLines[3] + "\nFictional"}, token, 201)
+	if act := plain["finding"].(map[string]any)["actions"].([]any); act[0].(map[string]any)["kind"] != "note" || act[1].(map[string]any)["kind"] != "fix" {
+		t.Fatalf("unconfirmed duplicate: %v", act)
 	}
 
 	// Lessons: one incomparable price gap is recorded; pair selection uses it

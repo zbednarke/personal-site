@@ -463,21 +463,32 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time,
 			if len(out) == tastePairLimit {
 				break
 			}
-			b := pick(island, "", false, false) // stale only when the island has nothing else
-			if b == "" {
-				continue
+			// The island's side: its free horns in `better` order (stale
+			// only when the island has nothing else), trying each until one
+			// has an anchor: a horn skipped against every anchor must not
+			// keep its island from ever being bridged.
+			sides := []string{}
+			for _, h := range island {
+				if free(h) {
+					sides = append(sides, h)
+				}
 			}
+			sort.SliceStable(sides, func(i, j int) bool { return better(sides[i], sides[j]) })
 			// The anchor: from the largest component not yet joined to the
 			// island in this answer, preferring a fresh horn, then one not yet
 			// used in this answer; only then a smaller component.
 			// Lessons first; a bridge ignores them only when nothing else fits.
-			a := ""
+			a, b := "", ""
 			for _, ignore := range []bool{false, true} {
 				lenient = ignore
-				for _, pass := range []struct{ fresh, unused bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
-					for _, anchor := range comps {
-						if a == "" && joined.find(anchor[0]) != joined.find(b) {
-							a = pick(anchor, b, pass.fresh, pass.unused)
+				for _, side := range sides {
+					for _, pass := range []struct{ fresh, unused bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+						for _, anchor := range comps {
+							if a == "" && joined.find(anchor[0]) != joined.find(side) {
+								if a = pick(anchor, side, pass.fresh, pass.unused); a != "" {
+									b = side
+								}
+							}
 						}
 					}
 				}
@@ -571,18 +582,24 @@ func tastePairs(m *tasteModel, d *tasteData, events []tasteEvent, now time.Time,
 	})
 	// Pairs of two fresh horns first, then the rest, so a stale horn comes
 	// back only when nothing else is left.
-	for _, fresh := range []bool{true, false} {
-		for _, o := range options {
-			if len(out) == tastePairLimit {
-				break
-			}
-			if fresh && (stale[o.a] || stale[o.b]) {
-				continue
-			}
-			if ok(o.a, o.b) {
-				add(o.a, o.b, "uncertain")
+	// Pairs the lessons allow first; when they leave the answer short, the
+	// rest ignore them, so lessons never empty Head to head.
+	for _, ignore := range []bool{false, true} {
+		lenient = ignore
+		for _, fresh := range []bool{true, false} {
+			for _, o := range options {
+				if len(out) == tastePairLimit {
+					break
+				}
+				if fresh && (stale[o.a] || stale[o.b]) {
+					continue
+				}
+				if ok(o.a, o.b) {
+					add(o.a, o.b, "uncertain")
+				}
 			}
 		}
 	}
+	lenient = false
 	return out
 }
