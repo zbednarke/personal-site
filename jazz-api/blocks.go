@@ -432,7 +432,7 @@ func (app *application) loadAttributedRecordingPracticeMS(ctx context.Context, u
 	var total int64
 	err := app.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(duration_ms),0)::bigint FROM recordings
-		WHERE user_id=$1 AND practice_time_block_id=$2 AND status IN ('uploading','ready')`, userID, blockID).Scan(&total)
+		WHERE user_id=$1 AND COALESCE(practice_time_block_id,practice_block_id)=$2 AND status IN ('uploading','ready')`, userID, blockID).Scan(&total)
 	return min(maxBlockElapsedMS, max(0, int(total))), err
 }
 

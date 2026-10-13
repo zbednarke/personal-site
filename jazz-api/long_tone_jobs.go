@@ -427,7 +427,8 @@ func (app *application) claimLongToneJob(ctx context.Context) (*longToneJob, err
 		ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`, longToneMaxAttempts).
 		Scan(&job.ID, &job.Asset, &job.ObjectName, &job.Generation, &job.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		// Keep the sweeps above even when there is nothing to claim.
+		return nil, tx.Commit(ctx)
 	}
 	if err != nil {
 		return nil, err

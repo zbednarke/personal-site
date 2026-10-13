@@ -1606,7 +1606,8 @@ func (app *application) updateRecordingSection(w http.ResponseWriter, r *http.Re
 	var newRevision int64
 	err = tx.QueryRow(r.Context(), `
 		UPDATE recordings
-		SET practice_block_id=$1,section_assignment_revision=section_assignment_revision+1,updated_at=now()
+		SET practice_block_id=$1,practice_time_block_id=COALESCE(practice_time_block_id,practice_block_id),
+		    section_assignment_revision=section_assignment_revision+1,updated_at=now()
 		WHERE id=$2 AND user_id=$3 AND practice_block_id=$4 AND section_assignment_revision=$5
 		RETURNING section_assignment_revision`, targetID, recordingID, userID, currentID, revision).Scan(&newRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1669,17 +1670,55 @@ func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	for _, assetObjectName := range []string{objectName, videoObjectName, fxObjectName} {
+	// Derived data goes with the take: the FLAC sidecars made for Speech, the
+	// transcripts, and the long-tone traces.
+	assetObjectNames := []string{objectName, videoObjectName, fxObjectName}
+	sidecars, err := app.db.Query(r.Context(), `SELECT DISTINCT source_object_name,source_generation FROM recording_caption_jobs WHERE recording_id=$1 AND user_id=$2`, recordingID, userID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	for sidecars.Next() {
+		var source string
+		var generation int64
+		if err := sidecars.Scan(&source, &generation); err != nil {
+			sidecars.Close()
+			app.serverError(w, err)
+			return
+		}
+		assetObjectNames = append(assetObjectNames, speechAudioObjectName(source, generation))
+	}
+	sidecars.Close()
+	if err := sidecars.Err(); err != nil {
+		app.serverError(w, err)
+		return
+	}
+	for _, assetObjectName := range assetObjectNames {
 		if assetObjectName == "" {
 			continue
 		}
-		if err := app.storage.Bucket(app.cfg.Bucket).Object(assetObjectName).Delete(r.Context()); err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
+		if err := app.inspirationObjects().Delete(r.Context(), assetObjectName); err != nil {
 			app.serverError(w, err)
 			return
 		}
 	}
-	_, err = app.db.Exec(r.Context(), `UPDATE recordings SET status='deleted', updated_at=now() WHERE id=$1 AND user_id=$2`, recordingID, userID)
+	tx, err := app.db.Begin(r.Context())
 	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	for _, statement := range []string{
+		`UPDATE recordings SET status='deleted', updated_at=now() WHERE id=$1 AND user_id=$2`,
+		`DELETE FROM recording_caption_jobs WHERE recording_id=$1 AND user_id=$2`,
+		`DELETE FROM long_tone_analysis_jobs WHERE recording_id=$1 AND user_id=$2`,
+	} {
+		if _, err = tx.Exec(r.Context(), statement, recordingID, userID); err != nil {
+			app.serverError(w, err)
+			return
+		}
+	}
+	if err = tx.Commit(r.Context()); err != nil {
 		app.serverError(w, err)
 		return
 	}

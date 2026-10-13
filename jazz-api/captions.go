@@ -49,6 +49,19 @@ type captionJob struct {
 	Generation  int64
 	Attempts    int
 	LeaseToken  uuid.UUID
+	DurationMS  int64
+}
+
+// errCaptionDeadline ends a job whose Speech operation never finished.
+var errCaptionDeadline = errors.New("speech recognition did not finish in time")
+
+// captionPollInterval is how often a Speech operation is checked (tests shorten it).
+var captionPollInterval = 5 * time.Second
+
+// captionDeadline is how long a take's Speech operation may run: four times
+// its audio plus five minutes. Batch recognition is normally far faster.
+func captionDeadline(durationMS int64) time.Duration {
+	return 4*time.Duration(max(durationMS, 0))*time.Millisecond + 5*time.Minute
 }
 
 type captionAlternative struct {
@@ -94,11 +107,11 @@ func (app *application) createRecordingCaptions(w http.ResponseWriter, r *http.R
 	}
 	response, status, err := app.enqueueCaption(r.Context(), userID, recordingID)
 	if err != nil {
-		if status > 0 {
-			writeError(w, status, longToneAssetError(status))
-		} else {
-			app.serverError(w, err)
-		}
+		app.serverError(w, err)
+		return
+	}
+	if status != 0 {
+		writeError(w, status, longToneAssetError(status))
 		return
 	}
 	writeJSON(w, http.StatusAccepted, response)
@@ -122,10 +135,13 @@ func (app *application) createDayCaptions(w http.ResponseWriter, r *http.Request
 	}
 	queued := 0
 	for _, recording := range recordings {
-		response, _, enqueueErr := app.enqueueCaption(r.Context(), userID, recording.ID)
+		response, status, enqueueErr := app.enqueueCaption(r.Context(), userID, recording.ID)
 		if enqueueErr != nil {
 			app.serverError(w, enqueueErr)
 			return
+		}
+		if status != 0 {
+			continue // still uploading, or deleted meanwhile: nothing to transcribe yet
 		}
 		if response.Status == "pending" || response.Status == "running" {
 			queued++
@@ -136,7 +152,7 @@ func (app *application) createDayCaptions(w http.ResponseWriter, r *http.Request
 
 func (app *application) enqueueCaption(ctx context.Context, userID, recordingID uuid.UUID) (captionResponse, int, error) {
 	source, status, err := app.loadLongToneAsset(ctx, userID, recordingID, "audio")
-	if err != nil {
+	if err != nil || status != 0 {
 		return captionResponse{}, status, err
 	}
 	response := captionResponse{Status: "pending", Version: captionAnalysisVersion, RecordingID: recordingID}
@@ -168,6 +184,10 @@ func (app *application) getRecordingCaptions(w http.ResponseWriter, r *http.Requ
 	}
 	source, status, loadErr := app.loadLongToneAsset(r.Context(), userID, recordingID, "audio")
 	if loadErr != nil {
+		app.serverError(w, loadErr)
+		return
+	}
+	if status != 0 {
 		writeError(w, status, longToneAssetError(status))
 		return
 	}
@@ -228,10 +248,31 @@ func (app *application) claimCaptionJob(ctx context.Context) (*captionJob, error
 	if err != nil {
 		return nil, err
 	}
+	// A queued job whose take was deleted, replaced, or is no longer ready ends
+	// here instead of waiting forever.
+	_, err = tx.Exec(ctx, `UPDATE recording_caption_jobs j
+		SET status='failed',error_code='source_changed',retryable=false,lease_token=NULL,leased_until=NULL,updated_at=now()
+		WHERE j.status IN ('pending','running') AND NOT EXISTS (
+			SELECT 1 FROM recordings r WHERE r.id=j.recording_id AND r.status='ready'
+			  AND r.object_name=j.source_object_name AND r.object_generation=j.source_generation)`)
+	if err != nil {
+		return nil, err
+	}
 	var job captionJob
-	err = tx.QueryRow(ctx, `SELECT id,recording_id,source_object_name,source_generation,attempts FROM recording_caption_jobs WHERE attempts<$1 AND analysis_version=$2 AND available_at<=now() AND (status='pending' OR (status='running' AND leased_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`, captionMaxAttempts, captionAnalysisVersion).Scan(&job.ID, &job.RecordingID, &job.ObjectName, &job.Generation, &job.Attempts)
+	// Takes still uploading, deleted, or replaced since the job was queued are
+	// never transcribed (deleteRecording also removes their caption data).
+	err = tx.QueryRow(ctx, `
+		SELECT j.id,j.recording_id,j.source_object_name,j.source_generation,j.attempts,COALESCE(r.duration_ms,0)
+		FROM recording_caption_jobs j
+		JOIN recordings r ON r.id=j.recording_id AND r.user_id=j.user_id
+		WHERE j.attempts<$1 AND j.analysis_version=$2 AND j.available_at<=now()
+		  AND (j.status='pending' OR (j.status='running' AND j.leased_until<now()))
+		  AND r.status='ready' AND r.object_name=j.source_object_name AND r.object_generation=j.source_generation
+		ORDER BY j.created_at FOR UPDATE OF j SKIP LOCKED LIMIT 1`, captionMaxAttempts, captionAnalysisVersion).
+		Scan(&job.ID, &job.RecordingID, &job.ObjectName, &job.Generation, &job.Attempts, &job.DurationMS)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		// Keep the sweeps above even when there is nothing to claim.
+		return nil, tx.Commit(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -270,13 +311,17 @@ func (app *application) processCaptionJob(workerCtx context.Context, job caption
 	speechObject, err := app.ensureSpeechAudio(ctx, job.ObjectName, job.Generation)
 	var segments []captionSegment
 	if err == nil {
-		segments, err = app.transcribeGCS(ctx, speechObject)
+		segments, err = app.transcribeGCS(ctx, speechObject, captionDeadline(job.DurationMS))
 	}
 	if err != nil {
 		retryable := job.Attempts < captionMaxAttempts
 		code := "recognition_failed"
 		if errors.Is(err, context.Canceled) {
 			code = "worker_lost"
+		}
+		if errors.Is(err, errCaptionDeadline) {
+			// Waiting again would only repeat the wait: fail it for a manual retry.
+			code, retryable = "recognition_timeout", false
 		}
 		nextStatus := "failed"
 		if retryable {
@@ -373,7 +418,8 @@ func (app *application) speechRequest(ctx context.Context, method, endpoint stri
 	return raw, nil
 }
 
-func (app *application) transcribeGCS(ctx context.Context, objectName string) ([]captionSegment, error) {
+func (app *application) transcribeGCS(ctx context.Context, objectName string, limit time.Duration) ([]captionSegment, error) {
+	deadline := time.Now().Add(limit)
 	recognizer := fmt.Sprintf("projects/%s/locations/global/recognizers/_", app.cfg.ProjectID)
 	body := map[string]any{"config": map[string]any{"autoDecodingConfig": map[string]any{}, "languageCodes": []string{"en-US"}, "model": "long", "features": map[string]any{"enableAutomaticPunctuation": true, "enableWordTimeOffsets": true}}, "files": []map[string]string{{"uri": "gs://" + app.cfg.Bucket + "/" + objectName}}, "recognitionOutputConfig": map[string]any{"inlineResponseConfig": map[string]any{}}}
 	raw, err := app.speechRequest(ctx, "POST", "https://speech.googleapis.com/v2/"+recognizer+":batchRecognize", body)
@@ -390,7 +436,10 @@ func (app *application) transcribeGCS(ctx context.Context, objectName string) ([
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(captionPollInterval):
+		}
+		if time.Now().After(deadline) {
+			return nil, errCaptionDeadline
 		}
 		// Speech returns the numeric project number even when the request used the
 		// project ID. Keep the path constrained to a global Speech operation.

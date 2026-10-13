@@ -4,7 +4,7 @@ UPDATE recordings AS recording
 SET notes = NULL,
     updated_at = now()
 FROM practice_blocks AS block
-WHERE COALESCE(recording.practice_time_block_id,recording.practice_block_id) = block.id
+WHERE recording.practice_block_id = block.id
   AND recording.notes = block.title || ' section take';
 
 -- Preserve completed sessions as historical truth. Split the combined block
@@ -46,9 +46,12 @@ BEGIN
                 updated_at = now()
             WHERE id = combined.id;
         ELSE
+            -- Filing and practice-time attribution move independently, so a
+            -- take that was refiled out of the combined section stays where
+            -- it was filed, and only its time attribution follows the merge.
             UPDATE recordings
-            SET practice_block_id = articulation_id,
-                practice_time_block_id = articulation_id,
+            SET practice_block_id = CASE WHEN practice_block_id = combined.id THEN articulation_id ELSE practice_block_id END,
+                practice_time_block_id = CASE WHEN practice_time_block_id = combined.id THEN articulation_id ELSE practice_time_block_id END,
                 updated_at = now()
             WHERE practice_block_id = combined.id
                OR practice_time_block_id = combined.id;

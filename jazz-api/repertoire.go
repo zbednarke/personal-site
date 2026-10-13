@@ -327,7 +327,7 @@ func loadTunePractice(ctx context.Context, db dbQuerier, userID uuid.UUID, weekS
 			SELECT pb.tune_id, pb.practice_date AS day,
 			       LEAST(GREATEST(pb.elapsed_ms::bigint, COALESCE((
 			           SELECT SUM(r.duration_ms) FROM recordings r
-			           WHERE r.practice_block_id=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)), $3)::bigint AS ms
+			           WHERE COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)), $3)::bigint AS ms
 			FROM practice_blocks pb
 			WHERE pb.user_id=$1 AND pb.tune_id IS NOT NULL AND ($4='' OR pb.tune_id=$4)
 		),
@@ -636,7 +636,7 @@ func (app *application) loadRepertoire(ctx context.Context, userID uuid.UUID, to
 		       COALESCE(SUM(ms) FILTER (WHERE track <> 'trumpet' AND tune_id IS NOT NULL),0)::bigint FROM (
 			SELECT pb.track, pb.tune_id, LEAST(GREATEST(pb.elapsed_ms::bigint, COALESCE((
 			    SELECT SUM(r.duration_ms) FROM recordings r
-			    WHERE r.practice_block_id=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)), $3)::bigint AS ms
+			    WHERE COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)), $3)::bigint AS ms
 			FROM practice_blocks pb
 			WHERE pb.user_id=$1 AND pb.practice_date >= $2::date AND pb.practice_date < $2::date + 7
 		) week`, userID, response.Week.Start, maxBlockElapsedMS).Scan(&response.Week.PracticeMS, &response.Week.JazzPracticeMS, &response.Week.RepertoirePracticeMS); err != nil {
@@ -1332,9 +1332,11 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 		return nil, "", err
 	}
 	blockRows, err := app.db.Query(ctx, `
-		SELECT id,practice_date::text,title,COALESCE(notes,''),elapsed_ms,target_minutes,status,removed_at IS NOT NULL,category,track,updated_at,completed_at
-		FROM practice_blocks WHERE user_id=$1 AND tune_id=$2 AND ($3='' OR practice_date < $3::date)
-		ORDER BY practice_date DESC,position,id`, userID, tuneID, before)
+		SELECT pb.id,pb.practice_date::text,pb.title,COALESCE(pb.notes,''),pb.elapsed_ms,pb.target_minutes,pb.status,pb.removed_at IS NOT NULL,pb.category,pb.track,pb.updated_at,pb.completed_at,
+		       COALESCE((SELECT SUM(r.duration_ms) FROM recordings r
+		                 WHERE COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.user_id=pb.user_id AND r.status IN ('uploading','ready')),0)::bigint
+		FROM practice_blocks pb WHERE pb.user_id=$1 AND pb.tune_id=$2 AND ($3='' OR pb.practice_date < $3::date)
+		ORDER BY pb.practice_date DESC,pb.position,pb.id`, userID, tuneID, before)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1349,13 +1351,14 @@ func (app *application) loadTuneHistoryDays(ctx context.Context, userID uuid.UUI
 	for blockRows.Next() {
 		var block practiceBlock
 		var removed bool
+		var attributedMS int64
 		if err := blockRows.Scan(&block.ID, &block.PracticeDate, &block.Title, &block.Notes, &block.ElapsedMS, &block.TargetMinutes, &block.Status,
-			&removed, &block.Category, &block.Track, &block.UpdatedAt, &block.CompletedAt); err != nil {
+			&removed, &block.Category, &block.Track, &block.UpdatedAt, &block.CompletedAt, &attributedMS); err != nil {
 			blockRows.Close()
 			return nil, "", err
 		}
 		block.Recordings = byBlock[block.ID.String()]
-		reconcileBlockPracticeTime(&block)
+		reconcileBlockPracticeTimeWithAttributed(&block, int(min(int64(maxBlockElapsedMS), attributedMS)))
 		linked[block.ID.String()] = true
 		if block.ElapsedMS == 0 && block.Notes == "" && len(block.Recordings) == 0 {
 			continue

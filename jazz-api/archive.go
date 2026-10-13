@@ -87,7 +87,7 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 		block_recorded AS (
 			SELECT pb.id, COALESCE(SUM(r.duration_ms) FILTER (WHERE r.status IN ('uploading','ready')),0)::bigint AS recorded_ms
 			FROM practice_blocks pb
-			LEFT JOIN recordings r ON r.practice_time_block_id=pb.id AND r.user_id=pb.user_id
+			LEFT JOIN recordings r ON COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.user_id=pb.user_id
 			CROSS JOIN bounds b
 			WHERE pb.user_id=$1 AND pb.practice_date BETWEEN b.from_date AND b.to_date
 			GROUP BY pb.id
@@ -103,7 +103,7 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 			SELECT timezone('America/Los_Angeles',r.recorded_at)::date AS day,
 			       COALESCE(SUM(r.duration_ms),0)::bigint AS duration_ms
 			FROM recordings r CROSS JOIN bounds b
-			WHERE r.user_id=$1 AND r.practice_time_block_id IS NULL AND r.status IN ('uploading','ready')
+			WHERE r.user_id=$1 AND COALESCE(r.practice_time_block_id,r.practice_block_id) IS NULL AND r.status IN ('uploading','ready')
 			  AND timezone('America/Los_Angeles',r.recorded_at)::date BETWEEN b.from_date AND b.to_date
 			GROUP BY day
 		),

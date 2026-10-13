@@ -621,7 +621,7 @@ func (app *application) wbJazzToday(ctx context.Context, subject string, user uu
 	}
 	out := []section{}
 	for _, b := range res.Blocks {
-		s := section{ID: b.ID, Title: b.Title, Category: b.Category, Target: b.TargetMinutes, Practiced: (max(b.ElapsedMS, b.RecordedMS) + 30000) / 60000, Status: b.Status, TuneID: b.TuneID, Notes: b.Notes}
+		s := section{ID: b.ID, Title: b.Title, Category: b.Category, Target: b.TargetMinutes, Practiced: (b.ElapsedMS + 30000) / 60000, Status: b.Status, TuneID: b.TuneID, Notes: b.Notes}
 		for _, r := range b.Recordings {
 			s.Takes = append(s.Takes, r.ID.String())
 		}

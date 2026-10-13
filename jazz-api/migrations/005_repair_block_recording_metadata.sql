@@ -5,7 +5,7 @@ UPDATE recordings AS recording
 SET tune_id = NULL,
     updated_at = now()
 FROM practice_blocks AS block
-WHERE COALESCE(recording.practice_time_block_id,recording.practice_block_id) = block.id
+WHERE recording.practice_block_id = block.id
   AND recording.tune_id = 'blue-bossa'
   AND block.block_key IN ('warm-up', 'articulation-flexibility', 'scales', 'horn-down-listening');
 
@@ -13,6 +13,6 @@ UPDATE recordings AS recording
 SET tune_id = 'blue-bossa',
     updated_at = now()
 FROM practice_blocks AS block
-WHERE COALESCE(recording.practice_time_block_id,recording.practice_block_id) = block.id
+WHERE recording.practice_block_id = block.id
   AND block.block_key = 'blue-bossa-play'
   AND recording.tune_id IS DISTINCT FROM 'blue-bossa';

@@ -63,6 +63,25 @@ and bucket read access for the Speech service agent. Failed work has three
 bounded attempts; source replacement creates a new analysis identity without
 overwriting prior results.
 
+Deleting a take also deletes its Speech sidecars, transcripts and long-tone
+traces. Workers never claim caption or long-tone work for a take that is not
+ready, was deleted or was replaced; those queued jobs close as
+`source_changed`. A Speech operation gets four times the take's length plus
+five minutes, then fails as `recognition_timeout` (retry it by asking again).
+
+## Moved takes and practice time
+
+"Change section" refiles a take (`practice_block_id`) but keeps its practice
+time with the section it was recorded in (`practice_time_block_id`). Every
+practice-time reader (Today, Archive, Sessions, Repertoire, tune history, the
+Workbench report) counts by `COALESCE(practice_time_block_id, practice_block_id)`;
+tune and placeholder-note repairs follow the filing.
+
+From October 11 until the restore, main's original migration 009 could credit
+a moved take's time to its new section as well. `audit/moved_take_double_credit.sql`
+lists the sections that look affected, read-only; nothing fixes them
+automatically.
+
 ## Saved long-tone analysis
 
 The authenticated long-tone endpoint queues durable analysis for the exact

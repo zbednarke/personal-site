@@ -116,8 +116,9 @@ func TestRecordingSectionMovePreservesPracticeAccounting(t *testing.T) {
 		t.Fatal("clip analysis was not marked outdated")
 	}
 
-	// Restart-safe repair migrations use original attribution, not the mutable
-	// destination, when interpreting tune and placeholder-note metadata.
+	// Replayed repair migrations read a take's tune from the section it is
+	// filed in now (a take belongs to its block's tune), while practice time
+	// stays with the section it was recorded in.
 	if _, err := db.Exec(ctx, `UPDATE practice_blocks SET block_key='blue-bossa-play' WHERE id=$1`, targetID); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestRecordingSectionMovePreservesPracticeAccounting(t *testing.T) {
 	if err := db.QueryRow(ctx, `SELECT COALESCE(tune_id,''),COALESCE(notes,'') FROM recordings WHERE id=$1`, recordingID).Scan(&tuneID, &note); err != nil {
 		t.Fatal(err)
 	}
-	if tuneID != "" || note != "Long tones section take" {
+	if tuneID != "blue-bossa" || note != "" {
 		t.Fatalf("restart rewrote preserved metadata: tune=%q note=%q", tuneID, note)
 	}
 
