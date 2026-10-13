@@ -136,8 +136,21 @@ func TestTrumpetTasteSkipInvestigation(t *testing.T) {
 	if taste["pairEligible"].(float64) != 8 {
 		t.Fatalf("eligible %v", taste["pairEligible"])
 	}
+	// The same state gives the same pairs and queue (the page relies on a
+	// stable order). Which pair comes first depends on the listings' random
+	// ids, so the test takes its pair from the answer, and the listing
+	// outside it from what is left.
+	if again := call("GET", "/v1/trumpets/taste", nil, "", 200); fmt.Sprint(again["pairs"], again["queue"]) != fmt.Sprint(taste["pairs"], taste["queue"]) {
+		t.Fatalf("pairs differ for the same state:\n%v\n%v", taste["pairs"], again["pairs"])
+	}
 	top := taste["pairs"].([]any)[0].(map[string]any)
 	a, b := top["a"].(string), top["b"].(string)
+	outside := ""
+	for i := len(ids) - 1; i >= 0 && outside == ""; i-- {
+		if ids[i] != a && ids[i] != b {
+			outside = ids[i]
+		}
+	}
 	// A note saved for the pair just before the skip belongs to it.
 	call("POST", "/v1/trumpets/taste/events", map[string]any{"clientId": "skip-note-01", "kind": "note", "mode": "pair", "listingId": a, "otherListingId": b, "note": "One of these is a cornet?"}, "", 201)
 	skip := map[string]any{"clientId": "skip-00001", "kind": "pair", "mode": "pair", "listingId": a, "otherListingId": b, "action": "skip", "note": "Can't\x00 compare", "meta": map[string]any{"hadPhoto": true, "skipReasons": []string{"not_bb"}}}
@@ -181,14 +194,11 @@ func TestTrumpetTasteSkipInvestigation(t *testing.T) {
 	// A finding: b is not a Bb trumpet. Excluded everywhere, reversibly.
 	finding := map[string]any{"eventId": skipID, "cause": "wrong_category", "side": "b", "llmCause": "wrong_category", "llmValid": true, "mode": "explain",
 		"explanation": "The right listing\x00 is a cornet.", "checks": []map[string]any{{"code": "wrong_category", "side": "b", "detail": "title says cornet"}},
-		"exclude": []map[string]any{{"listingId": b, "scope": "all", "reason": "wrong_category", "detail": "cornet"}, {"listingId": ids[7], "scope": "all", "reason": "wrong_category"}}}
+		"exclude": []map[string]any{{"listingId": b, "scope": "all", "reason": "wrong_category", "detail": "cornet"}, {"listingId": outside, "scope": "all", "reason": "wrong_category"}}}
 	// A listing outside the pair, or not a listing id at all, is refused.
-	if ids[7] == a || ids[7] == b {
-		t.Fatal("fixture: ids[7] must not be in the first pair")
-	}
 	call("POST", "/v1/trumpets/machine/taste/skips/findings", finding, token, 400)
 	call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": skipID, "cause": "wrong_category", "exclude": []map[string]any{{"listingId": "not-a-uuid", "scope": "all", "reason": "wrong_category"}}}, token, 400)
-	call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": skipID, "cause": "stale", "recheck": []string{ids[7]}}, token, 400)
+	call("POST", "/v1/trumpets/machine/taste/skips/findings", map[string]any{"eventId": skipID, "cause": "stale", "recheck": []string{outside}}, token, 400)
 	finding["exclude"] = finding["exclude"].([]map[string]any)[:1]
 	saved := call("POST", "/v1/trumpets/machine/taste/skips/findings", finding, token, 201)
 	f := saved["finding"].(map[string]any)

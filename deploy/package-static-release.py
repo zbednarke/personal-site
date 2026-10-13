@@ -14,6 +14,11 @@ the upload shrinks: it goes through the IAP tunnel (deploy/upload-static-release
 and a typical deploy changes a few small files. A file is left out
 only when the live copy's SHA-256 is the same; anything else (new, changed,
 not readable there, a symlink) is packaged.
+
+--live-files is a list of every file in the live release (`find . -type f -o
+-type l`). Files there that these paths do not have are kept by the overlay
+but managed by nothing in the repository (an out-of-band deploy, or a file
+deleted from the repository); they are listed as a warning, never deleted.
 """
 import argparse
 import hashlib
@@ -69,10 +74,26 @@ def changed_files(paths, live):
     return [f for f in release_files(paths) if os.path.islink(f) or live.get(f) != sha256(f)]
 
 
+def orphan_files(live_files_path, every):
+    """Live release files that the published set does not have, sorted."""
+    published = set(every)
+    orphans = set()
+    try:
+        with open(live_files_path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                name = os.path.normpath(line.rstrip('\r\n'))
+                if line.strip() and name != '.release-commit' and name not in published:
+                    orphans.add(name)
+    except FileNotFoundError:
+        pass
+    return sorted(orphans)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--live', required=True, help='sha256sum output of the live release (may be empty)')
     parser.add_argument('--out', required=True, help='archive to write (.tar.gz)')
+    parser.add_argument('--live-files', help='every file in the live release, one per line, to warn about the ones not published')
     parser.add_argument('paths', nargs='+')
     args = parser.parse_args(argv)
     live = live_hashes(args.live)
@@ -89,6 +110,18 @@ def main(argv=None):
         print('  ' + name)
     if len(changed) > 50:
         print(f'  ... and {len(changed) - 50} more')
+    if args.live_files:
+        orphans = orphan_files(args.live_files, every)
+        if orphans:
+            print(f'::warning title=Live files not in the repository::{len(orphans)} file(s) in the live release are not '
+                  'in this commit\'s published set. They are kept (nothing is deleted); merge them into the '
+                  'repository or remove them on the VM by hand.')
+            for name in orphans[:200]:
+                print('  not in repo: ' + name)
+            if len(orphans) > 200:
+                print(f'  ... and {len(orphans) - 200} more')
+        else:
+            print('Every live file is in the published set.')
     return 0
 
 
