@@ -86,16 +86,21 @@ jobs:
           gcloud run jobs update jazz-magic-film --image "$image" --quiet "${flags[@]}" \
             --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 45m --cpu 2 --memory 4Gi
       - name: Publish the static release
-        # The upload goes through the IAP tunnel at a few KB/s, so the whole
-        # 2.4 MB site took 250-490 s. Only files whose bytes differ from the
-        # live release are uploaded; publish-static-release.sh still copies the
-        # live release and overlays them, so the published files are the same
-        # as with the full archive. If the live hashes cannot be read, every
-        # file is uploaded. Each part's time is printed.
+        # The upload goes through the IAP tunnel, so only files whose bytes
+        # differ from the live release are packaged; publish-static-release.sh
+        # still copies the live release and overlays them, so the published
+        # files are the same as with the full archive. If the live hashes
+        # cannot be read, every file is packaged. upload-static-release.sh
+        # streams the archive and the publish script over an ssh session's
+        # stdin (gcloud compute scp sat ~240 s through the tunnel whatever the
+        # size), checks their SHA-256 on the VM, and caps each attempt at
+        # 120 s with one retry; nothing is published unless the bytes match.
+        # Each part's time is printed.
         run: |
           sha=${{ steps.commit.outputs.sha }}
           paths=(index.html .nojekyll assets jazz trumpets commonplace privacy)
           flags=(--project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet)
+          remote=/tmp/site-release-$sha
           t=$SECONDS
           if ! gcloud compute ssh "$SITE_VM" "${flags[@]}" \
               --command "cd /srv/zachbednarke.com/current && find ${paths[*]} -type f -exec sha256sum {} + 2>/dev/null; true" > live.sha256; then
@@ -104,9 +109,13 @@ jobs:
           fi
           echo "Read live hashes: $((SECONDS - t)) s"; t=$SECONDS
           python3 deploy/package-static-release.py --live live.sha256 --out "site-$sha.tar.gz" "${paths[@]}"
-          gcloud compute scp "${flags[@]}" "site-$sha.tar.gz" deploy/publish-static-release.sh "$SITE_VM:/tmp/"
+          UPLOAD_TIMEOUT=120 UPLOAD_ATTEMPTS=2 bash deploy/upload-static-release.sh "$remote" \
+            "site-$sha.tar.gz" deploy/publish-static-release.sh \
+            -- gcloud compute ssh "$SITE_VM" "${flags[@]}" \
+            --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4
           echo "Upload: $((SECONDS - t)) s"; t=$SECONDS
-          gcloud compute ssh "$SITE_VM" "${flags[@]}" --command "sudo bash /tmp/publish-static-release.sh /tmp/site-$sha.tar.gz $sha && rm -f /tmp/publish-static-release.sh"
+          gcloud compute ssh "$SITE_VM" "${flags[@]}" --command \
+            "sudo bash $remote/publish-static-release.sh $remote/site-$sha.tar.gz $sha; s=\$?; rm -rf $remote; exit \$s"
           echo "Switch release: $((SECONDS - t)) s"
       - name: Check the site
         run: curl --fail --silent --show-error --output /dev/null --retry 3 https://zachbednarke.com/

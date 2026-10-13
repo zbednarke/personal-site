@@ -13,8 +13,17 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    commit, then switches `/srv/zachbednarke.com/current` atomically. Only the
    files whose bytes differ from the live release are uploaded
    (`deploy/package-static-release.py` compares SHA-256 hashes read from the VM;
-   if they cannot be read, every file is), because the IAP upload runs at a few
-   KB/s; the overlay makes the release the same either way. Films in
+   if they cannot be read, every file is); the overlay makes the release the
+   same either way. `deploy/upload-static-release.sh` sends that archive and
+   the publish script as one tar on an ssh session's stdin (not
+   `gcloud compute scp`, which through the IAP tunnel intermittently sat about
+   240 s before exiting, even for 32 KB). On the VM the tar's SHA-256 must
+   equal the runner's before it is unpacked into `/tmp/site-release-<sha>`;
+   each attempt is capped at 120 s and retried once, and if no attempt
+   verifies, the step fails and nothing is published. The log prints each
+   part's time and, per attempt, how long the VM took to receive the bytes
+   (`received N bytes in M ms`), which tells a slow transfer from a session
+   that will not close. Films in
    `/srv/zachbednarke.com/films` are separate and untouched. The log prints the
    previous release and a one-line rollback.
 
