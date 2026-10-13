@@ -110,13 +110,13 @@
   }
 
   function visibleView() {
-    if (location.hash === "#library") return "library";
-    if (location.hash === "#training") return "training";
     if (location.hash === "#archive" || location.hash.startsWith("#archive/")) return "archive";
     if (location.hash === "#repertoire" || location.hash.startsWith("#repertoire/") || location.hash.startsWith("#repertoire?")) return "repertoire";
     if (location.hash === "#guide-tones") return "guide-tones";
     if (location.hash === "#studio") return "studio";
     if (location.hash === "#effects") return "effects";
+    if (location.hash === "#library" || location.hash.startsWith("#library?")) return "library";
+    if (location.hash === "#training") return "training";
     return "today";
   }
 
@@ -139,23 +139,23 @@
 
   function route() {
     const view = visibleView();
-    document.body.classList.toggle("virtuoso-library", view === "library");
-    if ($("#library")) $("#library").hidden = view !== "library";
     document.body.classList.toggle("virtuoso-today", view === "today");
     document.body.classList.toggle("virtuoso-archive", view === "archive");
     document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
-    document.body.classList.toggle("virtuoso-training", view === "training");
-    $("#training").hidden = view !== "training";
     document.body.classList.toggle("virtuoso-studio", view === "studio");
     document.body.classList.toggle("virtuoso-effects", view === "effects");
     document.body.classList.toggle("virtuoso-repertoire", view === "repertoire");
+    document.body.classList.toggle("virtuoso-library", view === "library");
+    document.body.classList.toggle("virtuoso-training", view === "training");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
     $("#guide-tones").hidden = view !== "guide-tones";
     $("#studio").hidden = view !== "studio";
     $("#effects").hidden = view !== "effects";
     $("#repertoire").hidden = view !== "repertoire";
-    const labels = { library: "Library", training: "Training", archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", repertoire: "Repertoire", today: "Today" };
+    if ($("#library")) $("#library").hidden = view !== "library";
+    $("#training").hidden = view !== "training";
+    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", repertoire: "Repertoire", library: "Library", training: "Training", today: "Today" };
     $("#mobile-view-label").textContent = labels[view];
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;

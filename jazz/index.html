@@ -39,11 +39,11 @@
     <div class="virtuoso-nav-links">
       <a class="active" href="#today" data-jazz-view="today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
       <a href="#repertoire" data-jazz-view="repertoire"><span aria-hidden="true">♪</span>Repertoire</a>
+      <a href="#library" data-jazz-view="library"><span aria-hidden="true">▤</span>Library</a>
       <a href="#training" data-jazz-view="training"><span aria-hidden="true">◎</span>Training</a>
       <a href="#guide-tones" data-jazz-view="guide-tones"><span aria-hidden="true">&#9835;</span>Guide tones</a>
       <a href="#effects" data-jazz-view="effects"><span aria-hidden="true">∿</span>Live effects</a>
       <a href="#archive" data-jazz-view="archive"><span aria-hidden="true">▱</span>Archive</a>
-      <a href="#library" data-jazz-view="library"><span aria-hidden="true">▤</span>Library</a>
       <a href="#studio" data-jazz-view="studio"><span aria-hidden="true">✂</span>Clip studio</a>
       <a href="/trumpets/#inspiration"><span aria-hidden="true">✦</span>Horn inspiration</a>
       <a href="/commonplace/"><span aria-hidden="true">❦</span>Commonplace</a>
@@ -202,14 +202,6 @@
       </div>
     </section>
 
-    <section id="library" class="library-screen" aria-labelledby="library-heading" hidden>
-      <div class="library-kicker">The reference shelf</div><h1 id="library-heading">Music library</h1><p class="library-intro">Books, studies, and sheet music. Your own collection, ready whenever you practice.</p>
-      <div class="library-tools"><input id="library-search" type="search" aria-label="Search library" placeholder="Find a title or author"><button id="library-add" class="button" type="button">＋ Add PDF</button><button id="library-refresh" class="button" type="button">Refresh</button></div>
-      <div id="library-upload" class="library-upload" hidden><form id="library-form"><label class="wide">PDF file · up to 100 MB<input id="library-file" type="file" accept="application/pdf,.pdf" required></label><label>Title<input id="library-title" maxlength="240" required></label><label>Author <span>(optional)</span><input id="library-author" maxlength="160"></label><button id="library-submit" class="button" type="submit">Save to library</button></form></div>
-      <p id="library-status" class="library-status" role="status"></p><p id="library-count" class="library-count"></p>
-      <section id="library-reader" class="library-reader" aria-labelledby="library-reader-title" hidden><header><h2 id="library-reader-title" tabindex="-1"></h2><button id="library-close" class="button" type="button">Close reader</button></header><p>If the embedded reader is unavailable, <a id="library-open-file" target="_blank" rel="noopener">open the PDF in a new tab</a> or use Download.</p><iframe id="library-frame" title="Music PDF reader"></iframe></section>
-      <p id="library-empty" hidden></p><div id="library-books" class="library-grid"></div>
-    </section>
     <section class="archive-screen" id="archive" aria-labelledby="archive-title" hidden>
       <header class="archive-screen-header">
         <div>
@@ -539,6 +531,15 @@
       <div id="repertoire-unlinked"></div>
       <div id="repertoire-categories"></div>
       <div id="repertoire-archived"></div>
+    </section>
+
+    <section id="library" class="library-screen" aria-labelledby="library-heading" hidden>
+      <div class="library-kicker">The reference shelf</div><h1 id="library-heading">Music library</h1><p class="library-intro">Books, studies, and sheet music. Your own collection, ready whenever you practice.</p>
+      <div class="library-tools"><input id="library-search" type="search" aria-label="Search library" placeholder="Find a title or author"><button id="library-add" class="button" type="button">＋ Add PDF</button><button id="library-refresh" class="button" type="button">Refresh</button></div>
+      <div id="library-upload" class="library-upload" hidden><form id="library-form"><label class="wide">PDF file · up to 100 MB<input id="library-file" type="file" accept="application/pdf,.pdf" required></label><label>Title<input id="library-title" maxlength="240" required></label><label>Author <span>(optional)</span><input id="library-author" maxlength="160"></label><button id="library-submit" class="button" type="submit">Save to library</button></form></div>
+      <p id="library-status" class="library-status" role="status"></p><p id="library-count" class="library-count"></p>
+      <section id="library-reader" class="library-reader" aria-labelledby="library-reader-title" hidden><header><h2 id="library-reader-title" tabindex="-1"></h2><button id="library-close" class="button" type="button">Close reader</button></header><p>If the embedded reader is unavailable, <a id="library-open-file" target="_blank" rel="noopener">open the PDF in a new tab</a> or use Download.</p><iframe id="library-frame" title="Music PDF reader"></iframe></section>
+      <p id="library-empty" hidden></p><div id="library-books" class="library-grid"></div>
     </section>
 
     <section class="section" id="roadmap" aria-labelledby="roadmap-title">

@@ -1,3 +1,7 @@
+/* Library view for /jazz/ (#library): the private PDF shelf served by the
+ * highlight service on the site VM at ./highlight-api/library (list, upload,
+ * read and download). #library?q=<text> opens it with the search filled in,
+ * which is how Repertoire's "Sheet music" section links here. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id), root = $('library');
@@ -6,6 +10,12 @@
   let items = [], loading = false;
   const status = text => { $('library-status').textContent = text; };
   const fileURL = item => `${api}/${encodeURIComponent(item.id)}/file`;
+  const isLibraryHash = () => location.hash === '#library' || location.hash.startsWith('#library?');
+  function applyHashQuery() {
+    const match = /^#library\?(.*)$/.exec(location.hash);
+    const q = match ? new URLSearchParams(match[1]).get('q') : null;
+    if (q !== null) $('library-search').value = q;
+  }
 
   function open(item) {
     $('library-reader').hidden = false;
@@ -20,7 +30,10 @@
     const panel = document.createElement('section'); panel.className = 'library-listening';
     const heading = document.createElement('h3'); heading.textContent = 'Listen & study'; panel.append(heading);
     for (const resource of resources) {
-      const link = document.createElement('a'); link.href = resource.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      // Like `source`, only https URLs become links; anything else is shown as plain text.
+      const safe = /^https:\/\//i.test(String(resource.url || ''));
+      const link = document.createElement(safe ? 'a' : 'div'); link.className = 'library-listening-item';
+      if (safe) { link.href = resource.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
       const title = document.createElement('strong'); title.textContent = resource.title;
       const artist = document.createElement('span'); artist.textContent = resource.artist || 'Recording';
       link.append(title, artist);
@@ -82,6 +95,6 @@
     xhr.send(file);
   };
   $('library-close').onclick = () => { $('library-frame').removeAttribute('src'); $('library-reader').hidden = true; $('library-search').focus(); };
-  document.addEventListener('jazz:view-change', e => { if (e.detail.view === 'library') load(); else { $('library-frame').removeAttribute('src'); $('library-reader').hidden = true; } });
-  if (location.hash === '#library') load();
+  document.addEventListener('jazz:view-change', e => { if (e.detail.view === 'library') { applyHashQuery(); if (items.length) render(); load(); } else { $('library-frame').removeAttribute('src'); $('library-reader').hidden = true; } });
+  if (isLibraryHash()) { applyHashQuery(); load(); }
 })();
