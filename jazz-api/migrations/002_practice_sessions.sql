@@ -35,9 +35,6 @@ CREATE INDEX IF NOT EXISTS practice_activities_session_time_idx
 ALTER TABLE recordings
     ADD COLUMN IF NOT EXISTS practice_activity_id uuid REFERENCES practice_activities(id) ON DELETE SET NULL;
 
-ALTER TABLE recordings
-    DROP CONSTRAINT IF EXISTS recordings_duration_ms_check;
-
-ALTER TABLE recordings
-    ADD CONSTRAINT recordings_duration_ms_check
-    CHECK (duration_ms IS NULL OR duration_ms BETWEEN 0 AND 3600000);
+-- Duration limits are managed by 007_video_recording_assets.sql. Migrations
+-- replay at startup, so restoring the former one-hour limit here would prevent
+-- startup after a valid longer recording has been saved.

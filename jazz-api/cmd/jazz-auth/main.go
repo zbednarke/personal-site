@@ -9,6 +9,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -56,6 +57,10 @@ func (a auth) valid(value string) (time.Time, bool) {
 }
 func (a auth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Path == "/jazz/sign-in" {
+		a.signIn(w, r)
+		return
+	}
 	if r.URL.Path != "/check" {
 		http.NotFound(w, r)
 		return
@@ -76,6 +81,10 @@ func (a auth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		user, password, present := r.BasicAuth()
 		if !present || user != a.User || bcrypt.CompareHashAndPassword([]byte(a.Hash), []byte(password)) != nil {
+			if (method == "GET" || method == "HEAD") && (r.Header.Get("Sec-Fetch-Dest") == "document" || strings.Contains(r.Header.Get("Accept"), "text/html")) {
+				http.Redirect(w, r, "/jazz/sign-in?next="+url.QueryEscape(safeNext(r.Header.Get("X-Forwarded-Uri"))), http.StatusSeeOther)
+				return
+			}
 			w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
 			http.Error(w, "Sign in to the Jazz Project", http.StatusUnauthorized)
 			return

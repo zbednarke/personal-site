@@ -2,7 +2,8 @@
   "use strict";
 
   class LosslessRecorder {
-    constructor() {
+    constructor(onChunk = null) {
+      this.onChunk = onChunk;
       this.context = null;
       this.source = null;
       this.node = null;
@@ -31,6 +32,7 @@
         if (event.data?.type === "samples") {
           const samples = event.data.samples;
           this.chunks.push(samples);
+          this.onChunk?.(samples, this.context.sampleRate);
           this.chunkPeaks.push(chunkPeak(samples));
           this.frameCount += samples.length;
         } else if (event.data?.type === "flushed") {
@@ -145,5 +147,6 @@
   }
 
   LosslessRecorder.compactPeaks = compactPeaks;
+  LosslessRecorder.encodeWAV24 = encodeWAV24;
   globalThis.JazzLosslessRecorder = LosslessRecorder;
 })();

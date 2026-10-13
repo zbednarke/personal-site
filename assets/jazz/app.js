@@ -531,6 +531,7 @@
             <button class="take-share-button" type="button" data-section-share data-share-asset="${isVideo ? "video" : "audio"}" ${recording.status === "ready" ? "" : "disabled"}>${isVideo ? "Share video" : "Copy share link"}</button>
             ${isVideo ? `<button class="take-share-button" type="button" data-section-share data-share-asset="audio" ${recording.status === "ready" ? "" : "disabled"}>Share WAV</button>` : ""}
             <button type="button" data-section-delete>Delete</button>
+            <button type="button" data-change-recording-section>Change section</button>
             <button class="take-note-button" type="button" data-take-note-toggle aria-expanded="false">${note ? "Edit note" : "Take note"}</button>
           </div>
           <label class="take-note-editor" data-take-note-editor hidden>
@@ -687,7 +688,15 @@
       });
       $("[data-section-delete]", take).addEventListener("click", () => globalThis.JazzRecording?.delete(recordingID));
       const recording = block.recordings.find((candidate) => String(candidate.id) === recordingID);
-      if (recording) wireTakeNoteEditor(recording, take);
+      if (recording) {
+        $("[data-change-recording-section]", take)?.addEventListener("click", () => globalThis.JazzRecordingSections?.open({
+          ...recording,
+          practiceSessionId: block.practiceSessionId,
+          practiceDate: block.practiceDate,
+          practiceBlockTitle: block.title,
+        }));
+        wireTakeNoteEditor(recording, take);
+      }
     });
   }
 
@@ -958,7 +967,7 @@
         card.classList.toggle("running", timer.running);
         const readout = $("[data-timer-readout]", card);
         const progress = $("[data-timer-progress]", card);
-        if (readout) readout.textContent = `${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal`;
+        if (readout) readout.textContent = `${formatTimer(elapsedMs)} practiced / ${formatTimer(targetMs)} goal`;
         if (progress) {
           progress.style.width = `${Math.min(100, (elapsedMs / targetMs) * 100)}%`;
           progress.parentElement?.setAttribute("aria-valuenow", String(Math.min(100, Math.round((elapsedMs / targetMs) * 100))));
@@ -1235,7 +1244,7 @@
           <span class="plan-step">${complete ? "✓" : String(index + 1).padStart(2, "0")}</span>
           <span class="plan-copy"><strong>${escapeHTML(displayTitle)}</strong><small>${escapeHTML(session.time)} · ${takeCount} take${takeCount === 1 ? "" : "s"}</small></span>
           <span class="plan-status">${recordingStatus || (complete ? "Complete" : (elapsedMs > 0 ? "In progress" : `${session.minutes} min`))}</span>
-          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(displayTitle)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
+          <span class="session-timer-track" role="progressbar" aria-label="${escapeHTML(displayTitle)} practice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></span>
         </button>
         ${practiceLayoutDraft ? `<div class="practice-plan-actions"><button type="button" data-section-rename aria-label="Rename ${escapeHTML(displayTitle)}" ${removed || practiceLayoutSaving ? "disabled" : ""}>Rename</button><button type="button" data-section-delete aria-label="${removed ? "Undo deletion of" : "Delete"} ${escapeHTML(displayTitle)}" ${practiceLayoutSaving || (!removed && deleteReason) ? "disabled" : ""}>${removed ? "Undo" : "Delete"}</button></div>
           ${removed ? '<p class="section-edit-note">Will be removed when you save. Notes and takes stay in Previous work.</p>' : deleteReason ? `<p class="section-edit-note">${escapeHTML(deleteReason)}</p>` : ""}` : ""}`;
@@ -1338,8 +1347,8 @@
         <span class="selected-section-target">${session.minutes}<small>min goal</small></span>
       </header>
       <div class="selected-progress">
-        <div class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} recording progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div>
-        <span class="timer-readout" data-timer-readout aria-live="off">${formatTimer(elapsedMs)} recorded / ${formatTimer(targetMs)} goal</span>
+        <div class="session-timer-track" role="progressbar" aria-label="${escapeHTML(session.title)} practice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, Math.round((elapsedMs / targetMs) * 100))}"><span data-timer-progress style="width:${Math.min(100, (elapsedMs / targetMs) * 100)}%"></span></div>
+        <span class="timer-readout" data-timer-readout aria-live="off">${formatTimer(elapsedMs)} practiced / ${formatTimer(targetMs)} goal</span>
       </div>
       <div class="section-recording-panel">
         <div class="section-recording-head">
@@ -1837,6 +1846,26 @@
       if (job.phase === "complete") sectionUploadJobs.delete(id);
     });
     renderSessions();
+  });
+  addEventListener("jazz:recording-section-changed", (event) => {
+    const recordingID = String(event.detail?.recording?.id || "");
+    const take = recordingID ? document.querySelector(`[data-section-take="${CSS.escape(recordingID)}"]`) : null;
+    const player = take?.querySelector("audio, video");
+    // Reparent an active or paused player before the section cards refresh so
+    // its media element, time and playback state survive the canonical move.
+    if (player) {
+      const host = $("#detached-playback-host");
+      const playback = document.createElement("div");
+      playback.className = "section-upload-job detached-take-playback";
+      playback.dataset.tone = "active";
+      const label = document.createElement("span");
+      label.textContent = `${event.detail.recording.practiceBlockTitle || "Recording"} · playback continues`;
+      const mediaNode = player.closest(".video-player-shell, .saved-media-player") || player;
+      playback.append(label);
+      globalThis.JazzRecordingSectionModel?.reparentMedia(player, mediaNode, host, playback);
+      player.addEventListener("ended", () => playback.remove(), { once: true });
+    }
+    hydrateGuidedBlocks();
   });
   renderAll();
   addEventListener("online", flushOutbox);

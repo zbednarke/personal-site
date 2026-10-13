@@ -11,10 +11,11 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const state = {
     date: U.dateKey(new Date()), initialized: false, recordings: [], candidates: [], analysis: null,
-    current: null, currentRecording: null, currentMode: "idle", media: null,
+    current: null, currentRecording: null, currentMode: "idle", media: null, sectionAssignmentVersion: 0,
     loadRequest: 0, playbackRequest: 0, resumeAfterLoad: false, savePromise: Promise.resolve(), saveTimers: new Map(),
     playbackURLs: new Map(), players: new Map(), playerLoads: new Map(), playerUse: 0, warmToken: 0,
     project: Model.createProject(U.dateKey(new Date())), draggedOutputIndex: -1, addMode: false, addModeBusy: false, loadingDay: false,
+    captions: new Map(), captionPoll: 0,
   };
 
   async function api(path, options = {}) {
@@ -102,23 +103,26 @@
     async snapshot() {
       if (!state.initialized || state.loadingDay) throw new Error("Open Clip Studio and wait for the day to load");
       const date = state.date;
-      const candidates = state.candidates.filter(c => c.reviewStatus !== "rejected").map(c => ({ ...c }));
-      if (!candidates.length) throw new Error("Add manual moments or scan for suggestions first");
-      const ids = new Set(candidates.map(c => c.recordingId));
-      const recordings = state.recordings.filter(r => ids.has(r.id)).map(r => ({ ...r }));
+      const candidates = state.candidates.map(c => ({ ...c }));
+      if (!state.recordings.length) throw new Error("No uploaded recordings for this day yet");
+      const recordings = state.recordings.map(r => ({ ...r }));
       const sources = [];
       for (const r of recordings) {
         const audio = await api(`/recordings/${r.id}/playback-url?asset=audio`, { method: "POST", body: "{}" });
         const video = r.mediaKind === "video" ? await api(`/recordings/${r.id}/playback-url?asset=video`, { method: "POST", body: "{}" }) : null;
-        sources.push({ id: r.id, title: titleFor(r), durationMs: r.durationMs, audioUrl: audio.url, videoUrl: video?.url || null });
+        sources.push({ id: r.id, title: titleFor(r), durationMs: r.durationMs, audioUrl: audio.url, videoUrl: video?.url || null, section: titleFor(r), sizeBytes: r.sizeBytes, videoSizeBytes: r.videoSizeBytes });
       }
-      return { date, candidates, recordings: sources };
+      return { date, candidates, recordings: sources, analyzeAll: true };
     },
     importDraft({ date, project }) {
       if (state.date !== date) throw new Error(`Select ${date} in Clip Studio, then open the draft again`);
       const normalized = Model.normalizeProject(project, date);
       if (!normalized.clips.length || normalized.clips.length !== project?.clips?.length) throw new Error("Invalid draft timeline");
       for (const clip of normalized.clips) {
+        if (clip.generated) {
+          if (!Model.discoveredClipAvailable(clip, state.recordings, state.candidates)) throw new Error("A discovered passage is no longer available or was rejected. Generate a fresh draft.");
+          continue;
+        }
         const candidate = state.candidates.find(c => c.id === clip.candidateId && c.reviewStatus !== "rejected");
         if (!candidate || candidate.recordingId !== clip.recordingId || clip.startMs < candidate.startMs || clip.endMs > candidate.endMs) throw new Error("A candidate changed or was rejected. Generate a new draft using the latest moments.");
       }
@@ -144,6 +148,7 @@
     $("#studio-previous-day").addEventListener("click", () => shiftDay(-1));
     $("#studio-next-day").addEventListener("click", () => shiftDay(1));
     $("#studio-scan").addEventListener("click", () => scanDay(false));
+    $("#studio-captions").addEventListener("click", generateDayCaptions);
     $("#studio-add-clip").addEventListener("click", () => setAddClipMode(!state.addMode));
     $("#studio-start").addEventListener("input", () => updateBoundaryFromInputs("start"));
     $("#studio-end").addEventListener("input", () => updateBoundaryFromInputs("end"));
@@ -173,6 +178,7 @@
     if (!U.parseDateKey(date)) return;
     const request = ++state.loadRequest;
     state.loadingDay = true;
+    clearTimeout(state.captionPoll); state.captions.clear();
     state.warmToken++;
     if (state.date !== date) persistProject();
     state.date = date;
@@ -233,6 +239,7 @@
   async function scanDay(automatic) {
     if (!state.recordings.length) return;
     const scanDate = state.date;
+    const assignmentVersion = state.sectionAssignmentVersion;
     const button = $("#studio-scan");
     button.disabled = true;
     setScanState("working", automatic ? "Analyzing automatically" : "Rescanning", "Finding sustained musical activity in the lossless masters…");
@@ -240,6 +247,11 @@
     try {
       const result = await api(`/studio/days/${scanDate}/scan`, { method: "POST", body: "{}" });
       if (state.date !== scanDate) return;
+      if (state.sectionAssignmentVersion !== assignmentVersion) {
+        state.analysis = { ...(state.analysis || {}), needsScan: true };
+        setScanState("ready", "Rescan required", "A recording changed sections while analysis was running.");
+        return;
+      }
       state.candidates = result.candidates || [];
       state.analysis = { needsScan: false, analyzedAt: new Date().toISOString(), version: "waveform-v1", recordingCount: result.scannedRecordings };
       state.current = null;
@@ -257,6 +269,69 @@
     } finally {
       button.disabled = false;
     }
+  }
+
+  async function generateDayCaptions() {
+    const button = $("#studio-captions");
+    button.disabled = true;
+    setStatus("Queuing captions and note analysis for every take");
+    try {
+      const [result] = await Promise.all([
+        api(`/studio/days/${state.date}/captions`, { method: "POST", body: "{}" }),
+        fetch("./highlight-api/day-analyses", { method: "POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({date:state.date}) }).then(async response => { const body=await response.json().catch(()=>({})); if(!response.ok && response.status!==409) throw new Error(body.error||"note analysis could not start"); return body; }),
+      ]);
+      state.captions.clear();
+      setStatus(`Captions and note analysis queued for ${result.recordingCount} takes`, "success");
+      $("#studio-scan-menu").open = false;
+      if (state.currentRecording) loadCaptions(state.currentRecording, true);
+    } catch (error) {
+      setStatus(`Captions unavailable · ${error.message}`, "error");
+    } finally { button.disabled = false; }
+  }
+
+  async function loadCaptions(recording, force = false) {
+    const cached = state.captions.get(recording.id);
+    if (cached?.status === "ready" && !force) { renderCaptions(recording, cached); return; }
+    try {
+      const result = await api(`/recordings/${recording.id}/captions`);
+      if (state.currentRecording?.id !== recording.id) return;
+      state.captions.set(recording.id, result);
+      renderCaptions(recording, result);
+      clearTimeout(state.captionPoll);
+      if (result.status === "pending" || result.status === "running") state.captionPoll = setTimeout(() => loadCaptions(recording, true), 5000);
+    } catch (error) {
+      renderCaptions(recording, { status: "failed", errorCode: error.message });
+    }
+  }
+
+  function visibleCaptionSegments(result) {
+    const segments = result?.segments || [];
+    const clip = state.currentMode === "candidate" ? state.current : null;
+    return clip ? segments.filter(segment => segment.endMs > clip.startMs && segment.startMs < clip.endMs) : segments;
+  }
+
+  function renderCaptions(recording, result) {
+    if (state.currentRecording?.id !== recording.id) return;
+    let host = $("#studio-transcript");
+    if (!host) { host = document.createElement("section"); host.id = "studio-transcript"; $("#studio-media").append(host); }
+    if (result.status === "missing") { host.innerHTML = '<p>Captions have not been generated for this take.</p>'; return; }
+    if (result.status === "pending" || result.status === "running") { host.innerHTML = '<p>Generating timed captions…</p>'; return; }
+    if (result.status === "failed") { host.innerHTML = `<p>Captioning could not finish · ${escapeHTML(result.errorCode || "try again")}</p>`; return; }
+    const segments = visibleCaptionSegments(result);
+    if (!segments.length) { host.innerHTML = '<p>No speech detected in this passage.</p>'; return; }
+    host.innerHTML = `<header><span>Timed transcript</span><small>${segments.length} caption${segments.length === 1 ? "" : "s"}</small></header><div>${segments.map((segment,index) => `<button type="button" data-caption-index="${index}" data-caption-start="${segment.startMs}"><time>${formatClock(segment.startMs)}</time><span>${escapeHTML(segment.text)}</span></button>`).join("")}</div>`;
+    host.querySelectorAll("[data-caption-start]").forEach(button => button.onclick = () => seekMedia(state.media, Number(button.dataset.captionStart), true, () => state.currentRecording?.id === recording.id));
+    updateCaptionCue();
+  }
+
+  function updateCaptionCue() {
+    const host = $("#studio-transcript"); if (!host || !state.media) return;
+    const now = state.media.currentTime * 1000;
+    const segments = visibleCaptionSegments(state.captions.get(state.currentRecording?.id));
+    host.querySelectorAll("[data-caption-start]").forEach(button => {
+      const segment = segments[Number(button.dataset.captionIndex)];
+      button.classList.toggle("active", Boolean(segment && now >= segment.startMs && now < segment.endMs));
+    });
   }
 
   function render() {
@@ -292,6 +367,11 @@
       return;
     }
     host.innerHTML = state.recordings.map((recording) => recordingMarkup(recording)).join("");
+    host.querySelectorAll("[data-studio-change-section]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const recording = state.recordings.find((item) => item.id === button.dataset.studioChangeSection);
+      if (recording) globalThis.JazzRecordingSections?.open(recording);
+    }));
     host.querySelectorAll("[data-studio-candidate]").forEach((button) => button.addEventListener("click", (event) => {
       event.stopPropagation();
       if (state.addMode) {
@@ -351,7 +431,7 @@
     const sampled = Array.from({ length: barCount }, (_, index) => peaks[Math.floor((index / barCount) * peaks.length)] || 0);
     const waveform = sampled.map((peak) => `<i style="height:${Math.max(3, Math.round(Number(peak) * 100))}%"></i>`).join("");
     const regions = candidates.map((candidate) => regionMarkup(candidate, duration)).join("");
-    return `<article class="clip-studio-recording"><header><div><strong>${escapeHTML(titleFor(recording))}</strong><span>${escapeHTML(U.takeLabel(recording))} · ${recording.mediaKind === "video" ? "video + lossless WAV" : "lossless WAV"}</span></div><time>${formatClock(duration)}</time></header><div class="clip-studio-waveform" data-recording-id="${recording.id}" aria-label="${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))} waveform"><div class="studio-waveform-bars">${waveform}</div><div class="studio-waveform-regions">${regions}</div><div class="studio-playhead" data-playhead-recording="${recording.id}" hidden><i></i></div></div></article>`;
+    return `<article class="clip-studio-recording"><header><div><strong>${escapeHTML(titleFor(recording))}</strong><span>${escapeHTML(U.takeLabel(recording))} · ${recording.mediaKind === "video" ? "video + lossless WAV" : "lossless WAV"}</span></div><div><time>${formatClock(duration)}</time><button type="button" data-studio-change-section="${recording.id}">Change section</button></div></header><div class="clip-studio-waveform" data-recording-id="${recording.id}" aria-label="${escapeHTML(titleFor(recording))} ${escapeHTML(U.takeLabel(recording))} waveform"><div class="studio-waveform-bars">${waveform}</div><div class="studio-waveform-regions">${regions}</div><div class="studio-playhead" data-playhead-recording="${recording.id}" hidden><i></i></div></div></article>`;
   }
 
   function regionMarkup(candidate, duration) {
@@ -493,6 +573,7 @@
     const entry = state.players.get(key);
     if (!entry) return;
     entry.media.pause();
+    globalThis.JazzLongToneOverlay?.dispose(entry.media);
     entry.media.removeAttribute("src");
     entry.media.load();
     state.players.delete(key);
@@ -574,6 +655,7 @@
     const resumePlayback = state.resumeAfterLoad || Boolean(state.media && !state.media.paused);
     state.resumeAfterLoad = resumePlayback;
     state.media?.pause();
+    if (state.media) globalThis.JazzLongToneOverlay?.dispose(state.media);
     if (!warm) {
       $("#studio-media").innerHTML = '<p class="clip-studio-empty">Loading private playback…</p>';
       setBufferStatus("Preparing media…");
@@ -582,7 +664,9 @@
       const entry = await cachedPlayer(recording, "auto");
       if (request !== state.playbackRequest || state.currentRecording?.id !== recording.id) return;
       state.media = entry.media;
-      $("#studio-media").replaceChildren(entry.media);
+      const playerShell = globalThis.JazzMediaPlayback?.createSavedPlayer(entry.media, { recordingId: recording.id, asset: recording.mediaKind === "video" ? "video" : "audio", expectedDurationMS: recording.durationMs }) || entry.media;
+      $("#studio-media").replaceChildren(playerShell);
+      loadCaptions(recording);
       const playbackContinued = await seekMedia(entry.media, startMS, resumePlayback, () => request === state.playbackRequest && state.currentRecording?.id === recording.id);
       if (request !== state.playbackRequest || state.currentRecording?.id !== recording.id) return;
       setBufferStatus(playbackContinued ? (entry.media.readyState >= 2 ? "" : "Buffering…") : "Press play to continue");
@@ -623,6 +707,7 @@
       playhead.style.left = `${Math.max(0, Math.min(100, Number(state.media.currentTime || 0) / duration * 100))}%`;
     });
     updateSplitControl();
+    updateCaptionCue();
   }
 
   function beginBoundaryDrag(event, handle) {
@@ -1020,6 +1105,21 @@
       state.resumeAfterLoad = false;
       setAddClipMode(false);
     }
+  });
+  window.addEventListener("jazz:recording-section-changed", (event) => {
+    const changed = event.detail?.recording;
+    const existing = state.recordings.find((recording) => recording.id === changed?.id);
+    if (!existing) return;
+    if (existing !== changed) Object.assign(existing, changed);
+    if (state.currentRecording?.id === changed.id) Object.assign(state.currentRecording, changed);
+    state.analysis = { ...(state.analysis || {}), needsScan: true };
+    state.sectionAssignmentVersion += 1;
+    setScanState("ready", "Rescan required", "A recording changed sections; scan again before using section-dependent suggestions.");
+    globalThis.JazzRecordingSectionModel?.refreshLabelsWithoutInterrupting(state.media, () => {
+      renderRecordings();
+      renderCandidates();
+      if (state.currentRecording) $("#studio-preview-title").textContent = `${titleFor(state.currentRecording)} · ${U.takeLabel(state.currentRecording)}`;
+    });
   });
   if (location.hash === "#studio") initialize();
 })();

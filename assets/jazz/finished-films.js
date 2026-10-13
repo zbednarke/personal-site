@@ -35,6 +35,11 @@
       const footer = el('div', 'finished-film-footer');
       const download = el('a', '', 'Download film');
       download.href = film.video; download.download = film.id + '.mp4';
+      if (typeof film.noteMap === 'string' && /^\/jazz\/films\/[a-zA-Z0-9_-]+\.notes\.html$/.test(film.noteMap)) {
+        const map = document.createElement('a'); map.href = film.noteMap; map.textContent = 'Explore note map'; map.target = '_blank'; map.rel = 'noopener'; footer.append(map);
+      }
+
+      const edit = el('button', '', 'Edit this film'); edit.type = 'button'; edit.onclick = () => { player.pause(); globalThis.JazzFilmEditor.open(film); }; footer.append(edit);
       footer.append(el('span', '', `${film.duration} · Finished and ready to watch`), download);
       card.append(copy, player, footer); shelf.append(card);
     }

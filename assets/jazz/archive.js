@@ -11,6 +11,7 @@
     month: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     selectedDate: U.dateKey(new Date()),
     calendar: new Map(),
+    films: [],
     day: null,
     initialized: false,
     playlist: [],
@@ -109,6 +110,8 @@
   }
 
   function visibleView() {
+    if (location.hash === "#library") return "library";
+    if (location.hash === "#training") return "training";
     if (location.hash === "#archive") return "archive";
     if (location.hash === "#guide-tones") return "guide-tones";
     if (location.hash === "#studio") return "studio";
@@ -135,9 +138,13 @@
 
   function route() {
     const view = visibleView();
+    document.body.classList.toggle("virtuoso-library", view === "library");
+    if ($("#library")) $("#library").hidden = view !== "library";
     document.body.classList.toggle("virtuoso-today", view === "today");
     document.body.classList.toggle("virtuoso-archive", view === "archive");
     document.body.classList.toggle("virtuoso-guide-tones", view === "guide-tones");
+    document.body.classList.toggle("virtuoso-training", view === "training");
+    $("#training").hidden = view !== "training";
     document.body.classList.toggle("virtuoso-studio", view === "studio");
     document.body.classList.toggle("virtuoso-effects", view === "effects");
     $("#today").hidden = view !== "today";
@@ -145,10 +152,10 @@
     $("#guide-tones").hidden = view !== "guide-tones";
     $("#studio").hidden = view !== "studio";
     $("#effects").hidden = view !== "effects";
-    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", today: "Today" };
+    const labels = { library: "Library", training: "Training", archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", today: "Today" };
     $("#mobile-view-label").textContent = labels[view];
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
-      const active = link.dataset.jazzView === view;
+      const active = link.dataset.jazzView === view || (view === "guide-tones" && link.dataset.jazzView === "training");
       link.classList.toggle("active", active);
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
@@ -162,8 +169,29 @@
   async function initializeArchive() {
     state.initialized = true;
     wireArchiveControls();
-    await loadMonth();
+    await Promise.all([loadMonth(), loadNoteMaps()]);
     await selectDay(state.selectedDate);
+  }
+
+  async function loadNoteMaps() {
+    try {
+      let response = await fetch("./films/index.json", { cache: "no-store" });
+      if (!response.ok) response = await fetch("../assets/jazz/finished-films.json", { cache: "no-store" });
+      if (!response.ok) return;
+      const films = await response.json();
+      state.films = Array.isArray(films) ? films : [];
+    } catch {
+      state.films = [];
+    }
+    renderDayNoteMap();
+  }
+
+  function renderDayNoteMap() {
+    const link = $("#archive-day-note-map");
+    const film = U.noteMapForDate(state.films, state.selectedDate);
+    link.hidden = !film;
+    if (film) link.href = film.noteMap;
+    else link.removeAttribute("href");
   }
 
   async function loadMonth() {
@@ -273,6 +301,7 @@
     if (!U.parseDateKey(date)) return;
     const requestID = ++state.dayRequest;
     state.selectedDate = date;
+    renderDayNoteMap();
     renderCalendar();
     $("#archive-day-title").textContent = fullDateLabel(date);
     $("#archive-day-content").innerHTML = '<p class="archive-empty">Loading this practice day…</p>';
@@ -376,7 +405,7 @@
       const status = recording.status === "ready" ? `${recording.mediaKind === "video" ? "Video" : "Audio"} · ${U.formatPlaybackTime(U.durationSeconds(recording.durationMs))}` : recording.status;
       return `<button class="archive-take" type="button" data-archive-recording="${escapeHTML(recording.id)}" ${recording.status === "ready" ? "" : "aria-disabled=\"true\""}><strong>${escapeHTML(U.takeLabel(recording))}</strong><span>${escapeHTML(shortRecordedAt(recording.recordedAt))}</span><small>${escapeHTML(status)}${recording.notes ? ` · ${escapeHTML(recording.notes)}` : ""}</small></button>`;
     }).join("");
-    return `<details class="archive-section" ${open ? "open" : ""}><summary><span class="archive-section-title"><strong>${escapeHTML(block.title)}</strong><small>${escapeHTML(block.category || "practice")}</small></span><span class="archive-section-total"><b>${U.formatPracticeDuration(block.elapsedMs || 0, true)}</b>${recordings.length} take${recordings.length === 1 ? "" : "s"}</span></summary><div class="archive-section-body">${block.notes ? `<p class="archive-section-note">${escapeHTML(block.notes)}</p>` : ""}${takes ? `<div class="archive-take-list">${takes}</div>` : '<p class="archive-section-note">No saved takes in this section.</p>'}</div></details>`;
+    return `<details class="archive-section" ${open ? "open" : ""}><summary><span class="archive-section-title"><strong>${escapeHTML(block.title)}</strong><small>${escapeHTML(block.category || "practice")}</small></span><span class="archive-section-total"><b>${U.formatPracticeDuration(block.elapsedMs || 0, true)} practiced · ${U.formatPracticeDuration(block.recordedMs || 0, true)} recorded</b>${recordings.length} take${recordings.length === 1 ? "" : "s"}</span></summary><div class="archive-section-body">${block.notes ? `<p class="archive-section-note">${escapeHTML(block.notes)}</p>` : ""}${takes ? `<div class="archive-take-list">${takes}</div>` : '<p class="archive-section-note">No saved takes in this section.</p>'}</div></details>`;
   }
 
   async function selectRecording(recording, asset = "") {
@@ -437,12 +466,14 @@
       const result = await api(`/recordings/${recording.id}/playback-url?asset=${encodeURIComponent(asset)}`, { method: "POST", body: "{}" });
       if (requestID !== state.playbackRequest) return;
       state.media?.pause();
+      if (state.media) globalThis.JazzLongToneOverlay?.dispose(state.media);
       const media = document.createElement(result.contentType?.startsWith("video/") ? "video" : "audio");
       media.preload = "metadata";
       media.playsInline = true;
       media.src = result.url;
       if (media.tagName === "VIDEO") media.setAttribute("aria-label", `${U.recordingTitle(recording)} video`);
-      $("#archive-media-host").replaceChildren(media);
+      const playerShell = globalThis.JazzMediaPlayback?.createSavedPlayer(media, { recordingId: recording.id, asset: result.asset || asset, externalControls: true }) || media;
+      $("#archive-media-host").replaceChildren(playerShell);
       state.media = media;
       state.currentAsset = result.asset || asset;
       state.playbackExpiresAt = new Date(result.expiresAt || 0).valueOf() || 0;
@@ -545,6 +576,7 @@
   function closePlayer() {
     flushTakeNote();
     state.media?.pause();
+    if (state.media) globalThis.JazzLongToneOverlay?.dispose(state.media);
     state.media = null;
     state.currentRecording = null;
     state.currentIndex = -1;
@@ -568,6 +600,9 @@
       selectDay(state.selectedDate);
     });
     $("#archive-player-close").addEventListener("click", closePlayer);
+    $("#archive-change-section").addEventListener("click", () => {
+      if (state.currentRecording) globalThis.JazzRecordingSections?.open(state.currentRecording);
+    });
     $("#archive-player-toggle").addEventListener("click", () => {
       if (state.currentRecording && state.playbackExpiresAt && Date.now() >= state.playbackExpiresAt - 15000) loadPlayerAsset(state.currentAsset, true);
       else if (!state.media && state.currentRecording) loadPlayerAsset(state.currentAsset, true);
@@ -629,6 +664,31 @@
   }
 
   window.addEventListener("hashchange", route);
+  window.addEventListener("jazz:recording-section-changed", async (event) => {
+    const changed = event.detail?.recording;
+    if (!changed || !state.day?.recordings?.some((recording) => recording.id === changed.id)) return;
+    const changedDate = state.selectedDate;
+    const existing = state.day.recordings.find((recording) => recording.id === changed.id);
+    if (existing !== changed) Object.assign(existing, changed);
+    if (state.currentRecording?.id === changed.id) Object.assign(state.currentRecording, changed);
+    try {
+      const refreshedDay = await api(`/archive/days/${changedDate}`);
+      if (state.selectedDate !== changedDate) return;
+      state.day = refreshedDay;
+      const reloaded = state.day.recordings.find((recording) => recording.id === changed.id);
+      if (reloaded && state.currentRecording?.id === changed.id) Object.assign(state.currentRecording, reloaded);
+      state.playlist = (state.day.recordings || []).filter((recording) => recording.status === "ready");
+      if (state.currentRecording) state.currentIndex = state.playlist.findIndex((recording) => recording.id === state.currentRecording.id);
+    } catch {}
+    globalThis.JazzRecordingSectionModel?.refreshLabelsWithoutInterrupting(state.media, () => {
+      renderDay();
+      if (state.currentRecording?.id === changed.id) {
+        $("#archive-player-name").textContent = U.recordingTitle(state.currentRecording);
+        renderPlayerMetadata(state.currentRecording);
+      }
+    });
+    loadMonth();
+  });
   window.addEventListener("resize", resizeEffectsFrame);
   $("#effects-frame")?.addEventListener("load", watchEffectsFrameSize);
   route();

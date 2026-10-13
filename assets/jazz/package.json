@@ -1,0 +1,6 @@
+{
+  "name": "jazz-practice-tests",
+  "private": true,
+  "scripts": { "test": "node --test *.test.js" },
+  "devDependencies": { "fake-indexeddb": "^6.2.4", "jsdom": "^29.0.1" }
+}

@@ -19,3 +19,15 @@ test("long playback durations retain hours", () => {
   assert.equal(utils.formatPlaybackTime(27 * 60 + 6), "27:06");
   assert.equal(utils.formatPlaybackTime(4 * 3600), "4:00:00");
 });
+
+test("day note maps use the first valid published film for that date", () => {
+  const films = [
+    { date: "2026-09-28", noteMap: "https://evil.test/map.html" },
+    { date: "2026-09-29", noteMap: "/jazz/films/other.notes.html" },
+    { id: "canonical", date: "2026-09-28", noteMap: "/jazz/films/day-one.notes.html" },
+    { id: "older", date: "2026-09-28", noteMap: "/jazz/films/day-two.notes.html" },
+  ];
+  assert.equal(utils.noteMapForDate(films, "2026-09-28").id, "canonical");
+  assert.equal(utils.noteMapForDate(films, "2026-09-30"), null);
+  assert.equal(utils.noteMapForDate(films, "not-a-date"), null);
+});

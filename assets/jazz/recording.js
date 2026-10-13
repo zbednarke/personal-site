@@ -445,6 +445,7 @@
   }
 
   async function startRecording() {
+    if (globalThis.JazzStudyTraining?.isBusy?.()) { setRecorderState("Finish training before recording a take", "error"); return; }
     if (stream || captureFinalizing) return;
     if (!navigator.mediaDevices?.getUserMedia || !globalThis.JazzLosslessRecorder) {
       setRecorderState("Lossless recording is not supported in this browser", "error");
@@ -644,6 +645,7 @@
     const initialized = await api("/recordings/init", {
       method: "POST",
       body: JSON.stringify({
+        clientCaptureId: capture.clientCaptureId || "",
         mediaKind: capture.mediaKind,
         contentType: baseType,
         codec: capture.contentType === "audio/wav" ? "pcm_s24le" : (codecMatch?.[1] || ""),
@@ -668,6 +670,7 @@
         videoFrameRate: capture.videoFrameRate,
       }),
     });
+    if (initialized.ready) return initialized.id;
     capture.sectionRemoved = Boolean(initialized.sectionRemoved);
     try {
       const totalBytes = capture.blob.size + (capture.videoBlob?.size || 0);
@@ -687,9 +690,10 @@
         await completeAsset(initialized.id, "video");
       }
     } catch (error) {
-      await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
+      if (!capture.clientCaptureId) await api(`/recordings/${initialized.id}`, { method: "DELETE" }).catch(() => {});
       throw error;
     }
+    return initialized.id;
   }
 
   function uploadMessage(job) {
@@ -845,6 +849,7 @@
             <button type="button" class="share-recording" data-share-asset="${isVideo ? "video" : "audio"}" ${ready ? "" : "disabled"}>${isVideo ? "Share video" : "Copy share link"}</button>
             ${isVideo ? `<button type="button" class="share-recording" data-share-asset="audio" ${ready ? "" : "disabled"}>Share WAV</button>` : ""}
             <button type="button" class="delete-recording">Delete</button>
+            ${recording.practiceBlockId ? '<button type="button" class="change-recording-section">Change section</button>' : ""}
             <button type="button" class="take-note-button" data-take-note-toggle aria-expanded="false">${recording.notes ? "Edit note" : "Take note"}</button>
           </div>
           <label class="take-note-editor" data-take-note-editor hidden>
@@ -861,6 +866,7 @@
           button.addEventListener("click", () => shareRecording(recording.id, button.dataset.shareAsset, button).catch(() => {}));
         });
         $(".delete-recording", card).addEventListener("click", () => deleteRecording(recording.id));
+        $(".change-recording-section", card)?.addEventListener("click", () => globalThis.JazzRecordingSections?.open(recording));
         wireArchiveTakeNote(recording, card);
         library.appendChild(card);
       });
@@ -886,14 +892,18 @@
       const result = await api(`/recordings/${id}/playback-url${query}`, { method: "POST", body: "{}" });
       const tagName = result.contentType?.startsWith("video/") ? "video" : "audio";
       const existingPlayer = $("audio, video", card);
-      existingPlayer?.closest(".video-player-shell")?.remove();
+      if (existingPlayer) {
+        existingPlayer.pause();
+        globalThis.JazzLongToneOverlay?.dispose(existingPlayer);
+        existingPlayer.closest(".video-player-shell, .saved-media-player")?.remove();
+      }
       if (existingPlayer?.isConnected) existingPlayer.remove();
       const player = document.createElement(tagName);
       player.controls = tagName === "audio";
       if (tagName === "video") player.playsInline = true;
       const expectedDurationMS = Number(result.durationMs || card.dataset.durationMs || 0);
-      if (tagName === "video" && globalThis.JazzMediaPlayback?.createVideoPlayer) {
-        card.appendChild(globalThis.JazzMediaPlayback.createVideoPlayer(player, { expectedDurationMS }));
+      if (globalThis.JazzMediaPlayback?.createSavedPlayer) {
+        card.appendChild(globalThis.JazzMediaPlayback.createSavedPlayer(player, { expectedDurationMS, recordingId: id, asset: result.asset || tagName }));
       } else {
         card.appendChild(player);
       }
@@ -1088,6 +1098,8 @@
   }
 
   globalThis.JazzRecording = {
+    isBusy: () => Boolean(stream || captureFinalizing),
+    uploadTrainingTake: (capture, onProgress = () => {}) => uploadRecording(capture, onProgress),
     startForBlock,
     stop: stopRecording,
     togglePause,
@@ -1099,6 +1111,17 @@
     delete: deleteRecording,
     updateNote: updateRecordingNote,
   };
+
+  addEventListener("jazz:recording-section-changed", (event) => {
+    const recording = event.detail?.recording;
+    const card = recording?.id ? document.querySelector(`.recording-item[data-recording-id="${CSS.escape(recording.id)}"]`) : null;
+    if (!card) return;
+    const title = recording.practiceBlockTitle || "Open practice";
+    const heading = $("h4", card);
+    const context = $(".recording-context", card);
+    if (heading) heading.textContent = `${title}${recording.takeNumber ? ` · Take ${recording.takeNumber}` : ""}`;
+    if (context) context.textContent = [formatPracticeDate(recording.practiceDate), recording.practiceBlockTrack || recording.practiceBlockCategory].filter(Boolean).join(" · ");
+  });
 
   populateMetadata();
   const recordingModeSelect = $("#recording-mode");

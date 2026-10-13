@@ -33,18 +33,19 @@ type practiceBlock struct {
 }
 
 type blockRecordingSummary struct {
-	ID               uuid.UUID `json:"id"`
-	Status           string    `json:"status"`
-	ContentType      string    `json:"contentType"`
-	DurationMS       int       `json:"durationMs"`
-	RecordedAt       time.Time `json:"recordedAt"`
-	TakeNumber       int       `json:"takeNumber"`
-	Notes            string    `json:"notes"`
-	PracticeBlockID  uuid.UUID `json:"practiceBlockId"`
-	MediaKind        string    `json:"mediaKind"`
-	VideoContentType string    `json:"videoContentType,omitempty"`
-	VideoWidth       int       `json:"videoWidth,omitempty"`
-	VideoHeight      int       `json:"videoHeight,omitempty"`
+	ID                        uuid.UUID `json:"id"`
+	Status                    string    `json:"status"`
+	ContentType               string    `json:"contentType"`
+	DurationMS                int       `json:"durationMs"`
+	RecordedAt                time.Time `json:"recordedAt"`
+	TakeNumber                int       `json:"takeNumber"`
+	Notes                     string    `json:"notes"`
+	PracticeBlockID           uuid.UUID `json:"practiceBlockId"`
+	MediaKind                 string    `json:"mediaKind"`
+	VideoContentType          string    `json:"videoContentType,omitempty"`
+	VideoWidth                int       `json:"videoWidth,omitempty"`
+	VideoHeight               int       `json:"videoHeight,omitempty"`
+	SectionAssignmentRevision int64     `json:"sectionAssignmentRevision"`
 }
 
 type blockDefinition struct {
@@ -285,7 +286,12 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 	if block.Status != "completed" {
 		block.CompletedAt = nil
 	}
-	reconcileBlockPracticeTime(&block)
+	attributedMS, err := app.loadAttributedRecordingPracticeMS(r.Context(), userID, block.ID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	reconcileBlockPracticeTimeWithAttributed(&block, attributedMS)
 
 	err = app.db.QueryRow(r.Context(), `
 		UPDATE practice_blocks SET notes=NULLIF($1,''),elapsed_ms=$2,status=$3,timer_started_at=$4,completed_at=$5,updated_at=now()
@@ -340,7 +346,11 @@ func (app *application) loadPracticeBlocksForView(ctx context.Context, userID, s
 		if err != nil {
 			return nil, err
 		}
-		reconcileBlockPracticeTime(&blocks[index])
+		attributedMS, loadErr := app.loadAttributedRecordingPracticeMS(ctx, userID, blocks[index].ID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		reconcileBlockPracticeTimeWithAttributed(&blocks[index], attributedMS)
 	}
 	return blocks, nil
 }
@@ -366,8 +376,12 @@ const maxBlockElapsedMS = maxTakesPerBlock * maxDurationMS
 // timer may be higher because intentionally cancelled takes still count as
 // practice, but a stale timer can never make recorded time disappear.
 func reconcileBlockPracticeTime(block *practiceBlock) {
+	reconcileBlockPracticeTimeWithAttributed(block, recordingPracticeMS(block.Recordings))
+}
+
+func reconcileBlockPracticeTimeWithAttributed(block *practiceBlock, attributedMS int) {
 	block.RecordedMS = recordingPracticeMS(block.Recordings)
-	block.ElapsedMS = max(block.ElapsedMS, block.RecordedMS)
+	block.ElapsedMS = max(block.ElapsedMS, attributedMS)
 	if block.ElapsedMS < block.TargetMinutes*60*1000 {
 		return
 	}
@@ -379,10 +393,19 @@ func reconcileBlockPracticeTime(block *practiceBlock) {
 	}
 }
 
+func (app *application) loadAttributedRecordingPracticeMS(ctx context.Context, userID, blockID uuid.UUID) (int, error) {
+	var total int64
+	err := app.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(duration_ms),0)::bigint FROM recordings
+		WHERE user_id=$1 AND practice_time_block_id=$2 AND status IN ('uploading','ready')`, userID, blockID).Scan(&total)
+	return min(maxBlockElapsedMS, max(0, int(total))), err
+}
+
 func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID uuid.UUID) ([]blockRecordingSummary, error) {
 	rows, err := app.db.Query(ctx, `
 		SELECT id,status,content_type,COALESCE(duration_ms,0),recorded_at,COALESCE(take_number,0),COALESCE(notes,''),practice_block_id,
 		       COALESCE(media_kind,'audio'),COALESCE(video_content_type,''),COALESCE(video_width,0),COALESCE(video_height,0)
+		       ,section_assignment_revision
 		FROM recordings WHERE user_id=$1 AND practice_block_id=$2 AND status <> 'deleted' ORDER BY recorded_at,id`, userID, blockID)
 	if err != nil {
 		return nil, err
@@ -393,7 +416,7 @@ func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID
 		var recording blockRecordingSummary
 		if err := rows.Scan(&recording.ID, &recording.Status, &recording.ContentType, &recording.DurationMS, &recording.RecordedAt,
 			&recording.TakeNumber, &recording.Notes, &recording.PracticeBlockID, &recording.MediaKind, &recording.VideoContentType,
-			&recording.VideoWidth, &recording.VideoHeight); err != nil {
+			&recording.VideoWidth, &recording.VideoHeight, &recording.SectionAssignmentRevision); err != nil {
 			return nil, err
 		}
 		recordings = append(recordings, recording)

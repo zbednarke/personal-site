@@ -1,0 +1,22 @@
+.library-listening {
+  margin-top: auto;
+  padding: 18px 20px 22px;
+  border-top: 1px solid #35443f;
+  background: #17201f;
+}
+.library-listening h3 { margin: 0 0 12px; color: #dce9df; font: 16px Georgia; }
+.library-listening a {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 14px;
+  padding: 10px 0;
+  color: #d7e8dd;
+  text-decoration: none;
+  border-top: 1px solid #2d3a36;
+}
+.library-listening a:first-of-type { border-top: 0; }
+.library-listening strong { font-size: 14px; }
+.library-listening span { color: #b8d9cb; font-size: 12px; }
+.library-listening small { grid-column: 1 / -1; color: #8fa29b; line-height: 1.35; }
+.library-listening a:hover strong,
+.library-listening a:focus strong { text-decoration: underline; }

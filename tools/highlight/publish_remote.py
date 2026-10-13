@@ -15,8 +15,11 @@ def install(staging, root=Path('/srv/zachbednarke.com/films'), seed=Path('/srv/z
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}-[a-f0-9-]{36}', film['id']):
         raise ValueError('Invalid film identity')
     sources = {'video': staging / 'highlight.mp4', 'poster': staging / 'poster.jpg'}
+    extensions = {'video':'.mp4','poster':'.jpg','noteMap':'.notes.html','analysis':'.analysis.json','edit':'.edit.json'}
+    for key, filename in [('noteMap','note-map.html'), ('analysis','analysis.json'), ('edit','edit.json')]:
+        if key in film: sources[key] = staging / filename
     for key, source in sources.items():
-        extension = '.mp4' if key == 'video' else '.jpg'
+        extension = extensions[key]
         if film[key] != '/jazz/films/' + film['id'] + extension:
             raise ValueError('Unexpected asset path')
         with source.open('rb') as handle:
@@ -42,7 +45,7 @@ def install(staging, root=Path('/srv/zachbednarke.com/films'), seed=Path('/srv/z
         temp.chmod(0o644)
         os.replace(temp, index)
     # Remove only this job's known staging files after successful publication.
-    for name in ('highlight.mp4', 'poster.jpg', 'publish-manifest.json', 'publish_remote.py'):
+    for name in ('highlight.mp4', 'poster.jpg', 'publish-manifest.json', 'publish_remote.py', 'note-map.html', 'analysis.json', 'publication.tar.gz'):
         (staging / name).unlink(missing_ok=True)
 
 if __name__ == '__main__':
