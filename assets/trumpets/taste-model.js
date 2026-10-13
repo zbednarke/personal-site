@@ -133,11 +133,13 @@
     );
   }
   // As cardToFront, for a pair key "a|b"; hornOf also drops pairs of the
-  // same two horns under other listings.
-  function pairToFront(pairs, key, hornOf) {
+  // same two horns under other listings. shown, the pair as it was on screen,
+  // keeps its sides where the owner saw them (the server may list the pair
+  // the other way round, or not at all).
+  function pairToFront(pairs, key, hornOf, shown) {
     const list = pairs || [];
     const [a, b] = key.split("|");
-    const item = list.find((p) => pairKey(p) === key) || { a, b, p: 0.5, sd: 1 };
+    const item = (shown && pairKey(shown) === key ? shown : null) || list.find((p) => pairKey(p) === key) || { a, b, p: 0.5, sd: 1 };
     const horns = hornOf ? [hornOf(a), hornOf(b)].sort().join("|") : null;
     const sameHorns = (p) => horns != null && hornOf(p.a) != null && [hornOf(p.a), hornOf(p.b)].sort().join("|") === horns;
     return [item, ...list.filter((p) => pairKey(p) !== key && !sameHorns(p))];
@@ -146,6 +148,7 @@
   // of them once their horns have left the board (or, for a pair, are no
   // longer comparable). While the board has not loaded (boardReady false) a
   // pin is kept unchecked: it is validated when the board loads.
+  // pins.pairShown (optional) is the pinned pair as it was shown.
   // Returns { queue, pairs, frontCard, frontPair }.
   function keepFront(state, pins, { listing, boardReady = true, now = Date.now() }) {
     let { frontCard, frontPair } = pins;
@@ -155,8 +158,56 @@
     if (frontCard && boardReady && !pinnable(listing(frontCard))) frontCard = null;
     if (frontCard) queue = cardToFront(queue, frontCard, hornOf);
     if (frontPair && boardReady && !frontPair.split("|").every((id) => comparable(listing(id), now))) frontPair = null;
-    if (frontPair) pairs = pairToFront(pairs, frontPair, hornOf);
+    if (frontPair) pairs = pairToFront(pairs, frontPair, hornOf, pins.pairShown);
     return { queue, pairs, frontCard, frontPair };
+  }
+  // What is on screen stays there. A card or pair the owner can already see
+  // (held: { swipe, pair }, each { item, seq, events } or null; see
+  // holdShown) stays in front of the newest server list until it is answered
+  // or skipped, an undo pins something else in front (keepFront's pins come
+  // first), or it is no longer valid: the mode changed, a listing left the
+  // board (or, for a pair, is no longer comparable), it was answered on this
+  // device, an answer made since it appeared shares one of its horns
+  // (answers: [{ seq, ids }]), or a newer state's recent events show its
+  // horns swiped or compared since (recent: the reply's newest events; ids
+  // above the watermark `events` it appeared under). A server reply never
+  // replaces it; once it is answered, the next one is the newest list's.
+  // state is keepFront's result. Returns { ...state, queue, pairs, held }.
+  function keepShown(state, held, ctx) {
+    const { mode, listing, doneCards = new Set(), donePairs = new Set(), answers = [], recent = [], boardReady = true, now = Date.now() } = ctx || {};
+    const horn = (id) => listing(id)?.hornId ?? id;
+    const hornOf = (id) => listing(id)?.hornId;
+    const sameHorns = (x, y) => x.map(horn).sort().join("|") === y.map(horn).sort().join("|");
+    const touched = (h, ids, kind) =>
+      answers.some((a) => a.seq > h.seq && (a.ids || []).some((id) => ids.some((x) => horn(x) === horn(id)))) ||
+      (h.events != null && (recent || []).some((e) => e.id > h.events && e.kind === kind && sameHorns([e.listingId, e.otherListingId].filter(Boolean), ids)));
+    let { swipe = null, pair = null } = held || {};
+    let queue = state?.queue,
+      pairs = state?.pairs;
+    if (swipe) {
+      const id = swipe.item.listingId;
+      if (mode !== "swipe" || (state?.frontCard && state.frontCard !== id) || doneCards.has(id) || (boardReady && !pinnable(listing(id))) || touched(swipe, [id], "swipe")) swipe = null;
+      else queue = [swipe.item, ...cardToFront(queue, id, hornOf).slice(1)];
+    }
+    if (pair) {
+      const key = pairKey(pair.item),
+        ids = [pair.item.a, pair.item.b];
+      if (mode !== "pair" || (state?.frontPair && state.frontPair !== key) || donePairs.has(key) || (boardReady && !ids.every((id) => comparable(listing(id), now))) || touched(pair, ids, "pair")) pair = null;
+      else pairs = [pair.item, ...pairToFront(pairs, key, hornOf).slice(1)];
+    }
+    return { ...state, queue, pairs, held: { swipe, pair } };
+  }
+  // Records the card or pair now on screen for kind ("swipe" or "pair"; item
+  // null when there is none), when the owner can see it: the Taste view is
+  // active and in that mode. One already held keeps the answer count (seq)
+  // and watermark events from when it first appeared.
+  function holdShown(held, kind, item, { mode, active = true, seq = 0, events = null } = {}) {
+    const next = { swipe: held?.swipe || null, pair: held?.pair || null };
+    if (!active || kind !== mode) return next;
+    const key = (x) => (kind === "swipe" ? x.listingId : pairKey(x));
+    if (!item) next[kind] = null;
+    else if (!next[kind] || key(next[kind].item) !== key(item)) next[kind] = { item, seq, events };
+    return next;
   }
   // Whether a taste state reply is at least as new as the one on screen, by
   // the watermark the server computes with it (newest event, preferences
@@ -289,5 +340,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { SKIP_REASONS, skipReasonLabel, skipCauseText, lessonText, gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { SKIP_REASONS, skipReasonLabel, skipCauseText, lessonText, gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, keepShown, holdShown, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });

@@ -961,7 +961,12 @@ function syntheticPng(width, height) {
         await route.fulfill({ response, json });
       };
       await mobile.route("**/trumpets/api/v1/trumpets/taste", photoFirst);
+      // (The rewritten state is applied before Swipe shows a card: a reply
+      // never replaces a card already on screen.)
+      const rewritten = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
       await mobile.evaluate(() => window.TasteBoard.setActive(true));
+      await (await rewritten).finished();
+      await mobile.evaluate(() => new Promise((r) => setTimeout(r, 0)));
       await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
       await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, shownId);
       const cardId = () => mobile.locator(".swipe-card").getAttribute("data-id");
@@ -1199,6 +1204,136 @@ function syntheticPng(width, height) {
       await box.evaluate((d) => (d.open = false));
       mobile.off("request", record);
     }
+    // ---- Phone (390 px): a slow reply never swaps what is on screen (the
+    // phone report: a second after answering, one side of the next pair
+    // changed). Each answer's reply is held ~1.5 s and rewritten to lead with
+    // a different pair (card) and a different graph: the pair (card) that
+    // appeared right after the answer stays when the reply lands, the
+    // progress line and "What I've learned" follow the reply, and the next
+    // answer then uses the reply's list. ----
+    {
+      await mobile.setViewportSize({ width: 390, height: 844 });
+      const key = (p) => [p.a, p.b].sort().join("|");
+      const shownPair = () => mobile.locator(".pair-card").evaluateAll((n) => n.map((c) => c.dataset.id).sort().join("|"));
+      const shownCard = () => mobile.locator(".swipe-card").getAttribute("data-id");
+      const tick = () => mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+      // Every pair (or card) the visible stage shows, in order.
+      await mobile.evaluate(() => {
+        window.__seen = [];
+        const note = () => {
+          const pair = [...document.querySelectorAll(".pair-card")].map((c) => c.dataset.id).sort().join("|");
+          const now = document.querySelector("#pair-stage").hidden ? document.querySelector(".swipe-card")?.dataset.id : pair;
+          if (now && window.__seen.at(-1) !== now) window.__seen.push(now);
+        };
+        window.__seenObserver = new MutationObserver(note);
+        for (const id of ["#pair-cards", "#swipe-deck"]) window.__seenObserver.observe(document.querySelector(id), { childList: true });
+      });
+      const seen = () => mobile.evaluate(() => window.__seen);
+      const resetSeen = () => mobile.evaluate(() => (window.__seen = []));
+      // slow: { kind, rewrite(json) } while replies to that kind are held.
+      let slow = null;
+      const replies = [];
+      const slowReply = async (route) => {
+        const body = route.request().method() === "POST" ? JSON.parse(route.request().postData() || "{}") : {};
+        if (!slow || body.kind !== slow.kind) return route.fallback();
+        const s = slow;
+        const response = await route.fetch();
+        const json = await response.json();
+        await new Promise((r) => setTimeout(r, 1500));
+        s.rewrite(json);
+        replies.push(json);
+        return route.fulfill({ response, json });
+      };
+      await mobile.route("**/taste/events", slowReply);
+      const answered = () => mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.request().method() === "POST" && r.status() < 300);
+
+      // Head to head.
+      await mobile.getByRole("button", { name: "Head to head", exact: true }).tap();
+      await mobile.waitForFunction(() => document.querySelectorAll(".pair-card").length === 2);
+      const p0 = await shownPair();
+      let p1 = null;
+      slow = {
+        kind: "pair",
+        rewrite(json) {
+          // Lead with a pair that is not the one now on screen (nor answered).
+          const done = new Set((json.recent || []).filter((e) => e.kind === "pair").map((e) => key({ a: e.listingId, b: e.otherListingId })));
+          const i = json.pairs.findIndex((p) => key(p) !== p0 && key(p) !== p1 && !done.has(key(p)));
+          assert.ok(i >= 0, "fixture: the reply has another pair to lead with");
+          json.pairs.unshift(...json.pairs.splice(i, 1));
+          json.pairGraph = { eligible: 177, components: 12, largest: 15, share: 0.085 };
+        },
+      };
+      await resetSeen();
+      const firstReply = answered();
+      await mobile.locator(".pair-card").first().tap();
+      await mobile.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.dataset.id).sort().join("|") !== p, p0);
+      p1 = await shownPair();
+      assert.equal(replies.length, 0, "fixture: the reply is still on its way");
+      await firstReply;
+      await mobile.waitForFunction(() => document.querySelector("#pair-progress").textContent === "Linking horns · 15 of 177 in the main group");
+      await tick();
+      const r1 = replies.at(-1);
+      assert.notEqual(key(r1.pairs[0]), p1, "fixture: the reply leads with a different pair");
+      assert.equal(await shownPair(), p1, "the pair shown right after answering is still on screen after the reply");
+      assert.equal(await mobile.locator("#taste-graph").innerText(), "Comparisons connect 15 of 177 eligible horns (11 islands)", "What I've learned follows the newest reply");
+      // The next answer uses the reply's list (and its own slow reply does
+      // not swap that pair either).
+      const n1 = key(r1.pairs[0]);
+      slow.rewrite = (json) => (json.pairGraph = { eligible: 177, components: 3, largest: 170, share: 0.96 });
+      const secondReply = answered();
+      await mobile.locator(".pair-card").first().tap();
+      await mobile.waitForFunction((p) => [...document.querySelectorAll(".pair-card")].map((c) => c.dataset.id).sort().join("|") !== p, p1);
+      assert.equal(await shownPair(), n1, "after answering, the next pair comes from the newest applied reply");
+      assert.equal(replies.length, 1, "fixture: the second reply is still on its way");
+      await secondReply;
+      await mobile.waitForFunction(() => document.querySelector("#pair-progress").textContent === "Linking horns · 170 of 177 in the main group");
+      await tick();
+      assert.equal(await shownPair(), n1);
+      assert.deepEqual(await seen(), [p1, n1], "no pair was replaced on screen");
+
+      // Swipe.
+      await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
+      await mobile.waitForSelector(".swipe-card");
+      const c0 = await shownCard();
+      let c1 = null;
+      slow = {
+        kind: "swipe",
+        rewrite(json) {
+          const done = new Set((json.recent || []).filter((e) => e.kind === "swipe").map((e) => e.listingId));
+          const i = json.queue.findIndex((q) => q.listingId !== c0 && q.listingId !== c1 && !done.has(q.listingId));
+          assert.ok(i >= 0, "fixture: the reply has another card to lead with");
+          json.queue.unshift(...json.queue.splice(i, 1));
+          json.pairGraph = { eligible: 99, components: 5, largest: 20, share: 0.2 };
+        },
+      };
+      await resetSeen();
+      const thirdReply = answered();
+      await mobile.getByRole("button", { name: "Not for me (left arrow)" }).tap();
+      await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, c0);
+      c1 = await shownCard();
+      assert.equal(replies.length, 2, "fixture: the reply is still on its way");
+      await thirdReply;
+      await mobile.waitForFunction(() => document.querySelector("#taste-graph").textContent === "Comparisons connect 20 of 99 eligible horns (4 islands)");
+      await tick();
+      const r3 = replies.at(-1);
+      assert.notEqual(r3.queue[0].listingId, c1, "fixture: the reply leads with a different card");
+      assert.equal(await shownCard(), c1, "the card shown right after swiping is still on screen after the reply");
+      const n3 = r3.queue[0].listingId;
+      slow.rewrite = (json) => (json.pairGraph = { eligible: 99, components: 2, largest: 98, share: 0.99 });
+      const fourthReply = answered();
+      await mobile.getByRole("button", { name: "Not for me (left arrow)" }).tap();
+      await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id !== id, c1);
+      assert.equal(await shownCard(), n3, "after swiping, the next card comes from the newest applied reply");
+      assert.equal(replies.length, 3, "fixture: the second reply is still on its way");
+      await fourthReply;
+      await mobile.waitForFunction(() => document.querySelector("#taste-graph").textContent === "Comparisons connect 98 of 99 eligible horns (1 island)");
+      await tick();
+      assert.equal(await shownCard(), n3);
+      assert.deepEqual(await seen(), [c1, n3], "no card was replaced on screen");
+      slow = null;
+      await mobile.unroute("**/taste/events", slowReply);
+      await mobile.evaluate(() => window.__seenObserver.disconnect());
+    }
     // Touch drags (the iPhone report): partial drags and page scrolls over the
     // card never commit; only a deliberate drag does, with a one-tap undo.
     await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();
@@ -1324,12 +1459,15 @@ function syntheticPng(width, height) {
     // that write. A chip's POST is held until a taste reload (sent later) has
     // been answered; the chip stays pressed when the POST's reply arrives.
     {
-      // Settle on the server's first card (a reload), then use two chips not
-      // yet pressed on it.
+      // Settle after a reload (the card on screen stays through it), then use
+      // two chips not yet pressed on that card.
       const settled = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+      const onScreen = await mobile.locator(".swipe-card").getAttribute("data-id");
       await mobile.evaluate(() => window.TasteBoard.setActive(true));
-      const head = (await (await settled).json()).queue[0].listingId;
-      await mobile.waitForFunction((id) => document.querySelector(".swipe-card")?.dataset.id === id, head);
+      await (await settled).finished();
+      await mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+      const head = await mobile.locator(".swipe-card").getAttribute("data-id");
+      assert.equal(head, onScreen, "a reload does not replace the card on screen");
       const [i, j] = await mobile.locator("#taste-chips .chip").evaluateAll((n) => n.map((c, k) => (c.getAttribute("aria-pressed") === "false" ? k : -1)).filter((k) => k >= 0));
       const chipAt = (k) => mobile.locator("#taste-chips .chip").nth(k);
       const [first, second] = [chipAt(i), chipAt(j)];
@@ -1492,7 +1630,7 @@ function syntheticPng(width, height) {
     assert.deepEqual(fxErrors, []);
     await fxPage.close();
     console.log(
-      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line, progress line for connected/disconnected/missing graphs), Open listing on every card with a URL opens a new page on tap/Enter and never votes (taps, Space, drags that start on it, presses released on the card or choice button), photo-less cards link to the listing without reacting and reactions record hadPhoto, Head to head skip (with and without a reason, a note goes with it, one event and no preference, undo, K shortcut, skipped-pairs findings and exclusion undo), stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
+      "Browser checks passed: persistence, filters, favorite, 320/390/768/1440px layout, mobile filters, 44px touch targets, notes-dialog overflow, horn inspiration capture/upload/filter/detail/embed/share route, taste training (swipe keyboard/drag/buttons, touch partial drags and page scrolls never commit, undo toast, undo brings the card back in front and keeps it there (stale replies, newer undos, passed horns), replies ordered by what they reflect, chips, text and voice notes, head to head (comparable listings only, shortage explained, connection line, progress line for connected/disconnected/missing graphs), a slow reply never swaps the pair or card on screen and the next answer uses the newest list, Open listing on every card with a URL opens a new page on tap/Enter and never votes (taps, Space, drags that start on it, presses released on the card or choice button), photo-less cards link to the listing without reacting and reactions record hadPhoto, Head to head skip (with and without a reason, a note goes with it, one event and no preference, undo, K shortcut, skipped-pairs findings and exclusion undo), stated preferences, 375/390/401px phone checks), signed-out banner, Jazz live-effects dual capture for every preset, and runtime errors.",
     );
   } finally {
     if (browser) await browser.close();

@@ -21,12 +21,19 @@
   // pinGen orders undos: the latest one issued wins the front.
   let frontCard = null,
     frontPair = null,
+    frontPairShown = null, // the pinned pair as it was on screen (its sides stay put)
     pinGen = 0,
     pinnedGen = 0;
   // The watermark of the taste state on screen (see TasteModel.newerOrSame):
   // a reply computed from older history never replaces newer state, whatever
   // order requests were sent or answered in.
   let applied = null;
+  // The card and pair on screen (TasteModel.keepShown): a reply that arrives
+  // after one appeared never swaps it out from under the owner's thumb.
+  // answers lists this device's recent reactions, numbered by answerSeq.
+  let held = { swipe: null, pair: null },
+    answerSeq = 0;
+  const answers = [];
   const tagState = new Map(); // listingId -> Set of chips (optimistic)
 
   function el(tag, className, text) {
@@ -95,18 +102,29 @@
     return true;
   }
   // The queue and pairs as shown: the server's, with an undo's pinned card or
-  // pair in front. data keeps the server's order, so a pin that lets go (its
-  // horn left the board) leaves no trace. Validated on every render.
+  // pair in front, then the card or pair already on screen (until it is
+  // answered or no longer valid). data keeps the server's order, so a pin or
+  // hold that lets go leaves no trace. Validated on every render.
   function shown() {
-    const kept = T.keepFront(data, { frontCard, frontPair }, { listing, boardReady: boardState === "ready" });
+    const boardReady = boardState === "ready";
+    const kept = T.keepFront(data, { frontCard, frontPair, pairShown: frontPairShown }, { listing, boardReady });
     ({ frontCard, frontPair } = kept);
-    return kept;
+    const s = T.keepShown(kept, held, { mode, listing, doneCards, donePairs, answers, recent: data?.recent, boardReady });
+    held = s.held;
+    return s;
+  }
+  // Called with what a render put on screen.
+  function hold(kind, item) {
+    held = T.holdShown(held, kind, item, { mode, active, seq: answerSeq, events: applied?.events ?? null });
   }
   function pin(entry, gen) {
     if (gen < pinnedGen) return; // a newer undo already holds the front
     pinnedGen = gen;
     if (entry.kind === "swipe") frontCard = entry.listingId;
-    else frontPair = entry.key;
+    else {
+      frontPair = entry.key;
+      frontPairShown = entry.pair;
+    }
   }
   async function load() {
     if (loading) return loading;
@@ -216,6 +234,7 @@
     const deck = $("#swipe-deck");
     deck.replaceChildren();
     const q = currentCard();
+    hold("swipe", q);
     for (const id of ["#swipe-left", "#swipe-up", "#swipe-right"]) $(id).disabled = !q;
     if (!q) {
       const empty = el("div", "taste-empty");
@@ -260,6 +279,7 @@
     const box = $("#pair-cards");
     box.replaceChildren();
     const p = currentPair();
+    hold("pair", p);
     for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither", "#pair-skip"]) $(id).disabled = !p;
     if (!p) skipOpen = false;
     renderSkipPanel();
@@ -287,6 +307,7 @@
       const b = el("button", "pair-card");
       b.type = "button";
       b.dataset.side = side;
+      b.dataset.id = id;
       b.setAttribute("aria-label", `Choose ${l.maker} ${l.model}`);
       const view = viewListing(l);
       b.append(visual(l, "pair-visual", () => onPlaceholder(view, slot)), facts(l));
@@ -526,10 +547,14 @@
       }
       skipOpen = false;
       donePairs.add(T.pairKey(p));
-      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair, gen: pinnedGen, note: body.note };
+      entry = { kind: "pair", key: T.pairKey(p), pair: p, front: T.pairKey(p) === frontPair, gen: pinnedGen, note: body.note };
       if (entry.front) frontPair = null;
     }
     $("#taste-note").value = "";
+    // A card or pair shown before this answer and sharing one of its horns
+    // (see keepShown) is not held any longer.
+    answers.push({ seq: ++answerSeq, ids: [body.listingId, body.otherListingId].filter(Boolean) });
+    if (answers.length > 50) answers.shift();
     entry.pending = post(body);
     undoStack.push(entry);
     const said =
@@ -831,6 +856,8 @@
   window.TasteBoard = {
     setActive(on) {
       active = on;
+      // Nothing is on screen while the view is hidden.
+      if (!on) held = { swipe: null, pair: null };
       if (on) load();
     },
     boardFailed() {
