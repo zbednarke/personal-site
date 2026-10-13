@@ -1334,6 +1334,89 @@ function syntheticPng(width, height) {
       await mobile.unroute("**/taste/events", slowReply);
       await mobile.evaluate(() => window.__seenObserver.disconnect());
     }
+    // ---- Phone (390 px): a reaction is always about what is on screen.
+    // (Review fix: leaving Taste and coming back while the reload was slow
+    // voted on the newest list's first pair, not the pair on screen.) Every
+    // reply here is rewritten to lead with a pair other than the one shown,
+    // so the pair on screen is a held one the server's list does not lead
+    // with. ----
+    {
+      await mobile.setViewportSize({ width: 390, height: 844 });
+      const key = (p) => [p.a, p.b].sort().join("|");
+      const domPair = () => mobile.locator("#pair-cards .pair-card").evaluateAll((n) => n.map((c) => c.dataset.id));
+      const tick = () => mobile.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 0), 0)));
+      const posted = [];
+      const record = (r) => r.method() === "POST" && r.url().includes("/taste/events") && posted.push(JSON.parse(r.postData() || "{}"));
+      mobile.on("request", record);
+      const leadElsewhere = async (json) => {
+        const shown = (await domPair()).slice().sort().join("|");
+        const done = new Set((json.recent || []).filter((e) => e.kind === "pair").map((e) => key({ a: e.listingId, b: e.otherListingId })));
+        const i = json.pairs.findIndex((p) => key(p) !== shown && !done.has(key(p)));
+        assert.ok(i >= 0, "fixture: another pair to lead with");
+        json.pairs.unshift(...json.pairs.splice(i, 1));
+      };
+      const rewritePost = async (route) => {
+        const body = route.request().method() === "POST" ? JSON.parse(route.request().postData() || "{}") : {};
+        if (body.kind !== "pair") return route.fallback();
+        const response = await route.fetch();
+        const json = await response.json();
+        await leadElsewhere(json);
+        return route.fulfill({ response, json });
+      };
+      let slowGet = false;
+      const rewriteGet = async (route) => {
+        if (!slowGet) return route.fallback();
+        const response = await route.fetch();
+        const json = await response.json();
+        await new Promise((r) => setTimeout(r, 1500));
+        await leadElsewhere(json);
+        return route.fulfill({ response, json });
+      };
+      await mobile.route("**/taste/events", rewritePost);
+      await mobile.route("**/trumpets/api/v1/trumpets/taste", rewriteGet);
+      const answered = () => mobile.waitForResponse((r) => r.url().includes("/taste/events") && r.request().method() === "POST" && r.status() < 300);
+      await mobile.getByRole("button", { name: "Head to head", exact: true }).tap();
+      await mobile.waitForFunction(() => document.querySelectorAll(".pair-card").length === 2);
+      // Answer once: the pair shown next is held while the reply leads elsewhere.
+      const p0 = await domPair();
+      await Promise.all([answered(), mobile.locator(".pair-card").first().tap()]);
+      await tick();
+      const x = await domPair();
+      assert.notDeepEqual(x, p0);
+      // Leave Taste and come back; the reload answers slowly.
+      await mobile.locator("#all").tap();
+      await mobile.waitForFunction(() => document.querySelector("#taste-board").hidden);
+      slowGet = true;
+      const reload = mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/taste") && r.request().method() === "GET");
+      reload.catch(() => {}); // awaited below; a failure before then must surface as itself
+      await mobile.getByRole("button", { name: /^Taste/ }).tap();
+      await mobile.waitForFunction(() => !document.querySelector("#taste-board").hidden);
+      assert.deepEqual(await domPair(), x, "coming back shows the pair that was on screen");
+      const before = posted.length;
+      const [vote] = await Promise.all([answered(), mobile.locator(".pair-card").first().tap()]);
+      assert.equal(posted.length, before + 1);
+      assert.deepEqual([posted.at(-1).listingId, posted.at(-1).otherListingId], x, "the vote is for exactly the pair on screen");
+      assert.deepEqual([(await vote.json()).event.listingId, (await vote.json()).event.otherListingId], x);
+      await (await reload).finished();
+      slowGet = false;
+      await tick();
+      // State that changes without a render (here: one side of the held pair
+      // passes the 10-day check cutoff) never turns a tap into a vote on
+      // another pair: the tap is refused and the page shows what is current.
+      const y = await domPair();
+      await mobile.evaluate((id) => (window.TrumpetApp.listing(id).lastChecked = "2000-01-01T00:00:00Z"), y[0]);
+      const refused = posted.length;
+      await mobile.locator(".pair-card").first().tap();
+      await mobile.waitForTimeout(600);
+      assert.equal(posted.length, refused, "nothing is sent for a pair that is not on screen");
+      assert.equal(await mobile.locator("#taste-status").innerText(), "The cards changed. Check them and try again.");
+      assert.notDeepEqual(await domPair(), y, "the page now shows what a tap would answer");
+      await mobile.unroute("**/taste/events", rewritePost);
+      await mobile.unroute("**/trumpets/api/v1/trumpets/taste", rewriteGet);
+      mobile.off("request", record);
+      // Restore the listing (a board reload) for the checks below.
+      await Promise.all([mobile.waitForResponse((r) => r.url().endsWith("/v1/trumpets/listings")), mobile.locator("#refresh").evaluate((b) => b.click())]);
+    }
     // Touch drags (the iPhone report): partial drags and page scrolls over the
     // card never commit; only a deliberate drag does, with a one-tap undo.
     await mobile.getByRole("button", { name: "Swipe", exact: true }).tap();

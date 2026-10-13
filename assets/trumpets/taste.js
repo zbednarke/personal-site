@@ -109,7 +109,7 @@
     const boardReady = boardState === "ready";
     const kept = T.keepFront(data, { frontCard, frontPair, pairShown: frontPairShown }, { listing, boardReady });
     ({ frontCard, frontPair } = kept);
-    const s = T.keepShown(kept, held, { mode, listing, doneCards, donePairs, answers, recent: data?.recent, boardReady });
+    const s = T.keepShown(kept, held, { mode, listing, doneCards, donePairs, answers, recent: data?.recent, skips: data?.skips, boardReady });
     held = s.held;
     return s;
   }
@@ -524,12 +524,26 @@
   function post(body) {
     return api("/taste/events", { clientId: T.clientId(), ...body });
   }
+  // The ids of the card or pair actually rendered.
+  function renderedIds(kind) {
+    if (kind === "swipe") return [...document.querySelectorAll("#swipe-deck .swipe-card")].map((c) => c.dataset.id);
+    return [...document.querySelectorAll("#pair-cards .pair-card")].map((c) => c.dataset.id);
+  }
+  const onScreen = (kind, item) => T.matchesRendered(kind, item, renderedIds(kind));
+  // What a reaction would be about is not what is on screen (state changed
+  // without a render): send nothing, show what is current instead.
+  function refuse() {
+    skipOpen = false;
+    render();
+    status("The cards changed. Check them and try again.", true);
+  }
   async function react(r) {
     if (!data) return;
     let body, entry;
     if (r.kind === "swipe") {
       const q = currentCard();
       if (!q) return;
+      if (!onScreen("swipe", q)) return refuse();
       body = { kind: "swipe", mode: "swipe", listingId: q.listingId, action: r.action, meta: { hadPhoto: photoShown($("#swipe-deck")) } };
       doneCards.add(q.listingId);
       entry = { kind: "swipe", listingId: q.listingId, front: q.listingId === frontCard, gen: pinnedGen };
@@ -537,6 +551,7 @@
     } else {
       const p = currentPair();
       if (!p) return;
+      if (!onScreen("pair", p)) return refuse();
       body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action, meta: { hadPhoto: photoShown($("#pair-cards")) } };
       if (r.action === "skip") {
         // Not a choice: optional reasons, and the note being written (if
@@ -624,10 +639,10 @@
   function noteTarget() {
     if (mode === "swipe") {
       const q = currentCard();
-      return q ? { listingId: q.listingId } : null;
+      return q && onScreen("swipe", q) ? { listingId: q.listingId } : null;
     }
     const p = currentPair();
-    return p ? { listingId: p.a, otherListingId: p.b } : null;
+    return p && onScreen("pair", p) ? { listingId: p.a, otherListingId: p.b } : null;
   }
   async function saveNote() {
     const text = $("#taste-note").value.trim(),
@@ -855,9 +870,10 @@
 
   window.TasteBoard = {
     setActive(on) {
+      // What was on screen stays held while the view is hidden (hold()
+      // records nothing then, and hidden renders keep showing it), so coming
+      // back shows, and votes on, the same card or pair until it is answered.
       active = on;
-      // Nothing is on screen while the view is hidden.
-      if (!on) held = { swipe: null, pair: null };
       if (on) load();
     },
     boardFailed() {

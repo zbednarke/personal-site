@@ -348,6 +348,49 @@ test("skipped pairs: what the investigation found, in words", () => {
     assert.equal(show(reply, held, { mode: "swipe", answers: [{ seq: 4, ids: ["c"] }] }).queue[0].listingId, "e", "an answer since it appeared");
   });
 
+  test("an exclusion in force or a price lesson in effect releases the hold", () => {
+    const held = { swipe: { item: { listingId: "c" }, seq: 1, events: 10 }, pair: { item: P("b", "c"), seq: 1, events: 10 } };
+    const reply = { pairs: [P("d", "e")], queue: [{ listingId: "e" }] };
+    const x = (over) => ({ exclusions: [{ id: 1, listingId: "c", scope: "pair", active: true, inForce: true, ...over }] });
+    const pairFront = (skips, over) => T.keepShown(T.keepFront(reply, {}, { listing, now }), held, ctx({ skips, ...over })).pairs[0];
+    const cardFront = (skips) => T.keepShown(T.keepFront(reply, {}, { listing, now }), held, ctx({ mode: "swipe", skips })).queue[0].listingId;
+    assert.equal(T.pairKey(pairFront(x())), "d|e", "Head to head exclusion of one side");
+    assert.equal(T.pairKey(pairFront(x({ scope: "all" }))), "d|e");
+    assert.equal(T.pairKey(pairFront(x({ active: false }))), "b|c", "switched off by the owner");
+    assert.equal(T.pairKey(pairFront(x({ inForce: false }))), "b|c", "no longer applies");
+    assert.equal(T.pairKey(pairFront(x({ listingId: "e" }))), "b|c", "another listing");
+    assert.equal(cardFront(x()), "c", "a Head to head exclusion leaves Swipe alone");
+    assert.equal(cardFront(x({ scope: "all" })), "e", "scope all covers Swipe");
+    // Price lessons: b and c are both 2000 USD; make c 5000.
+    const pricey = (id) => (id === "c" ? { ...board.c, price: 5000 } : listing(id));
+    assert.equal(T.pairKey(pairFront({ rules: [{ dimension: "price", ratio: 2.5, lessons: 2 }] }, { listing: pricey })), "d|e", "2.5× apart");
+    assert.equal(T.pairKey(pairFront({ rules: [{ dimension: "price", ratio: 3, lessons: 2 }] }, { listing: pricey })), "b|c");
+    assert.equal(T.pairKey(pairFront({ rules: [{ dimension: "condition", classes: "new|project", lessons: 2 }] }, { listing: pricey })), "b|c", "not checked here");
+    assert.equal(T.priceRuleAvoids({ dimension: "price", ratio: 1.5 }, { price: 1000, currency: "USD" }, { price: 1500, currency: "EUR" }), false, "only within one currency");
+    assert.equal(T.priceRuleAvoids({ dimension: "price", ratio: 1.5 }, { price: 1000, currency: "USD" }, { price: 1490, currency: "USD" }), false);
+    assert.equal(T.priceRuleAvoids({ dimension: "price", ratio: 1.5 }, { price: 1000, currency: "USD" }, { price: 1500, currency: "USD" }), true);
+  });
+
+  test("a full recent window that does not reach back to the hold releases it", () => {
+    const held = { swipe: null, pair: { item: P("b", "c"), seq: 1, events: 10 } };
+    const window = (from) => Array.from({ length: T.RECENT_CAP }, (_, i) => ({ id: from + T.RECENT_CAP - 1 - i, kind: "tag", listingId: "z" }));
+    const front = (recent) => T.pairKey(T.keepShown(T.keepFront({ pairs: [P("d", "e")] }, {}, { listing, now }), held, ctx({ recent })).pairs[0]);
+    assert.equal(front(window(11)), "b|c", "the window starts right after the watermark");
+    assert.equal(front(window(5)), "b|c");
+    assert.equal(front(window(12)), "d|e", "event 11 may have been dropped");
+    assert.equal(front(window(12).slice(1)), "b|c", "a window under the cap is the whole history");
+  });
+
+  test("a reaction is only for what is rendered", () => {
+    assert.equal(T.matchesRendered("pair", P("a", "b"), ["a", "b"]), true);
+    assert.equal(T.matchesRendered("pair", P("a", "b"), ["b", "a"]), false, "sides swapped");
+    assert.equal(T.matchesRendered("pair", P("a", "b"), ["a", "c"]), false);
+    assert.equal(T.matchesRendered("pair", P("a", "b"), []), false);
+    assert.equal(T.matchesRendered("swipe", { listingId: "a" }, ["a"]), true);
+    assert.equal(T.matchesRendered("swipe", { listingId: "a" }, ["b"]), false);
+    assert.equal(T.matchesRendered("swipe", null, ["a"]), false);
+  });
+
   test("only what the owner can see is held", () => {
     const empty = { swipe: null, pair: null };
     assert.deepEqual(T.holdShown(empty, "pair", P("a", "b"), { mode: "swipe" }), empty, "the other mode's stage is hidden");

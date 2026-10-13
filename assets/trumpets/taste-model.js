@@ -173,29 +173,68 @@
   // above the watermark `events` it appeared under). A server reply never
   // replaces it; once it is answered, the next one is the newest list's.
   // state is keepFront's result. Returns { ...state, queue, pairs, held }.
+  //
+  // Also released: a listing an exclusion in force now covers (skips.exclusions;
+  // any scope for a pair, scope "all" for a swipe card), a pair a price
+  // lesson in effect now avoids (skips.rules; condition and era lessons need
+  // server-side classes, so the page's react-time check is the backstop),
+  // and any hold the recent window cannot vouch for: a full window (the
+  // server sends at most RECENT_CAP events) that starts after the event
+  // following the hold's watermark may have dropped the events that matter.
+  const RECENT_CAP = 30;
+  function priceRuleAvoids(r, a, b) {
+    if (r?.dimension !== "price" || !(r.ratio > 0) || !a || !b) return false;
+    if (!(a.price > 0) || !(b.price > 0) || !a.currency || a.currency !== b.currency) return false;
+    return Math.round((100 * Math.max(a.price, b.price)) / Math.min(a.price, b.price)) / 100 >= r.ratio;
+  }
   function keepShown(state, held, ctx) {
-    const { mode, listing, doneCards = new Set(), donePairs = new Set(), answers = [], recent = [], boardReady = true, now = Date.now() } = ctx || {};
+    const { mode, listing, doneCards = new Set(), donePairs = new Set(), answers = [], recent = [], skips = null, boardReady = true, now = Date.now() } = ctx || {};
     const horn = (id) => listing(id)?.hornId ?? id;
     const hornOf = (id) => listing(id)?.hornId;
     const sameHorns = (x, y) => x.map(horn).sort().join("|") === y.map(horn).sort().join("|");
+    const events = recent || [];
+    const oldest = events.length ? Math.min(...events.map((e) => e.id)) : Infinity;
+    const windowShort = (h) => h.events != null && events.length >= RECENT_CAP && oldest > h.events + 1;
     const touched = (h, ids, kind) =>
       answers.some((a) => a.seq > h.seq && (a.ids || []).some((id) => ids.some((x) => horn(x) === horn(id)))) ||
-      (h.events != null && (recent || []).some((e) => e.id > h.events && e.kind === kind && sameHorns([e.listingId, e.otherListingId].filter(Boolean), ids)));
+      (h.events != null && events.some((e) => e.id > h.events && e.kind === kind && sameHorns([e.listingId, e.otherListingId].filter(Boolean), ids))) ||
+      windowShort(h);
+    const excluded = (ids, scopes) => (skips?.exclusions || []).some((x) => x.active && x.inForce && ids.includes(x.listingId) && (!scopes || scopes.includes(x.scope)));
+    const avoided = (a, b) => (skips?.rules || []).some((r) => priceRuleAvoids(r, listing(a), listing(b)));
     let { swipe = null, pair = null } = held || {};
     let queue = state?.queue,
       pairs = state?.pairs;
     if (swipe) {
       const id = swipe.item.listingId;
-      if (mode !== "swipe" || (state?.frontCard && state.frontCard !== id) || doneCards.has(id) || (boardReady && !pinnable(listing(id))) || touched(swipe, [id], "swipe")) swipe = null;
+      if (mode !== "swipe" || (state?.frontCard && state.frontCard !== id) || doneCards.has(id) || (boardReady && !pinnable(listing(id))) || excluded([id], ["all"]) || touched(swipe, [id], "swipe")) swipe = null;
       else queue = [swipe.item, ...cardToFront(queue, id, hornOf).slice(1)];
     }
     if (pair) {
       const key = pairKey(pair.item),
         ids = [pair.item.a, pair.item.b];
-      if (mode !== "pair" || (state?.frontPair && state.frontPair !== key) || donePairs.has(key) || (boardReady && !ids.every((id) => comparable(listing(id), now))) || touched(pair, ids, "pair")) pair = null;
+      if (
+        mode !== "pair" ||
+        (state?.frontPair && state.frontPair !== key) ||
+        donePairs.has(key) ||
+        (boardReady && !ids.every((id) => comparable(listing(id), now))) ||
+        excluded(ids) ||
+        avoided(...ids) ||
+        touched(pair, ids, "pair")
+      )
+        pair = null;
       else pairs = [pair.item, ...pairToFront(pairs, key, hornOf).slice(1)];
     }
     return { ...state, queue, pairs, held: { swipe, pair } };
+  }
+  // Whether the card or pair a reaction is about is the one rendered (ids:
+  // the rendered card's listing id, or the pair's [left, right] ids). State
+  // can change without a render (a hold let go, a 10-day check cutoff
+  // passed): then the reaction is refused rather than sent for something the
+  // owner never saw.
+  function matchesRendered(kind, item, ids) {
+    if (!item || !ids) return false;
+    if (kind === "swipe") return ids.length === 1 && ids[0] === item.listingId;
+    return ids.length === 2 && ids[0] === item.a && ids[1] === item.b;
   }
   // Records the card or pair now on screen for kind ("swipe" or "pair"; item
   // null when there is none), when the owner can see it: the Taste view is
@@ -340,5 +379,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { SKIP_REASONS, skipReasonLabel, skipCauseText, lessonText, gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, keepShown, holdShown, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { SKIP_REASONS, skipReasonLabel, skipCauseText, lessonText, gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, keepShown, holdShown, matchesRendered, priceRuleAvoids, RECENT_CAP, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });
