@@ -45,7 +45,7 @@ jobs:
         run: python -m unittest discover -s tools/commonplace -p 'test_*.py'
       - name: Workbench route installer
         run: python -m unittest discover -s tools/workbench -p 'test_*.py'
-      - name: Static release packaging and upload (changed files only, verified upload)
+      - name: Static release packaging, upload and deploy guard (changed files only, verified upload, no out-of-band overwrite)
         run: python -m unittest discover -s tools/deploy -p 'test_*.py'
       - name: Install browser test dependency
         run: npm install --no-save --package-lock=false playwright@1.58.2

@@ -2,12 +2,21 @@ name: Deploy
 # Every merge to main deploys once its tests pass: the API to Cloud Run first
 # (startup applies replay-safe migrations), then the static site as a new
 # release on the site VM. One-time setup: docs/deploy.md.
+# Before anything changes it checks that production holds nothing this commit
+# lacks (docs/deploy.md#out-of-band-deploys) and stops if it does.
 on:
   workflow_run:
     workflows: ["Trumpet and Jazz tests"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      allow_overwrite_out_of_band:
+        description: >-
+          Deploy even though production has commits or files that are not in
+          this commit (they will be overwritten)
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -20,6 +29,7 @@ env:
   SITE_PROJECT: actual-budget-zb
   SITE_ZONE: us-west1-a
   SITE_VM: actual-server
+  ALLOW_OVERWRITE: ${{ inputs.allow_overwrite_out_of_band && 'true' || 'false' }}
 jobs:
   deploy:
     if: >-
@@ -32,6 +42,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # The guard asks whether the live commits are ancestors of this one.
+          fetch-depth: 0
       - name: Resolve commit
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -40,6 +52,40 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v2
+      - name: Check production is not ahead of this commit
+        # Production was once deployed from outside this repository, and the
+        # next deploy of main silently erased it. Nothing is deployed unless
+        # what is live is this commit or an ancestor of it: the static
+        # release's .release-commit (written by publish-static-release.sh;
+        # missing means it was not published by this workflow) and each
+        # serving Cloud Run revision's commit-sha label (unlabelled revisions,
+        # from before the label, only warn; revisions made by anyone but the
+        # deploy service account fail unless they run an image it deployed).
+        # The same ssh call reads the live hashes for the changed-files upload
+        # and the live file list for the orphan warning. To overwrite on
+        # purpose: Run workflow with allow_overwrite_out_of_band.
+        run: |
+          sha=${{ steps.commit.outputs.sha }}
+          paths=(index.html .nojekyll assets jazz trumpets commonplace privacy)
+          flags=(--project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet)
+          ssh=(gcloud compute ssh "$SITE_VM" "${flags[@]}" --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
+          status=0
+          t=$SECONDS
+          if bash deploy/read-live-release.sh /srv/zachbednarke.com/current "${paths[@]}" -- "${ssh[@]}"; then
+            bash deploy/check-deployed-commit.sh "static site" "$(cat live-commit.txt)" "$sha" || status=1
+          elif [[ $ALLOW_OVERWRITE == true ]]; then
+            echo "::warning::Could not read the live release; every file will be uploaded (allow_overwrite_out_of_band=true)."
+          else
+            echo "::error::Could not read the live release's .release-commit, so it cannot be checked. Rerun, or Run workflow with allow_overwrite_out_of_band."
+            status=1
+          fi
+          echo "Read and check the live release: $((SECONDS - t)) s"
+          run=(--project "$RUN_PROJECT" --region "$RUN_REGION")
+          bash deploy/check-cloud-run-commit.sh jazz-api "$sha" "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" -- "${run[@]}" || status=1
+          if [[ "${{ vars.WORKBENCH_ENABLED }}" == true ]]; then
+            bash deploy/check-cloud-run-commit.sh workbench "$sha" "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" -- "${run[@]}" || status=1
+          fi
+          exit $status
       - name: Back up the database before migrations
         if: vars.JAZZ_CLOUD_SQL_INSTANCE != ''
         run: >-
@@ -47,10 +93,13 @@ jobs:
           --instance "${{ vars.JAZZ_CLOUD_SQL_INSTANCE }}"
           --description "Before deploy ${{ steps.commit.outputs.sha }}"
       - name: Deploy the API
-        # Keeps the service's existing environment, secrets and settings.
+        # Keeps the service's existing environment, secrets and settings. The
+        # commit-sha label (on the service and the revision) is what the
+        # guard above checks on the next deploy.
         run: >-
           gcloud run deploy jazz-api --source jazz-api --quiet
           --project "$RUN_PROJECT" --region "$RUN_REGION"
+          --update-labels "commit-sha=${{ steps.commit.outputs.sha }}"
           --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
       - name: Point traffic at the new revision
         run: >-
@@ -71,6 +120,7 @@ jobs:
           revision=$(gcloud run services describe jazz-api "${flags[@]}" --format 'value(status.latestReadyRevisionName)')
           image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
           gcloud run deploy workbench --image "$image" --quiet "${flags[@]}" \
+            --update-labels "commit-sha=${{ steps.commit.outputs.sha }}" \
             --timeout 3600 --concurrency 40 --cpu 1 --memory 512Mi --no-cpu-throttling --min-instances 0 --max-instances 2
           gcloud run services update-traffic workbench --to-latest --quiet "${flags[@]}"
           url=$(gcloud run services describe workbench "${flags[@]}" --format 'value(status.url)')
@@ -90,8 +140,10 @@ jobs:
         # differ from the live release are packaged; publish-static-release.sh
         # still copies the live release and overlays them, so the published
         # files are the same as with the full archive. If the live hashes
-        # cannot be read (or the read takes over 120 s), every file is
-        # packaged. upload-static-release.sh streams the archive and the
+        # cannot be read (only possible with allow_overwrite_out_of_band; the
+        # guard step read them), every file is packaged. Live files the
+        # repository does not publish are listed as a warning and kept.
+        # upload-static-release.sh streams the archive and the
         # publish script over an ssh session's stdin (gcloud compute scp sat
         # ~240 s through the tunnel whatever the size) and checks their SHA-256
         # on the VM; each attempt is capped at 120 s plus 1 s per 4 KB (at most
@@ -105,13 +157,7 @@ jobs:
           ssh=(gcloud compute ssh "$SITE_VM" "${flags[@]}" --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
           remote=/tmp/site-release-$sha
           t=$SECONDS
-          if ! timeout -k 10 120 "${ssh[@]}" < /dev/null \
-              --command "cd /srv/zachbednarke.com/current && find ${paths[*]} -type f -exec sha256sum {} + 2>/dev/null; true" > live.sha256; then
-            echo "Could not read the live release's hashes; uploading every file."
-            : > live.sha256
-          fi
-          echo "Read live hashes: $((SECONDS - t)) s"; t=$SECONDS
-          python3 deploy/package-static-release.py --live live.sha256 --out "site-$sha.tar.gz" "${paths[@]}"
+          python3 deploy/package-static-release.py --live live.sha256 --live-files live-files.txt --out "site-$sha.tar.gz" "${paths[@]}"
           bash deploy/upload-static-release.sh upload "$remote" "site-$sha.tar.gz" deploy/publish-static-release.sh -- "${ssh[@]}"
           echo "Upload: $((SECONDS - t)) s"; t=$SECONDS
           bash deploy/upload-static-release.sh publish "$remote" "site-$sha.tar.gz" deploy/publish-static-release.sh "$sha" -- "${ssh[@]}"
