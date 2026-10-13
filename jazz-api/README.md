@@ -34,9 +34,66 @@ Runtime configuration:
 - `GCP_SERVICE_ACCOUNT`
 - `PUBLIC_SHARE_BASE_URL` (defaults to `https://zachbednarke.com/jazz/share`)
 - `FFMPEG_PATH` (defaults to `ffmpeg`; the production image includes it)
+- `FFPROBE_PATH` (defaults to `ffprobe`, or the sibling of an absolute `FFMPEG_PATH`)
+- `LONG_TONE_WORKERS` (defaults to `1`, accepts `0` through `4`)
+- `CAPTION_WORKERS` (defaults to `1`, accepts `0` through `4`)
 - `PORT` (defaults to `8080`)
 
 `JAZZ_ALLOW_INSECURE_LOCAL=1` is available only for local development.
+
+## Saved speech captions
+
+Authenticated caption endpoints queue durable, source-versioned transcription
+for each recording's lossless WAV master. `POST /v1/studio/days/{date}/captions`
+queues every take in a day; `POST` and `GET /v1/recordings/{id}/captions` control
+and read one take. Results are source-time caption segments, so Clip Studio can
+filter them to a selected clip and keep them aligned through seeks and trims.
+
+The browser records a 24-bit archival WAV, while Speech batch recognition needs
+a supported input encoding. The worker therefore streams that master through
+ffmpeg into a 16-bit FLAC sidecar whose name includes the source generation. It
+reuses that compact sidecar on retries without altering the master or using
+container disk. Only the current caption-analysis version is claimable, so an
+upgrade cannot spend worker time finishing obsolete queued jobs.
+
+The worker uses Speech-to-Text V2 batch recognition against the private GCS
+sidecar and never sends signed object URLs to the browser. Production requires
+`speech.googleapis.com`, `roles/speech.client` on the Jazz API service account,
+and bucket read access for the Speech service agent. Failed work has three
+bounded attempts; source replacement creates a new analysis identity without
+overwriting prior results.
+
+## Saved long-tone analysis
+
+The authenticated long-tone endpoint queues durable analysis for the exact
+audio or video object generation being played. A bounded worker pool claims
+jobs with Postgres leases, streams the generation-pinned object through FFmpeg,
+and writes one-minute trace chunks. Retries are bounded and lease tokens fence
+late workers after a reclaim. Video decoding preserves its presentation
+timeline; a video without an audio stream fails explicitly and never falls back
+to the separately captured WAV.
+
+`POST /v1/recordings/{id}/long-tone-analysis` accepts
+`{"asset":"video"}` or `{"asset":"audio"}` and idempotently creates the
+current-version job. `GET` on the same path takes `asset`; optional `startMs`
+and `endMs` select at most two minutes and include one observation on either
+side when available so seeks retain classifier context.
+
+The default deployment runs one worker inside each API instance. Cloud Run must
+use instance-based billing (CPU allocated outside requests), because queued work
+continues after the enqueue response. Keep at least one warm instance and use
+concurrency 1 for the current two-vCPU image:
+
+```sh
+gcloud run deploy jazz-api --source . --region us-central1 \
+  --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --min-instances 1 \
+  --max-instances 3 --no-cpu-throttling --update-env-vars LONG_TONE_WORKERS=1
+```
+
+Set `LONG_TONE_WORKERS=0` only for API instances paired with a separately
+managed worker deployment. Signed source URLs last five hours and decoding is
+hard-limited to four hours plus shutdown overhead. Analysis errors do not alter
+recording playback or recording state.
 
 ## Clip Studio renders
 
@@ -54,7 +111,8 @@ cannot starve ordinary API traffic:
 
 ```sh
 gcloud run deploy jazz-api --source . --region us-central1 \
-  --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+  --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --min-instances 2 \
+  --max-instances 3 --no-cpu-throttling --update-env-vars LONG_TONE_WORKERS=1
 ```
 
 ## Magic Film Cloud Run job

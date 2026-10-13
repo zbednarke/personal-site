@@ -24,7 +24,8 @@ CREATE INDEX IF NOT EXISTS practice_blocks_session_position_idx
     ON practice_blocks (session_id, practice_date DESC, position);
 
 ALTER TABLE recordings
-    ADD COLUMN IF NOT EXISTS practice_block_id uuid REFERENCES practice_blocks(id) ON DELETE SET NULL;
+    ADD COLUMN IF NOT EXISTS practice_block_id uuid REFERENCES practice_blocks(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS practice_time_block_id uuid REFERENCES practice_blocks(id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS recordings_practice_block_idx
     ON recordings (practice_block_id, recorded_at DESC)

@@ -60,12 +60,20 @@
     return number > 0 ? `Take ${number}` : "Take";
   }
 
+  function noteMapForDate(films, date) {
+    if (!parseDateKey(date) || !Array.isArray(films)) return null;
+    return films.find((film) => film?.date === date
+      && typeof film.noteMap === "string"
+      && /^\/jazz\/films\/[a-zA-Z0-9_-]+\.notes\.html$/.test(film.noteMap)) || null;
+  }
+
   const api = {
     dateKey,
     durationSeconds,
     formatPlaybackTime,
     formatPracticeDuration,
     monthGrid,
+    noteMapForDate,
     parseDateKey,
     recordingTitle,
     takeLabel,

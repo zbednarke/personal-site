@@ -23,7 +23,16 @@
     return !video.seeking && Number(video.readyState) >= 2;
   }
 
+  const playerListeners = new WeakMap();
+
   function createVideoPlayer(video, options = {}) {
+    playerListeners.get(video)?.();
+    const removers = [];
+    const listen = (type, callback) => {
+      video.addEventListener(type, callback);
+      removers.push(() => video.removeEventListener(type, callback));
+    };
+    playerListeners.set(video, () => removers.forEach((remove) => remove()));
     let duration = durationSeconds(options.expectedDurationMS);
     const document = video.ownerDocument;
     const shell = document.createElement("div");
@@ -92,7 +101,7 @@
     };
 
     toggle.addEventListener("click", togglePlayback);
-    video.addEventListener("click", togglePlayback);
+    listen("click", togglePlayback);
     seek.addEventListener("input", () => {
       setBuffering(true);
       video.currentTime = clampSeekTime(seek.value, duration);
@@ -106,23 +115,38 @@
       if (shell.requestFullscreen) shell.requestFullscreen().catch(() => {});
       else video.webkitEnterFullscreen?.();
     });
-    ["play", "pause", "timeupdate", "seeking", "seeked", "ended", "volumechange"].forEach((eventName) => video.addEventListener(eventName, update));
-    ["waiting", "stalled"].forEach((eventName) => video.addEventListener(eventName, () => {
+    ["play", "pause", "timeupdate", "seeking", "seeked", "ended", "volumechange"].forEach((eventName) => listen(eventName, update));
+    ["waiting", "stalled"].forEach((eventName) => listen(eventName, () => {
       if (!video.ended) setBuffering(true);
     }));
-    video.addEventListener("seeking", () => setBuffering(true));
-    ["playing", "canplay", "canplaythrough", "loadeddata", "seeked"].forEach((eventName) => video.addEventListener(eventName, clearBufferingWhenReady));
-    video.addEventListener("pause", () => {
+    listen("seeking", () => setBuffering(true));
+    ["playing", "canplay", "canplaythrough", "loadeddata", "seeked"].forEach((eventName) => listen(eventName, clearBufferingWhenReady));
+    listen("pause", () => {
       if (!video.seeking) setBuffering(false);
     });
-    video.addEventListener("ended", () => setBuffering(false));
-    ["loadedmetadata", "durationchange"].forEach((eventName) => video.addEventListener(eventName, syncNativeDuration));
+    listen("ended", () => setBuffering(false));
+    ["loadedmetadata", "durationchange"].forEach((eventName) => listen(eventName, syncNativeDuration));
     syncNativeDuration();
     update();
+    if (options.recordingId) globalThis.JazzLongToneOverlay?.attach(video, { ...options, shell, stage, controls, asset: "video" });
     return shell;
   }
 
-  const api = { canRenderCurrentFrame, clampSeekTime, createVideoPlayer, durationSeconds, formatPlaybackTime };
+  function createSavedPlayer(media, options = {}) {
+    if (media.tagName === "VIDEO" && !options.externalControls) {
+      media.controls = false;
+      return createVideoPlayer(media, options);
+    }
+    const shell = media.ownerDocument.createElement("div");
+    shell.className = "saved-media-player";
+    const stage = media.ownerDocument.createElement("div");
+    stage.append(media);
+    shell.append(stage);
+    globalThis.JazzLongToneOverlay?.attach(media, { ...options, shell, stage });
+    return shell;
+  }
+
+  const api = { canRenderCurrentFrame, clampSeekTime, createSavedPlayer, createVideoPlayer, durationSeconds, formatPlaybackTime };
   globalThis.JazzMediaPlayback = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

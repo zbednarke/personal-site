@@ -4,7 +4,7 @@ UPDATE recordings AS recording
 SET notes = NULL,
     updated_at = now()
 FROM practice_blocks AS block
-WHERE recording.practice_block_id = block.id
+WHERE COALESCE(recording.practice_time_block_id,recording.practice_block_id) = block.id
   AND recording.notes = block.title || ' section take';
 
 -- Preserve completed sessions as historical truth. Split the combined block
@@ -48,8 +48,10 @@ BEGIN
         ELSE
             UPDATE recordings
             SET practice_block_id = articulation_id,
+                practice_time_block_id = articulation_id,
                 updated_at = now()
-            WHERE practice_block_id = combined.id;
+            WHERE practice_block_id = combined.id
+               OR practice_time_block_id = combined.id;
 
             UPDATE practice_blocks AS articulation
             SET elapsed_ms = LEAST(21600000, articulation.elapsed_ms + combined.elapsed_ms),

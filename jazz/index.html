@@ -20,6 +20,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;family=Playfair+Display:wght@600;700&amp;display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../assets/jazz/jazz.css">
+  <link rel="stylesheet" href="../assets/jazz/training.css">
+  <link rel="stylesheet" href="../assets/jazz/library.css">
+  <link rel="stylesheet" href="../assets/jazz/library-resources.css">
+  <link rel="stylesheet" href="../assets/jazz/film-editor.css">
   <link rel="stylesheet" href="/assets/workbench/workbench.css">
   <link rel="manifest" href="/jazz/manifest.webmanifest" crossorigin="use-credentials">
   <link rel="apple-touch-icon" href="/assets/workbench/icon-192.png">
@@ -35,9 +39,11 @@
     <div class="virtuoso-nav-links">
       <a class="active" href="#today" data-jazz-view="today" aria-current="page"><span aria-hidden="true">◫</span>Today</a>
       <a href="#repertoire" data-jazz-view="repertoire"><span aria-hidden="true">♪</span>Repertoire</a>
+      <a href="#training" data-jazz-view="training"><span aria-hidden="true">◎</span>Training</a>
       <a href="#guide-tones" data-jazz-view="guide-tones"><span aria-hidden="true">&#9835;</span>Guide tones</a>
       <a href="#effects" data-jazz-view="effects"><span aria-hidden="true">∿</span>Live effects</a>
       <a href="#archive" data-jazz-view="archive"><span aria-hidden="true">▱</span>Archive</a>
+      <a href="#library" data-jazz-view="library"><span aria-hidden="true">▤</span>Library</a>
       <a href="#studio" data-jazz-view="studio"><span aria-hidden="true">✂</span>Clip studio</a>
       <a href="/trumpets/#inspiration"><span aria-hidden="true">✦</span>Horn inspiration</a>
       <a href="/commonplace/"><span aria-hidden="true">❦</span>Commonplace</a>
@@ -128,6 +134,7 @@
           <div class="workspace-label"><h2 id="practice-plan-title">Practice plan</h2><span>Recording drives practice time</span></div>
           <div id="detached-section-recording" class="detached-section-recording" role="status" hidden><p></p><button id="finish-detached-recording" type="button">Stop recording</button></div>
           <div id="detached-section-uploads" aria-live="polite"></div>
+          <div id="detached-playback-host" aria-live="polite"></div>
           <div class="practice-edit-bar">
             <label class="practice-edit-toggle"><input id="edit-practice-sections" type="checkbox" role="switch" aria-describedby="practice-edit-status"><span class="practice-edit-switch" aria-hidden="true"></span><span>Edit sections</span></label>
             <button id="cancel-section-edits" type="button" hidden>Cancel edits</button>
@@ -195,6 +202,14 @@
       </div>
     </section>
 
+    <section id="library" class="library-screen" aria-labelledby="library-heading" hidden>
+      <div class="library-kicker">The reference shelf</div><h1 id="library-heading">Music library</h1><p class="library-intro">Books, studies, and sheet music. Your own collection, ready whenever you practice.</p>
+      <div class="library-tools"><input id="library-search" type="search" aria-label="Search library" placeholder="Find a title or author"><button id="library-add" class="button" type="button">＋ Add PDF</button><button id="library-refresh" class="button" type="button">Refresh</button></div>
+      <div id="library-upload" class="library-upload" hidden><form id="library-form"><label class="wide">PDF file · up to 100 MB<input id="library-file" type="file" accept="application/pdf,.pdf" required></label><label>Title<input id="library-title" maxlength="240" required></label><label>Author <span>(optional)</span><input id="library-author" maxlength="160"></label><button id="library-submit" class="button" type="submit">Save to library</button></form></div>
+      <p id="library-status" class="library-status" role="status"></p><p id="library-count" class="library-count"></p>
+      <section id="library-reader" class="library-reader" aria-labelledby="library-reader-title" hidden><header><h2 id="library-reader-title" tabindex="-1"></h2><button id="library-close" class="button" type="button">Close reader</button></header><p>If the embedded reader is unavailable, <a id="library-open-file" target="_blank" rel="noopener">open the PDF in a new tab</a> or use Download.</p><iframe id="library-frame" title="Music PDF reader"></iframe></section>
+      <p id="library-empty" hidden></p><div id="library-books" class="library-grid"></div>
+    </section>
     <section class="archive-screen" id="archive" aria-labelledby="archive-title" hidden>
       <header class="archive-screen-header">
         <div>
@@ -231,10 +246,13 @@
                 <span>Selected day</span>
                 <h2 id="archive-day-title">Choose a day</h2>
               </div>
-              <dl class="archive-day-stats">
-                <div><dt>Time</dt><dd id="archive-day-time">0 min</dd></div>
-                <div><dt>Takes</dt><dd id="archive-day-takes">0</dd></div>
-              </dl>
+              <div class="archive-day-tools">
+                <a class="archive-day-note-map" id="archive-day-note-map" target="_blank" rel="noopener" hidden>Explore day note map <span aria-hidden="true">↗</span></a>
+                <dl class="archive-day-stats">
+                  <div><dt>Time</dt><dd id="archive-day-time">0 min</dd></div>
+                  <div><dt>Takes</dt><dd id="archive-day-takes">0</dd></div>
+                </dl>
+              </div>
             </header>
             <div class="archive-day-content" id="archive-day-content" aria-live="polite">
               <p class="archive-empty">Select a practice day to open its notes, sections, and recordings.</p>
@@ -284,6 +302,7 @@
             <div class="archive-take-actions">
               <button class="archive-download-take" type="button" id="archive-download-take">Download audio</button>
               <button class="archive-share-take" type="button" id="archive-share-take">Copy share link</button>
+              <button class="archive-change-section" type="button" id="archive-change-section">Change section</button>
               <button class="archive-delete-take" type="button" id="archive-delete-take">Delete take</button>
             </div>
           </div>
@@ -301,7 +320,7 @@
         <div class="clip-studio-header-tools">
           <details class="studio-scan-menu" id="studio-scan-menu">
             <summary><i></i><span id="studio-scan-state">Checking analysis</span></summary>
-            <div><strong id="studio-scan-detail">Loading this day’s analysis state…</strong><button type="button" id="studio-scan">Rescan this day</button></div>
+            <div><strong id="studio-scan-detail">Loading this day’s analysis state…</strong><button type="button" id="studio-scan">Rescan this day</button><button type="button" id="studio-captions">Analyze notes + generate captions</button></div>
           </details>
           <div class="clip-studio-date-nav">
             <button type="button" id="studio-previous-day" aria-label="Previous day">‹</button>
@@ -365,11 +384,53 @@
       </footer>
     </section>
 
+    <section id="training" class="training-screen" aria-labelledby="training-title" hidden>
+      <header class="training-header"><div><a class="training-home" href="#today">← Today’s practice</a><p class="eyebrow">The practice room</p><h1 id="training-title">Training</h1><p>Hear the key. Find the changes. Make it dependable.</p></div><a class="training-other" href="#guide-tones">Blue Bossa <span>Chord-tone trainer ↗</span></a></header>
+      <div class="study-heading"><span class="eyebrow">01 / Study one</span><h2>ii–V–I · All twelve keys</h2><p>Four notes up the ii. Two notes on the V. Resolve and hold.</p></div>
+      <form id="study-setup" class="study-setup">
+        <label>Mode<select id="study-mode"><option value="lesson">Lesson · prompt only</option><option value="learn">Learn · show the notes</option></select></label>
+        <label>Instrument<select id="study-instrument"><option value="bb-trumpet">B♭ trumpet · written keys</option><option value="concert">Concert pitch</option></select></label>
+        <div class="study-tempo-field"><label for="study-tempo">Tempo · BPM</label><input id="study-tempo" type="number" min="40" max="160" value="50" step="1"><input id="study-tempo-slider" type="range" min="40" max="160" value="50" step="1" aria-label="Training tempo"><small>40–160 BPM · choose a comfortable pace</small></div>
+        <label>Rounds<select id="study-rounds"><option value="1">One round</option><option value="3">Three rounds</option><option value="0">Until I finish</option></select></label>
+        <label>Camera<select id="study-camera"><option value="">Default camera</option></select></label>
+        <label>Microphone<select id="study-input"><option value="">Default microphone</option></select></label>
+        <fieldset id="study-keys"><legend>Keys <small>Lesson mode covers all twelve. Choose keys in Learn mode.</small></legend></fieldset>
+      </form>
+      <section class="study-stage" aria-label="Study 1 exercise">
+        <div class="study-stage-top"><span id="study-phase">Ready when you are</span><span id="study-position">50 BPM · four-bar answer</span></div>
+        <h2 id="study-prompt">2–5 into <strong>…</strong></h2>
+        <p id="study-convention">Keys and notes are written for B♭ trumpet; the microphone checks sounding pitch.</p>
+        <div id="study-beats" class="study-pendulum" aria-label="Metronome ready">
+          <svg viewBox="0 0 240 156" aria-hidden="true">
+            <path class="pendulum-arc" d="M 55.7 53.4 A 100 100 0 0 1 184.3 53.4"/>
+            <path class="pendulum-stop pendulum-left" d="M 47 45 L 64 61"/>
+            <path class="pendulum-stop pendulum-right" d="M 176 61 L 193 45"/>
+            <circle class="pendulum-hit pendulum-left" cx="55.7" cy="53.4" r="10"/>
+            <circle class="pendulum-hit pendulum-right" cx="184.3" cy="53.4" r="10"/>
+            <g id="study-pendulum-arm"><path d="M 120 130 L 120 30"/><circle cx="120" cy="30" r="7"/></g>
+            <circle class="pendulum-pivot" cx="120" cy="130" r="6"/>
+            <text id="study-beat-number" x="215" y="132" text-anchor="middle">—</text>
+          </svg>
+          <span>Click at each end · <strong>1</strong> is the downbeat</span>
+        </div>
+        <div id="study-score" class="study-score" hidden></div>
+        <div id="study-feedback" role="status" aria-live="polite">A four-beat count-in, then your answer. Headphones recommended.</div>
+        <div id="study-report"></div><button id="study-continue" class="button" type="button" hidden>Continue practice</button>
+        <video id="study-camera-preview" class="study-camera-preview" muted playsinline hidden aria-label="Training camera preview"></video>
+        <div id="study-live-pitch" class="study-live-pitch" hidden aria-label="Live pitch feedback"><span>Playing <strong id="study-played-note">—</strong></span><span id="study-pitch-cue">Listening…</span><span>Target <strong id="study-target-note">—</strong></span></div>
+        <div class="study-actions"><button id="study-start" type="button" class="button button-primary">Start training</button><button id="study-reset" type="button" class="button" title="Restart this key from the count-in (R). Session recording continues." aria-keyshortcuts="R" hidden>Restart round · R</button><button id="study-stop" type="button" class="button" hidden>Finish session</button><button id="study-skip-repeat" type="button" class="button" hidden>Skip repeat → next key</button><button id="study-retry" type="button" class="button" hidden>Practice missed keys</button><a id="study-emergency" class="button" hidden>Download retained audio</a></div>
+        <p id="study-save" role="status">Checking local recording storage…</p>
+        <details><summary>How grading works</summary><p>Seven pitches, entrances on the beat, and the first four beats of the tonic hold. Its second bar is optional: releasing for about 0.3 seconds ends the exercise early with no grading penalty. Octave displacement is accepted. Attack transients are ignored; unstable or insufficient audio can be marked Not graded. A silent answer counts as a missed response when capture is working.</p><p>Grading tolerances are provisional until calibrated with your trumpet. Sustained-note rearticulation without a detectable gap may not be distinguished. Each replay includes the count-in interval; metronome clicks are not mixed into the recording.</p></details>
+      </section>
+      <section class="study-history"><h2>Session takes</h2><p>One camera-and-microphone take per training session, including repeats.</p><p id="study-session-save" role="status">Camera and microphone are required when starting a session.</p><button id="study-session-sync" class="button" type="button">Retry session uploads</button><div id="study-session-recovery"></div><div id="study-session-takes"></div></section>
+      <section class="study-history" aria-labelledby="study-history-title"><header><div><p class="eyebrow">Your practice</p><h2 id="study-history-title">Build consistency</h2></div><button id="study-sync" type="button" class="button">Sync now</button></header><p id="study-totals">No attempts yet.</p><p id="study-cloud" role="status"></p><label>Results at <select id="study-history-mode"><option value="lesson">Lesson mode</option><option value="learn">Learn mode</option></select> <select id="study-history-instrument" aria-label="History instrument"><option value="bb-trumpet">B♭ trumpet</option><option value="concert">Concert pitch</option></select> <input id="study-history-tempo" type="number" min="40" max="160" value="50" aria-label="History tempo"> BPM</label><div id="study-key-metrics" class="study-key-metrics"></div><div id="study-session-trend"></div><div id="study-attempts"></div><audio id="study-player" controls hidden></audio></section>
+    </section>
+
     <section class="guide-tone-screen" id="guide-tones" aria-labelledby="guide-tone-title" hidden>
       <header class="guide-tone-screen-header">
         <div>
           <p class="eyebrow">Practice tool 001</p>
-          <h1 id="guide-tone-title">Guide-tone reflex</h1>
+          <a href="#training">← Training</a><h1 id="guide-tone-title">Guide-tone reflex</h1>
           <p>See the chord. Hear the landing spot. Play its third or seventh without a cheat sheet.</p>
         </div>
         <div class="guide-tone-session-summary" aria-live="polite">
@@ -629,6 +690,20 @@
     <div class="dialog-actions"><button class="button button-primary" id="toggle-input-monitor" type="button">Start preview &amp; tuner</button></div>
   </dialog>
 
+  <dialog class="dialog recording-section-dialog" id="recording-section-dialog" aria-labelledby="recording-section-dialog-title">
+    <button class="dialog-close" type="button" data-recording-section-cancel aria-label="Close change section">×</button>
+    <p class="eyebrow">Saved recording</p>
+    <h2 id="recording-section-dialog-title">Change section</h2>
+    <p class="dialog-copy">Move this whole recording to another section from the same practice session and day.</p>
+    <form id="recording-section-form">
+      <fieldset id="recording-section-choices"></fieldset>
+      <p class="section-form-status" id="recording-section-status" role="status"></p>
+      <div class="dialog-actions"><button class="button button-quiet" type="button" data-recording-section-cancel>Cancel</button><button class="button button-primary" id="save-recording-section" type="submit" disabled>Save</button></div>
+    </form>
+  </dialog>
+
+  <div class="section-change-toast" id="section-change-toast" role="status" aria-live="polite" hidden><span></span><button type="button">Undo</button></div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="../assets/jazz/signin-guard.js"></script>
@@ -644,18 +719,31 @@
   <script src="../assets/jazz/guide-tone-engine.js"></script>
   <script src="../assets/jazz/recording-policy.js"></script>
   <script src="../assets/jazz/upload-queue.js"></script>
+  <script src="../assets/jazz/long-tone-model.js"></script>
+  <script src="../assets/jazz/long-tone-overlay.js"></script>
   <script src="../assets/jazz/media-playback.js"></script>
+  <script src="../assets/jazz/recording-section-model.js"></script>
+  <script src="../assets/jazz/recording-section.js"></script>
   <script src="../assets/jazz/recording.js"></script>
   <script src="../assets/jazz/metronome.js"></script>
   <script src="../assets/jazz/archive-utils.js"></script>
+  <script src="../assets/jazz/library.js"></script>
   <script src="../assets/jazz/archive.js"></script>
   <script src="../assets/jazz/mobile-nav.js"></script>
   <script src="../assets/jazz/clip-studio-model.js"></script>
   <script src="../assets/jazz/clip-studio.js"></script>
   <script src="../assets/jazz/clip-download.js"></script>
   <script src="../assets/jazz/highlight-local.js"></script>
+  <script src="../assets/jazz/highlight-hosted.js"></script>
+  <script src="../assets/jazz/film-edit-model.js"></script>
+  <script src="../assets/jazz/film-editor.js"></script>
   <script src="../assets/jazz/finished-films.js"></script>
   <script src="../assets/jazz/guide-tone-trainer.js"></script>
+  <script src="../assets/jazz/study-one-engine.js"></script>
+  <script src="../assets/jazz/study-one-store.js"></script>
+  <script src="../assets/jazz/training-take-store.js"></script>
+  <script src="../assets/jazz/training-session-take.js"></script>
+  <script src="../assets/jazz/study-one-trainer.js"></script>
   <script src="/assets/workbench/model.js"></script>
   <script src="/assets/workbench/workbench.js"></script>
 </body>

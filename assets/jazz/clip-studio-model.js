@@ -106,6 +106,13 @@
     return { title: String(title).slice(0, 120), clips: [{ recordingId: candidate.recordingId, startMs, endMs }] };
   }
 
+  function discoveredClipAvailable(clip, recordings, candidates) {
+    const source = recordings.find(r => r.id === clip.recordingId);
+    return Boolean(source && Number.isInteger(clip.startMs) && Number.isInteger(clip.endMs)
+      && clip.startMs >= 0 && clip.endMs - clip.startMs >= MIN_SOURCE_CLIP_MS && clip.endMs <= source.durationMs
+      && !candidates.some(c => c.recordingId === clip.recordingId && c.reviewStatus === "rejected" && clip.startMs < c.endMs && clip.endMs > c.startMs));
+  }
+
   function renderPayload(project) {
     if (!project.clips.length) throw new Error("Add at least one clip before rendering.");
     if (!String(project.title || "").trim()) throw new Error("Give the output a project title.");
@@ -115,7 +122,7 @@
     };
   }
 
-  const api = { clipDownloadPayload, DEFAULT_SOURCE_CLIP_MS, MIN_SOURCE_CLIP_MS, MAX_CLIPS, MAX_DURATION_MS, addClip, candidateIsLiked, createProject, defaultTitle, estimatedRenderMS, moveClip, nextLikeStatus, normalizeProject, placeDefaultSourceClip, removeClip, renderPayload, totalDurationMS };
+  const api = { discoveredClipAvailable, clipDownloadPayload, DEFAULT_SOURCE_CLIP_MS, MIN_SOURCE_CLIP_MS, MAX_CLIPS, MAX_DURATION_MS, addClip, candidateIsLiked, createProject, defaultTitle, estimatedRenderMS, moveClip, nextLikeStatus, normalizeProject, placeDefaultSourceClip, removeClip, renderPayload, totalDurationMS };
   globalThis.JazzClipStudioModel = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();
