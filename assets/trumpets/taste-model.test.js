@@ -250,3 +250,154 @@ test("skipped pairs: what the investigation found, in words", () => {
   assert.equal(T.lessonText({ dimension: "price", ratio: 2.5, lessons: 2 }), "Avoiding pairs whose prices are 2.5× or more apart (2 skips)");
   assert.equal(T.lessonText({ dimension: "condition", classes: "new|project", lessons: 3 }), "Avoiding condition new vs project pairs (3 skips)");
 });
+
+// The card or pair on screen stays until it is answered (the phone report:
+// a reply arriving after the next pair appeared swapped one side of it).
+// Fictional listings only.
+{
+  const now = Date.parse("2026-10-12T12:00:00Z");
+  const good = (id, horn) => ({ id, hornId: horn, status: "active", verificationState: "verified", images: ["x"], price: 2000, currency: "USD", lastChecked: "2026-10-11T12:00:00Z", feedback: { interestState: "watch" } });
+  const board = { a: good("a", "ha"), b: good("b", "hb"), c: good("c", "hc"), d: good("d", "hd"), e: good("e", "he"), a2: good("a2", "ha") };
+  const listing = (id) => board[id] || null;
+  const P = (a, b) => ({ a, b, p: 0.5, sd: 1 });
+  const ctx = (over = {}) => ({ mode: "pair", listing, now, doneCards: new Set(), donePairs: new Set(), answers: [], recent: [], ...over });
+  // keepFront with no pins, then keepShown: what the page does on each render.
+  const show = (state, held, over) => T.keepShown(T.keepFront(state, { frontCard: null, frontPair: null }, { listing, now }), held, ctx(over));
+  const ids = (pairs) => pairs.map(T.pairKey);
+
+  test("the pair on screen stays when a reply lists a different first pair", () => {
+    // Old list: a|b answered, b|c appears next and is held.
+    const old = { pairs: [P("a", "b"), P("b", "c"), P("c", "d")] };
+    const donePairs = new Set(["a|b"]);
+    let s = show(old, null, { donePairs });
+    const held = T.holdShown(s.held, "pair", T.nextPairs(s.pairs, donePairs)[0], { mode: "pair", seq: 1, events: 10 });
+    assert.equal(T.pairKey(held.pair.item), "b|c");
+    // The reply (avoiding recent horns) leads with d|e and drops b|c.
+    const reply = { pairs: [P("d", "e"), P("c", "e")] };
+    s = show(reply, held, { donePairs, answers: [{ seq: 1, ids: ["a", "b"] }] });
+    assert.deepEqual(ids(T.nextPairs(s.pairs, donePairs)), ["b|c", "d|e", "c|e"], "held in front of the newest list");
+    assert.equal(s.held.pair, held.pair);
+    // Re-recording the same pair keeps when it first appeared.
+    assert.equal(T.holdShown(s.held, "pair", P("c", "b"), { mode: "pair", seq: 5, events: 20 }).pair.seq, 1);
+    // Once answered, the next pair is the newest list's first.
+    donePairs.add("b|c");
+    s = show(reply, s.held, { donePairs });
+    assert.equal(s.held.pair, null);
+    assert.deepEqual(ids(T.nextPairs(s.pairs, donePairs)), ["d|e", "c|e"]);
+  });
+
+  test("with nothing held (the reply came before the next render) the newest list is used directly", () => {
+    const s = show({ pairs: [P("d", "e"), P("b", "c")], queue: [{ listingId: "e" }, { listingId: "c" }] }, { swipe: null, pair: null });
+    assert.deepEqual(ids(s.pairs), ["d|e", "b|c"]);
+    assert.deepEqual(s.queue.map((q) => q.listingId), ["e", "c"]);
+    assert.equal(T.keepShown({ pairs: undefined }, null, ctx()).pairs, undefined, "no state yet");
+  });
+
+  test("a held pair lets go when it is no longer valid", () => {
+    const held = { swipe: null, pair: { item: P("b", "c"), seq: 1, events: 10 } };
+    const reply = { pairs: [P("d", "e")] };
+    const front = (over) => T.nextPairs(show(reply, held, over).pairs, over?.donePairs || new Set()).map(T.pairKey)[0];
+    assert.equal(front(), "b|c");
+    assert.equal(front({ mode: "swipe" }), "d|e", "the mode switched");
+    assert.equal(front({ donePairs: new Set(["b|c"]) }), "d|e", "answered or skipped here");
+    assert.equal(front({ listing: (id) => (id === "c" ? null : listing(id)) }), "d|e", "a listing left the board");
+    assert.equal(front({ listing: (id) => (id === "c" ? { ...board.c, feedback: { interestState: "pass" } } : listing(id)) }), "d|e", "no longer comparable");
+    assert.equal(front({ listing: (id) => (id === "c" ? null : listing(id)), boardReady: false }), "b|c", "kept while the board loads");
+    assert.equal(front({ answers: [{ seq: 2, ids: ["c", "e"] }] }), "d|e", "an answer since it appeared shares a horn");
+    assert.equal(front({ answers: [{ seq: 1, ids: ["c", "e"] }] }), "b|c", "an answer from before it appeared does not count");
+    assert.equal(front({ recent: [{ id: 11, kind: "pair", listingId: "c", otherListingId: "b", action: "skip" }] }), "d|e", "skipped in a newer state");
+    assert.equal(front({ recent: [{ id: 11, kind: "pair", listingId: "c", otherListingId: "d", action: "a" }] }), "b|c", "another pair of horns");
+    assert.equal(front({ recent: [{ id: 9, kind: "pair", listingId: "b", otherListingId: "c" }] }), "b|c", "an older event");
+  });
+
+  test("an undo's pin keeps priority over the held pair or card", () => {
+    const held = { swipe: { item: { listingId: "c", reason: "new" }, seq: 1, events: 10 }, pair: { item: P("b", "c"), seq: 1, events: 10 } };
+    const state = { pairs: [P("d", "e")], queue: [{ listingId: "d" }] };
+    let kept = T.keepFront(state, { frontCard: null, frontPair: "a|b" }, { listing, now });
+    let s = T.keepShown(kept, held, ctx());
+    assert.deepEqual(ids(s.pairs), ["a|b", "d|e"]);
+    assert.equal(s.held.pair, null, "the pinned pair is what is shown now");
+    kept = T.keepFront(state, { frontCard: "a", frontPair: null }, { listing, now });
+    s = T.keepShown(kept, held, ctx({ mode: "swipe" }));
+    assert.deepEqual(s.queue.map((q) => q.listingId), ["a", "d"]);
+    assert.equal(s.held.swipe, null);
+    // The undone pair comes back with its sides where the owner saw them,
+    // however the server lists it (or not at all).
+    kept = T.keepFront({ pairs: [P("b", "a"), P("d", "e")] }, { frontCard: null, frontPair: "a|b", pairShown: P("a", "b") }, { listing, now });
+    assert.deepEqual(kept.pairs, [P("a", "b"), P("d", "e")]);
+    kept = T.keepFront({ pairs: [P("d", "e")] }, { frontCard: null, frontPair: "a|b", pairShown: P("b", "a") }, { listing, now });
+    assert.deepEqual(kept.pairs[0], P("b", "a"));
+    // A pin of the held pair itself is no conflict.
+    kept = T.keepFront(state, { frontCard: null, frontPair: "b|c" }, { listing, now });
+    assert.deepEqual(ids(T.keepShown(kept, held, ctx()).pairs), ["b|c", "d|e"]);
+  });
+
+  test("the swipe card on screen stays, once per horn, until answered", () => {
+    const held = { swipe: { item: { listingId: "c", reason: "new", taste: 50, sd: 1 }, seq: 3, events: 10 }, pair: null };
+    const reply = { queue: [{ listingId: "e" }, { listingId: "c", reason: "unsure" }, { listingId: "a" }] };
+    let s = show(reply, held, { mode: "swipe" });
+    assert.deepEqual(s.queue.map((q) => q.listingId), ["c", "e", "a"]);
+    assert.equal(s.queue[0].reason, "new", "the card as shown");
+    // Another listing of a held horn is not shown again after it.
+    s = show({ queue: [{ listingId: "a2" }, { listingId: "e" }] }, { swipe: { item: { listingId: "a" }, seq: 0, events: 1 } }, { mode: "swipe" });
+    assert.deepEqual(s.queue.map((q) => q.listingId), ["a", "e"]);
+    assert.equal(show(reply, held, { mode: "swipe", doneCards: new Set(["c"]) }).queue[0].listingId, "e", "answered");
+    assert.equal(show(reply, held, { mode: "pair" }).queue[0].listingId, "e", "the mode switched");
+    assert.equal(show(reply, held, { mode: "swipe", listing: (id) => (id === "c" ? { ...board.c, acquired: true } : listing(id)) }).queue[0].listingId, "e", "acquired");
+    assert.equal(show(reply, held, { mode: "swipe", recent: [{ id: 12, kind: "swipe", listingId: "c" }] }).queue[0].listingId, "e", "swiped in a newer state");
+    assert.equal(show(reply, held, { mode: "swipe", answers: [{ seq: 4, ids: ["c"] }] }).queue[0].listingId, "e", "an answer since it appeared");
+  });
+
+  test("an exclusion in force or a price lesson in effect releases the hold", () => {
+    const held = { swipe: { item: { listingId: "c" }, seq: 1, events: 10 }, pair: { item: P("b", "c"), seq: 1, events: 10 } };
+    const reply = { pairs: [P("d", "e")], queue: [{ listingId: "e" }] };
+    const x = (over) => ({ exclusions: [{ id: 1, listingId: "c", scope: "pair", active: true, inForce: true, ...over }] });
+    const pairFront = (skips, over) => T.keepShown(T.keepFront(reply, {}, { listing, now }), held, ctx({ skips, ...over })).pairs[0];
+    const cardFront = (skips) => T.keepShown(T.keepFront(reply, {}, { listing, now }), held, ctx({ mode: "swipe", skips })).queue[0].listingId;
+    assert.equal(T.pairKey(pairFront(x())), "d|e", "Head to head exclusion of one side");
+    assert.equal(T.pairKey(pairFront(x({ scope: "all" }))), "d|e");
+    assert.equal(T.pairKey(pairFront(x({ active: false }))), "b|c", "switched off by the owner");
+    assert.equal(T.pairKey(pairFront(x({ inForce: false }))), "b|c", "no longer applies");
+    assert.equal(T.pairKey(pairFront(x({ listingId: "e" }))), "b|c", "another listing");
+    assert.equal(cardFront(x()), "c", "a Head to head exclusion leaves Swipe alone");
+    assert.equal(cardFront(x({ scope: "all" })), "e", "scope all covers Swipe");
+    // Price lessons: b and c are both 2000 USD; make c 5000.
+    const pricey = (id) => (id === "c" ? { ...board.c, price: 5000 } : listing(id));
+    assert.equal(T.pairKey(pairFront({ rules: [{ dimension: "price", ratio: 2.5, lessons: 2 }] }, { listing: pricey })), "d|e", "2.5× apart");
+    assert.equal(T.pairKey(pairFront({ rules: [{ dimension: "price", ratio: 3, lessons: 2 }] }, { listing: pricey })), "b|c");
+    assert.equal(T.pairKey(pairFront({ rules: [{ dimension: "condition", classes: "new|project", lessons: 2 }] }, { listing: pricey })), "b|c", "not checked here");
+    assert.equal(T.priceRuleAvoids({ dimension: "price", ratio: 1.5 }, { price: 1000, currency: "USD" }, { price: 1500, currency: "EUR" }), false, "only within one currency");
+    assert.equal(T.priceRuleAvoids({ dimension: "price", ratio: 1.5 }, { price: 1000, currency: "USD" }, { price: 1490, currency: "USD" }), false);
+    assert.equal(T.priceRuleAvoids({ dimension: "price", ratio: 1.5 }, { price: 1000, currency: "USD" }, { price: 1500, currency: "USD" }), true);
+  });
+
+  test("a full recent window that does not reach back to the hold releases it", () => {
+    const held = { swipe: null, pair: { item: P("b", "c"), seq: 1, events: 10 } };
+    const window = (from) => Array.from({ length: T.RECENT_CAP }, (_, i) => ({ id: from + T.RECENT_CAP - 1 - i, kind: "tag", listingId: "z" }));
+    const front = (recent) => T.pairKey(T.keepShown(T.keepFront({ pairs: [P("d", "e")] }, {}, { listing, now }), held, ctx({ recent })).pairs[0]);
+    assert.equal(front(window(11)), "b|c", "the window starts right after the watermark");
+    assert.equal(front(window(5)), "b|c");
+    assert.equal(front(window(12)), "d|e", "event 11 may have been dropped");
+    assert.equal(front(window(12).slice(1)), "b|c", "a window under the cap is the whole history");
+  });
+
+  test("a reaction is only for what is rendered", () => {
+    assert.equal(T.matchesRendered("pair", P("a", "b"), ["a", "b"]), true);
+    assert.equal(T.matchesRendered("pair", P("a", "b"), ["b", "a"]), false, "sides swapped");
+    assert.equal(T.matchesRendered("pair", P("a", "b"), ["a", "c"]), false);
+    assert.equal(T.matchesRendered("pair", P("a", "b"), []), false);
+    assert.equal(T.matchesRendered("swipe", { listingId: "a" }, ["a"]), true);
+    assert.equal(T.matchesRendered("swipe", { listingId: "a" }, ["b"]), false);
+    assert.equal(T.matchesRendered("swipe", null, ["a"]), false);
+  });
+
+  test("only what the owner can see is held", () => {
+    const empty = { swipe: null, pair: null };
+    assert.deepEqual(T.holdShown(empty, "pair", P("a", "b"), { mode: "swipe" }), empty, "the other mode's stage is hidden");
+    assert.deepEqual(T.holdShown(empty, "swipe", { listingId: "a" }, { mode: "swipe", active: false }), empty, "the Taste view is hidden");
+    const h = T.holdShown(empty, "swipe", { listingId: "a" }, { mode: "swipe", seq: 2, events: 7 });
+    assert.deepEqual(h.swipe, { item: { listingId: "a" }, seq: 2, events: 7 });
+    assert.equal(T.holdShown(h, "swipe", { listingId: "b" }, { mode: "swipe", seq: 3 }).swipe.item.listingId, "b");
+    assert.equal(T.holdShown(h, "swipe", null, { mode: "swipe" }).swipe, null, "nothing on screen");
+  });
+}

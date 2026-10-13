@@ -21,12 +21,19 @@
   // pinGen orders undos: the latest one issued wins the front.
   let frontCard = null,
     frontPair = null,
+    frontPairShown = null, // the pinned pair as it was on screen (its sides stay put)
     pinGen = 0,
     pinnedGen = 0;
   // The watermark of the taste state on screen (see TasteModel.newerOrSame):
   // a reply computed from older history never replaces newer state, whatever
   // order requests were sent or answered in.
   let applied = null;
+  // The card and pair on screen (TasteModel.keepShown): a reply that arrives
+  // after one appeared never swaps it out from under the owner's thumb.
+  // answers lists this device's recent reactions, numbered by answerSeq.
+  let held = { swipe: null, pair: null },
+    answerSeq = 0;
+  const answers = [];
   const tagState = new Map(); // listingId -> Set of chips (optimistic)
 
   function el(tag, className, text) {
@@ -95,18 +102,29 @@
     return true;
   }
   // The queue and pairs as shown: the server's, with an undo's pinned card or
-  // pair in front. data keeps the server's order, so a pin that lets go (its
-  // horn left the board) leaves no trace. Validated on every render.
+  // pair in front, then the card or pair already on screen (until it is
+  // answered or no longer valid). data keeps the server's order, so a pin or
+  // hold that lets go leaves no trace. Validated on every render.
   function shown() {
-    const kept = T.keepFront(data, { frontCard, frontPair }, { listing, boardReady: boardState === "ready" });
+    const boardReady = boardState === "ready";
+    const kept = T.keepFront(data, { frontCard, frontPair, pairShown: frontPairShown }, { listing, boardReady });
     ({ frontCard, frontPair } = kept);
-    return kept;
+    const s = T.keepShown(kept, held, { mode, listing, doneCards, donePairs, answers, recent: data?.recent, skips: data?.skips, boardReady });
+    held = s.held;
+    return s;
+  }
+  // Called with what a render put on screen.
+  function hold(kind, item) {
+    held = T.holdShown(held, kind, item, { mode, active, seq: answerSeq, events: applied?.events ?? null });
   }
   function pin(entry, gen) {
     if (gen < pinnedGen) return; // a newer undo already holds the front
     pinnedGen = gen;
     if (entry.kind === "swipe") frontCard = entry.listingId;
-    else frontPair = entry.key;
+    else {
+      frontPair = entry.key;
+      frontPairShown = entry.pair;
+    }
   }
   async function load() {
     if (loading) return loading;
@@ -216,6 +234,7 @@
     const deck = $("#swipe-deck");
     deck.replaceChildren();
     const q = currentCard();
+    hold("swipe", q);
     for (const id of ["#swipe-left", "#swipe-up", "#swipe-right"]) $(id).disabled = !q;
     if (!q) {
       const empty = el("div", "taste-empty");
@@ -260,6 +279,7 @@
     const box = $("#pair-cards");
     box.replaceChildren();
     const p = currentPair();
+    hold("pair", p);
     for (const id of ["#pair-a", "#pair-b", "#pair-both", "#pair-neither", "#pair-skip"]) $(id).disabled = !p;
     if (!p) skipOpen = false;
     renderSkipPanel();
@@ -287,6 +307,7 @@
       const b = el("button", "pair-card");
       b.type = "button";
       b.dataset.side = side;
+      b.dataset.id = id;
       b.setAttribute("aria-label", `Choose ${l.maker} ${l.model}`);
       const view = viewListing(l);
       b.append(visual(l, "pair-visual", () => onPlaceholder(view, slot)), facts(l));
@@ -503,12 +524,26 @@
   function post(body) {
     return api("/taste/events", { clientId: T.clientId(), ...body });
   }
+  // The ids of the card or pair actually rendered.
+  function renderedIds(kind) {
+    if (kind === "swipe") return [...document.querySelectorAll("#swipe-deck .swipe-card")].map((c) => c.dataset.id);
+    return [...document.querySelectorAll("#pair-cards .pair-card")].map((c) => c.dataset.id);
+  }
+  const onScreen = (kind, item) => T.matchesRendered(kind, item, renderedIds(kind));
+  // What a reaction would be about is not what is on screen (state changed
+  // without a render): send nothing, show what is current instead.
+  function refuse() {
+    skipOpen = false;
+    render();
+    status("The cards changed. Check them and try again.", true);
+  }
   async function react(r) {
     if (!data) return;
     let body, entry;
     if (r.kind === "swipe") {
       const q = currentCard();
       if (!q) return;
+      if (!onScreen("swipe", q)) return refuse();
       body = { kind: "swipe", mode: "swipe", listingId: q.listingId, action: r.action, meta: { hadPhoto: photoShown($("#swipe-deck")) } };
       doneCards.add(q.listingId);
       entry = { kind: "swipe", listingId: q.listingId, front: q.listingId === frontCard, gen: pinnedGen };
@@ -516,6 +551,7 @@
     } else {
       const p = currentPair();
       if (!p) return;
+      if (!onScreen("pair", p)) return refuse();
       body = { kind: "pair", mode: "pair", listingId: p.a, otherListingId: p.b, action: r.action, meta: { hadPhoto: photoShown($("#pair-cards")) } };
       if (r.action === "skip") {
         // Not a choice: optional reasons, and the note being written (if
@@ -526,10 +562,14 @@
       }
       skipOpen = false;
       donePairs.add(T.pairKey(p));
-      entry = { kind: "pair", key: T.pairKey(p), front: T.pairKey(p) === frontPair, gen: pinnedGen, note: body.note };
+      entry = { kind: "pair", key: T.pairKey(p), pair: p, front: T.pairKey(p) === frontPair, gen: pinnedGen, note: body.note };
       if (entry.front) frontPair = null;
     }
     $("#taste-note").value = "";
+    // A card or pair shown before this answer and sharing one of its horns
+    // (see keepShown) is not held any longer.
+    answers.push({ seq: ++answerSeq, ids: [body.listingId, body.otherListingId].filter(Boolean) });
+    if (answers.length > 50) answers.shift();
     entry.pending = post(body);
     undoStack.push(entry);
     const said =
@@ -599,10 +639,10 @@
   function noteTarget() {
     if (mode === "swipe") {
       const q = currentCard();
-      return q ? { listingId: q.listingId } : null;
+      return q && onScreen("swipe", q) ? { listingId: q.listingId } : null;
     }
     const p = currentPair();
-    return p ? { listingId: p.a, otherListingId: p.b } : null;
+    return p && onScreen("pair", p) ? { listingId: p.a, otherListingId: p.b } : null;
   }
   async function saveNote() {
     const text = $("#taste-note").value.trim(),
@@ -830,6 +870,9 @@
 
   window.TasteBoard = {
     setActive(on) {
+      // What was on screen stays held while the view is hidden (hold()
+      // records nothing then, and hidden renders keep showing it), so coming
+      // back shows, and votes on, the same card or pair until it is answered.
       active = on;
       if (on) load();
     },
