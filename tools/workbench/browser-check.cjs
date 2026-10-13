@@ -4,10 +4,14 @@
  * context and no sideways scroll; then two browser contexts on one thread
  * receive the same streamed reply, sync a half-written draft, see one
  * approval decided on the other device, replay an offline outbox, send a
- * hold-to-talk voice note and show a status card. Fails on runtime errors. */
+ * hold-to-talk voice note and show a status card. The Jazz Library view runs
+ * against a mocked /jazz/highlight-api/library with fictional titles at 390
+ * and 1440 px (nav and drawer entry, list, reader, upload, Repertoire link).
+ * Fails on runtime errors. */
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
+const http = require("node:http");
 const path = require("node:path");
 const { chromium } = require("playwright");
 
@@ -110,7 +114,7 @@ async function waitForServer() {
     // iOS widens the layout viewport to fit anything wider than the screen, and
     // fixed bars (the top bar, this sheet) then size to the wider page, so their
     // right edge goes off-screen. Every view must fit at common iPhone widths.
-    const jazzViews = ["today", "repertoire", "guide-tones", "effects", "archive", "studio"];
+    const jazzViews = ["today", "repertoire", "library", "guide-tones", "effects", "archive", "studio"];
     const otherPages = ["/trumpets/", "/trumpets/#inspiration", "/commonplace/"];
     const inside = (b, w, h, label) => assert.ok(b && b.x >= -0.5 && b.y >= -0.5 && b.x + b.width <= w + 0.5 && b.y + b.height <= h + 0.5, `${label} is fully on screen (${JSON.stringify(b)})`);
     // Every nav item can be scrolled into view and tapped (the hit test lands on it, not on something covering it).
@@ -378,8 +382,234 @@ async function waitForServer() {
       await page.ctx.close();
     }
 
+    // ---------------- Jazz Library (#library) against a mocked shelf ----------------
+    // The real shelf is served by the highlight service on the site VM; here
+    // /jazz/highlight-api/library is answered in the browser with fictional
+    // fixtures. Service workers are blocked so every request reaches the mock.
+    {
+      const libraryPage = async (name, width, height, touch) => {
+        const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, hasTouch: touch, isMobile: touch, reducedMotion: "reduce", serviceWorkers: "block" });
+        const page = await ctx.newPage();
+        page.on("pageerror", (e) => errors.push(`${name}: ${e.message}`));
+        page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|404|502|503/.test(m.text())) errors.push(`${name} console: ${m.text()}`); });
+        const shelf = [
+          { id: "test-study-a", title: "Test Study A", author: "Fictional Author", sizeBytes: 1258291, addedAt: "2026-10-01T12:00:00Z",
+            resources: [{ title: "Test Recording One", artist: "Test Ensemble", note: "Fixture listening note.", url: "https://example.com/test-recording-one" }] },
+          { id: "test-method-b", title: "Test Method Book B", author: "Fixture Press", sizeBytes: 524288, addedAt: "2026-09-28T12:00:00Z", source: "https://example.com/test-method-b" },
+          { id: "test-lead-sheet-c", title: "Test Lead Sheet C", author: "", sizeBytes: 98304, addedAt: "2026-09-20T12:00:00Z" },
+        ];
+        const calls = [];
+        await ctx.route("**/jazz/highlight-api/library**", async (route) => {
+          const req = route.request();
+          const url = new URL(req.url());
+          calls.push({ method: req.method(), path: url.pathname, query: url.search, type: req.headers()["content-type"] || "" });
+          if (url.pathname === "/jazz/highlight-api/library" && req.method() === "GET") return route.fulfill({ json: shelf });
+          if (url.pathname === "/jazz/highlight-api/library" && req.method() === "POST") {
+            const item = { id: `test-upload-${shelf.length}`, title: url.searchParams.get("title"), author: url.searchParams.get("author") || "", sizeBytes: (req.postDataBuffer() || Buffer.alloc(0)).length, addedAt: "2026-10-13T12:00:00Z" };
+            shelf.unshift(item);
+            return route.fulfill({ status: 201, json: item });
+          }
+          if (/^\/jazz\/highlight-api\/library\/[^/]+\/file$/.test(url.pathname)) {
+            return route.fulfill({ contentType: "text/html", body: "<!doctype html><body style='margin:0;padding:40px;font:20px sans-serif;background:#f4f1ea;color:#222'>Fixture PDF stand-in</body>" });
+          }
+          return route.fulfill({ status: 404, json: { error: "not found" } });
+        });
+        page.calls = calls;
+        page.ctx = ctx;
+        return page;
+      };
+      for (const L of [{ name: "phone", width: 390, height: 844, touch: true }, { name: "desktop", width: 1440, height: 900, touch: false }]) {
+        const page = await libraryPage(`library-${L.name}`, L.width, L.height, L.touch);
+        const press = (sel) => (L.touch ? page.tap(sel) : page.click(sel));
+        await page.goto(`${base}/jazz/`);
+        await page.waitForSelector(".wb-pill");
+        assert.equal(page.calls.length, 0, `${L.name}: the library is not fetched until its view opens`);
+        if (L.touch) {
+          await page.tap("#jazz-menu-button");
+          await page.waitForSelector("body.jazz-nav-open .virtuoso-nav");
+          inside(await page.locator('.virtuoso-nav [data-jazz-view="library"]').boundingBox(), L.width, L.height, "phone drawer: the Library item");
+          await page.screenshot({ path: path.join(out, "library-phone-drawer.png") });
+        } else {
+          assert.ok(await page.locator('.virtuoso-nav [data-jazz-view="library"]').isVisible(), "desktop: Library is in the sidebar");
+        }
+        await press('.virtuoso-nav [data-jazz-view="library"]');
+        await page.waitForFunction(() => document.body.classList.contains("virtuoso-library") && !document.body.classList.contains("jazz-nav-open"));
+        await page.waitForFunction(() => document.querySelectorAll("#library-books .library-book").length === 3);
+        assert.ok(page.calls.some((c) => c.method === "GET" && c.path === "/jazz/highlight-api/library"), `${L.name}: the list comes from /jazz/highlight-api/library`);
+        assert.equal(await page.locator('.virtuoso-nav [data-jazz-view="library"]').getAttribute("aria-current"), "page");
+        if (L.touch) assert.equal(await page.locator("#mobile-view-label").innerText(), "LIBRARY");
+        assert.ok(await page.locator("#library-heading").isVisible(), `${L.name}: the Library heading shows`);
+        assert.equal(await page.locator("#today").isHidden(), true, `${L.name}: Today is hidden`);
+        assert.deepEqual(await page.locator("#library-books h2").allInnerTexts(), ["Test Study A", "Test Method Book B", "Test Lead Sheet C"]);
+        assert.equal(await page.locator("#library-count").innerText(), "3 documents · private cloud library");
+        assert.equal(await page.locator(".library-listening a").getAttribute("rel"), "noopener noreferrer");
+        await noSideScroll(page, `${L.name} library`);
+        await page.screenshot({ path: path.join(out, `library-${L.name}.png`) });
+
+        // Open: the reader frames the file endpoint.
+        await press("#library-books .library-book:first-child button");
+        await page.waitForSelector("#library-reader:not([hidden])");
+        assert.equal(await page.locator("#library-reader-title").innerText(), "Test Study A");
+        const frameSrc = await page.locator("#library-frame").evaluate((f) => f.src);
+        assert.equal(new URL(frameSrc).pathname, "/jazz/highlight-api/library/test-study-a/file");
+        await page.frameLocator("#library-frame").locator("text=Fixture PDF stand-in").waitFor();
+        await noSideScroll(page, `${L.name} reader`);
+        await page.locator("#library-reader").scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(out, `library-${L.name}-reader.png`) });
+        await press("#library-close");
+        await page.waitForSelector("#library-reader[hidden]", { state: "attached" });
+        assert.equal(await page.locator("#library-frame").getAttribute("src"), null, "closing the reader unloads the PDF");
+
+        // Upload: the form posts the PDF bytes with its title and author, then the list reloads.
+        await press("#library-add");
+        await page.waitForSelector("#library-upload:not([hidden])");
+        await page.setInputFiles("#library-file", { name: "Test Upload D.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n% fictional fixture\n%%EOF\n") });
+        assert.equal(await page.locator("#library-title").inputValue(), "Test Upload D", "the title defaults to the file name");
+        await page.fill("#library-author", "Fictional Author");
+        await noSideScroll(page, `${L.name} upload form`);
+        await page.locator("#library-upload").scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(out, `library-${L.name}-upload.png`) });
+        await press("#library-submit");
+        await page.waitForFunction(() => document.getElementById("library-status").textContent === "Saved “Test Upload D” to your library.");
+        const post = page.calls.find((c) => c.method === "POST");
+        assert.ok(post && post.path === "/jazz/highlight-api/library" && post.type === "application/pdf", `${L.name}: the upload is a PDF POST to the library (${JSON.stringify(post)})`);
+        assert.equal(new URLSearchParams(post.query).get("title"), "Test Upload D");
+        assert.equal(new URLSearchParams(post.query).get("author"), "Fictional Author");
+        assert.equal(await page.locator("#library-books .library-book").count(), 4);
+        assert.equal(await page.locator("#library-upload").isHidden(), true, "the form folds away after saving");
+
+        // Search narrows the shelf.
+        await page.fill("#library-search", "method book");
+        assert.deepEqual(await page.locator("#library-books h2").allInnerTexts(), ["Test Method Book B"]);
+        await page.ctx.close();
+      }
+
+      // Repertoire's per-tune Sheet music section links to the Library, searching for the tune.
+      const page = await libraryPage("library-repertoire", 1440, 900, false);
+      const today = new Date().toISOString().slice(0, 10);
+      const created = await fetch(`${base}/jazz/api/v1/repertoire/tunes?today=${today}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Test Tune Alpha", category: "ballad", chosen: true, clientMutationId: crypto.randomUUID() }) });
+      assert.ok(created.ok, `fixture tune created (${created.status})`);
+      const tune = await created.json();
+      await page.goto(`${base}/jazz/#repertoire/${tune.tuneId}`);
+      const link = page.locator("#tune-dialog[open] .sheet-library [data-library-link]");
+      await link.waitFor();
+      assert.equal(await link.getAttribute("href"), "#library?q=Test%20Tune%20Alpha");
+      await link.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(out, "library-repertoire-link.png") });
+      await link.click();
+      await page.waitForFunction(() => document.body.classList.contains("virtuoso-library") && !document.getElementById("tune-dialog").open);
+      assert.equal(await page.locator("#library-search").inputValue(), "Test Tune Alpha");
+      await page.waitForSelector("#library-empty:not([hidden])");
+      assert.equal(await page.locator("#library-empty").innerText(), "No documents match your search.");
+      await page.ctx.close();
+
+      // With the Workbench service worker running, reading a PDF, downloading
+      // it, opening it in its own tab, opening a film and an API URL leave no
+      // private response in Cache Storage. Playwright's request routing makes
+      // Chromium bypass service workers, so this part uses no routes: a small
+      // loopback proxy in front of the preview answers the private paths with
+      // fictional fixtures in the worst case for a cache (real PDF and video
+      // types, no Cache-Control at all) and passes everything else through
+      // with the preview's real headers (app pages are no-store, as in
+      // production). The shell page must still be cached and reload offline.
+      {
+        const upstream = new URL(base);
+        const pdf = Buffer.from("%PDF-1.4\n% fictional fixture, not a real document\n%%EOF\n");
+        const hits = [];
+        const shellCacheControl = [];
+        let proxyOpen = true;
+        const stopProxy = async () => {
+          if (!proxyOpen) return;
+          proxyOpen = false;
+          proxy.closeAllConnections?.();
+          await new Promise((resolve) => proxy.close(resolve));
+        };
+        const proxy = http.createServer((req, res) => {
+          const u = new URL(req.url, "http://proxy");
+          hits.push(u.pathname + u.search);
+          if (u.pathname === "/jazz/highlight-api/library") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify([{ id: "test-study-a", title: "Test Study A", author: "Fictional Author", sizeBytes: pdf.length, addedAt: "2026-10-01T12:00:00Z" }]));
+          }
+          if (/^\/jazz\/highlight-api\/library\/[^/]+\/file$/.test(u.pathname)) {
+            res.writeHead(200, { "Content-Type": "application/pdf", ...(u.searchParams.get("download") === "1" ? { "Content-Disposition": 'attachment; filename="test-study-a.pdf"' } : {}) });
+            return res.end(pdf);
+          }
+          if (u.pathname.startsWith("/jazz/films/")) {
+            const json = u.pathname.endsWith(".json");
+            res.writeHead(200, { "Content-Type": json ? "application/json" : "video/mp4" });
+            return res.end(json ? "[]" : Buffer.alloc(2048));
+          }
+          const forward = http.request({ host: upstream.hostname, port: upstream.port, path: req.url, method: req.method, headers: req.headers }, (up) => {
+            if (u.pathname === "/jazz/") shellCacheControl.push(up.headers["cache-control"] || "");
+            res.writeHead(up.statusCode, up.headers);
+            up.pipe(res);
+          });
+          forward.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+          req.pipe(forward);
+        });
+        await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+        const swBase = `http://127.0.0.1:${proxy.address().port}`;
+        try {
+          const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "allow", acceptDownloads: true });
+          const sw = await ctx.newPage();
+          sw.on("pageerror", (e) => errors.push(`library-sw: ${e.message}`));
+          await sw.goto(`${swBase}/jazz/`);
+          await sw.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 });
+          await sw.reload(); // a page load the worker now controls
+          await sw.evaluate(() => { location.hash = "#library"; });
+          await sw.waitForFunction(() => document.querySelectorAll("#library-books .library-book").length === 1);
+
+          // Read: the reader's iframe navigates to the file endpoint.
+          await sw.click("#library-books .library-book:first-child button");
+          // Download: ?download=1 is a navigation in the same tab.
+          const download = sw.waitForEvent("download").catch(() => null);
+          await sw.click("#library-books .library-book:first-child a:text('Download')");
+          await (await download)?.cancel();
+          // The reader's "open the PDF in a new tab" link, a film and an API URL, each as a top-level navigation.
+          for (const target of ["/jazz/highlight-api/library/test-study-a/file", "/jazz/films/2026-10-01/test-film.mp4", "/jazz/films/index.json", "/jazz/api/v1/repertoire"]) {
+            const tab = await ctx.newPage();
+            await tab.goto(swBase + target).catch(() => { /* a PDF may turn into a download */ });
+            await tab.waitForTimeout(300);
+            await tab.close();
+          }
+          await sw.waitForTimeout(500);
+          const fileLoads = hits.filter((h) => /^\/jazz\/highlight-api\/library\/test-study-a\/file/.test(h)).length;
+          assert.ok(fileLoads >= 3, `the PDF was read, downloaded and opened (${JSON.stringify(hits.filter((h) => h.includes("highlight-api")))})`);
+          assert.ok(hits.includes("/jazz/films/2026-10-01/test-film.mp4"), "the film was opened");
+
+          const cached = await sw.evaluate(async () => {
+            const out = [];
+            for (const name of await caches.keys()) for (const req of await (await caches.open(name)).keys()) out.push(`${name} ${new URL(req.url).pathname}${new URL(req.url).search}`);
+            return out;
+          });
+          const leaked = cached.filter((entry) => /\/highlight-api\/|\/films\/|\/api\/|\/share\//.test(entry));
+          assert.deepEqual(leaked, [], `no private response in Cache Storage (${JSON.stringify(cached)})`);
+          assert.ok(cached.includes("workbench-shell-v2 /jazz/"), `the worker was active and cached the shell page (${JSON.stringify(cached)})`);
+          assert.ok(cached.every((entry) => entry.startsWith("workbench-shell-v2 ")), "only the current shell cache exists");
+          assert.ok(cached.includes("workbench-shell-v2 /assets/workbench/workbench.js"), "the sheet's script is cached for offline use");
+          assert.ok(shellCacheControl.length > 0 && shellCacheControl.every((v) => /no-store/.test(v)), `the shell page arrived with its real no-store header (${JSON.stringify(shellCacheControl)})`);
+
+          // Offline: with the network gone (emulated offline and the server
+          // stopped), a reload is answered from the cached shell and the
+          // Workbench pill renders.
+          await ctx.setOffline(true);
+          await stopProxy();
+          const reloaded = await sw.reload();
+          assert.ok(reloaded && reloaded.ok(), "the page reloads offline from the cached shell");
+          await sw.waitForSelector(".wb-pill", { timeout: 15000 });
+          assert.ok(await sw.locator(".wb-pill").isVisible(), "the Workbench pill renders offline");
+          assert.ok(await sw.locator("#jazz-nav").count(), "the shell HTML is the Jazz page");
+          await sw.screenshot({ path: path.join(out, "offline-reload-jazz.png") });
+          await ctx.close();
+        } finally {
+          await stopProxy();
+        }
+      }
+    }
+
     assert.deepEqual(errors, []);
-    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, the daily fix list at 390 px (verdict, Fix next, sections, changes, its thread), CSP in place, no runtime errors.");
+    console.log("Workbench browser checks passed: 390/768/1440 px layouts (sheet, split, panel) on /commonplace/, /trumpets/ and /jazz/, outside tap closes the phone sheet and split view (not the desktop panel), every /jazz/ view plus /trumpets/ and /commonplace/ fit 375/390/401 px with the sheet's × and Send on screen, phone menu drawer and landscape sidebar reach every nav item, keyboard and zoom keep the sheet in the visual viewport, swipe-down close, 16px touch fields, PWA manifest and service worker scope, two devices on one thread (same streamed reply, draft sync, first-wins approval), offline outbox replay, hold-to-talk voice note, status card, full approval preview, hostile Markdown rendered inert, the daily fix list at 390 px (verdict, Fix next, sections, changes, its thread), the Jazz Library at 390 and 1440 px (nav and drawer entry, list from /jazz/highlight-api/library, reader, upload, search, Repertoire link), CSP in place, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     try { await fetch(base + "/__preview_stop", { method: "POST" }); } catch { /* stopped */ }

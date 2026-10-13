@@ -550,6 +550,7 @@
       <section class="tune-detail-section sheet-library">
         <h3>Sheet music <small>${(tune.sheets || []).length} linked PDF${(tune.sheets || []).length === 1 ? "" : "s"}</small></h3>
         <ul>${rows || '<li class="sheet-empty">No PDF linked to this tune yet.</li>'}</ul>
+        <a class="sheet-library-link" href="#library?q=${escapeHTML(encodeURIComponent(tune.title))}" data-library-link>Search the Library for this tune →</a>
         ${readonly ? "" : `<form class="sheet-upload" data-sheet-upload>
           <label class="wide"><span>PDF</span><input name="file" type="file" accept="application/pdf,.pdf" required></label>
           <label class="wide"><span>Chart title</span><input name="title" maxlength="160" placeholder="Defaults to the filename"></label>
@@ -652,6 +653,7 @@
     }));
     $$("[data-set-milestone]", body).forEach((button) => { button.dataset.focusKey = `${button.dataset.setMilestone}-${button.dataset.value}`; });
     wireKeyEditor(body, tune, "");
+    $("[data-library-link]", body)?.addEventListener("click", () => $("#tune-dialog")?.close());
     const sheetForm = $("[data-sheet-upload]", body);
     sheetForm?.addEventListener("submit", async (event) => {
       event.preventDefault();

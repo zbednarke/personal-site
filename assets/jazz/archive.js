@@ -114,6 +114,7 @@
     if (location.hash === "#guide-tones") return "guide-tones";
     if (location.hash === "#studio") return "studio";
     if (location.hash === "#effects") return "effects";
+    if (location.hash === "#library" || location.hash.startsWith("#library?")) return "library";
     return "today";
   }
 
@@ -142,13 +143,15 @@
     document.body.classList.toggle("virtuoso-studio", view === "studio");
     document.body.classList.toggle("virtuoso-effects", view === "effects");
     document.body.classList.toggle("virtuoso-repertoire", view === "repertoire");
+    document.body.classList.toggle("virtuoso-library", view === "library");
     $("#today").hidden = view !== "today";
     $("#archive").hidden = view !== "archive";
     $("#guide-tones").hidden = view !== "guide-tones";
     $("#studio").hidden = view !== "studio";
     $("#effects").hidden = view !== "effects";
     $("#repertoire").hidden = view !== "repertoire";
-    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", repertoire: "Repertoire", today: "Today" };
+    if ($("#library")) $("#library").hidden = view !== "library";
+    const labels = { archive: "Archive", "guide-tones": "Guide tones", studio: "Clip studio", effects: "Live effects", repertoire: "Repertoire", library: "Library", today: "Today" };
     $("#mobile-view-label").textContent = labels[view];
     document.querySelectorAll("[data-jazz-view]").forEach((link) => {
       const active = link.dataset.jazzView === view;
