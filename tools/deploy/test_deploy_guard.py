@@ -112,6 +112,8 @@ if [[ $1 == compute ]]; then
   cmd=
   while [[ $# -gt 0 ]]; do case $1 in --command) cmd=$2; shift 2 ;; *) shift ;; esac; done
   [[ ${FAKE_SSH:-ok} == fail ]] && exit 255
+  # A first run's ssh-keygen prints its fingerprint and randomart to stdout.
+  [[ ${FAKE_SSH:-ok} == banner ]] && printf 'Your identification has been saved\n+---[ED25519 256]--+\n|  .o.            |\n'
   exec bash -c "$cmd"
 fi
 if [[ $1 == run && $3 == list ]]; then
@@ -238,6 +240,16 @@ class ReadLiveReleaseTests(FakeGcloudTest):
                          ['.release-commit', 'assets/a.js', 'hand-made.html', 'index.html'])
         self.assertEqual(sorted(line.split()[1] for line in self.text('live.sha256').splitlines()),
                          ['assets/a.js', 'index.html'])
+
+    def test_output_before_the_read_does_not_hide_the_commit(self):
+        # The first deploy with this guard read "missing": gcloud generated a
+        # key and ssh-keygen's output came before the release-commit line.
+        (self.release / '.release-commit').write_text(self.live + '\n')
+        result = self.read(FAKE_SSH='banner')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.text('live-commit.txt').strip(), self.live)
+        self.assertEqual(sorted(self.text('live-files.txt').split()),
+                         ['.release-commit', 'assets/a.js', 'hand-made.html', 'index.html'])
 
     def test_a_missing_release_commit_reads_as_missing_and_fails_the_check(self):
         self.assertEqual(self.read().returncode, 0)

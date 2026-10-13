@@ -48,7 +48,8 @@ for attempt in 1 2; do
 done
 [[ -n $out ]] || exit 1
 
-commit=$(sed -n '1s/^release-commit *//p' <<<"$out")
+# Not necessarily the first line: the VM's login can print a banner first.
+commit=$(sed -n 's/^release-commit *//p' <<<"$out" | head -n 1)
 echo "${commit:-missing}" > live-commit.txt
 awk '/^--- /{part=$2; next} part=="files"' <<<"$out" | sed 's|^\./||' > live-files.txt
 awk '/^--- /{part=$2; next} part=="hashes"' <<<"$out" > live.sha256
