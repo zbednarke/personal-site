@@ -166,6 +166,16 @@
     if (g.components <= 1) return `Comparisons connect all ${plural(g.eligible, "eligible horn")}`;
     return `Comparisons connect ${g.largest} of ${plural(g.eligible, "eligible horn")} (${plural(g.components - 1, "island")})`;
   }
+  // The quiet progress line under the Head to head question. The graph's
+  // nodes are horns (one comparable listing each), and "largest" counts the
+  // horns in the biggest connected group, so until there is one group the
+  // line says "in the main group", not "connected". Empty without a graph
+  // or with fewer than two eligible horns.
+  function linkText(g) {
+    if (!g || !(g.eligible >= 2)) return "";
+    if (g.components <= 1) return `All ${g.eligible} horns connected`;
+    return `Linking horns · ${g.largest} of ${g.eligible} in the main group`;
+  }
   const kindLabels = {
     maker: "maker",
     family: "model",
@@ -235,5 +245,5 @@
     for (let i = 0; i < 20; i++) s += alphabet[Math.floor(random() * alphabet.length)];
     return s;
   }
-  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, newerOrSame, pairShortage, graphText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
+  return { gesture, dragState, lockAxis, velocity, commitDistance, keyAction, pairKey, nextCards, nextPairs, cardToFront, pairToFront, pinnable, comparable, keepFront, newerOrSame, pairShortage, graphText, linkText, learned, confidenceLabel, weightText, changeText, noteStatements, preferencesFromForm, clientId };
 });
