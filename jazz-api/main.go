@@ -74,16 +74,22 @@ type config struct {
 	MagicFilmProject    string
 	MagicFilmRegion     string
 	MagicFilmJob        string
+	LongToneWorkers     int
+	CaptionWorkers      int
+	ProjectID           string
 }
 
 type application struct {
-	cfg         config
-	db          *pgxpool.Pool
-	storage     *storage.Client
-	tokenSource oauth2.TokenSource
-	iamSigner   *iamcredentials.IamCredentialsClient
-	httpClient  *http.Client
-	logger      *slog.Logger
+	cfg               config
+	db                *pgxpool.Pool
+	storage           *storage.Client
+	tokenSource       oauth2.TokenSource
+	speechTokenSource oauth2.TokenSource
+	iamSigner         *iamcredentials.IamCredentialsClient
+	httpClient        *http.Client
+	logger            *slog.Logger
+	longToneDecoder   longToneDecoder
+	longToneSigner    longToneURLSigner
 	// objects and inspirationHTTP are nil in production (GCS and the safe
 	// preview client are used); tests inject fakes.
 	objects         objectStore
@@ -140,6 +146,7 @@ type stateResponse struct {
 }
 
 type recordingInitRequest struct {
+	ClientCaptureID   string    `json:"clientCaptureId"`
 	MediaKind         string    `json:"mediaKind"`
 	ContentType       string    `json:"contentType"`
 	Codec             string    `json:"codec"`
@@ -175,43 +182,51 @@ type recordingUpdateRequest struct {
 	Notes *string `json:"notes"`
 }
 
+type recordingSectionUpdateRequest struct {
+	PracticeBlockID         string           `json:"practiceBlockId"`
+	ExpectedPracticeBlockID string           `json:"expectedPracticeBlockId"`
+	ExpectedRevision        int64            `json:"expectedRevision"`
+	CreateTarget            *blockDefinition `json:"createTarget,omitempty"`
+}
+
 type recordingRow struct {
-	ID                     uuid.UUID `json:"id"`
-	ContentType            string    `json:"contentType"`
-	Codec                  string    `json:"codec,omitempty"`
-	SizeBytes              int64     `json:"sizeBytes,omitempty"`
-	DurationMS             int       `json:"durationMs,omitempty"`
-	SampleRate             int       `json:"sampleRate,omitempty"`
-	Channels               int       `json:"channels,omitempty"`
-	RecordedAt             time.Time `json:"recordedAt"`
-	Status                 string    `json:"status"`
-	TuneID                 string    `json:"tuneId,omitempty"`
-	MissionID              string    `json:"missionId,omitempty"`
-	SkillIDs               []string  `json:"skillIds"`
-	TakeNumber             int       `json:"takeNumber,omitempty"`
-	Notes                  string    `json:"notes,omitempty"`
-	SessionID              string    `json:"practiceSessionId,omitempty"`
-	SessionTitle           string    `json:"practiceSessionTitle,omitempty"`
-	BlockID                string    `json:"practiceBlockId,omitempty"`
-	BlockDate              string    `json:"practiceDate,omitempty"`
-	BlockKey               string    `json:"practiceBlockKey,omitempty"`
-	BlockTitle             string    `json:"practiceBlockTitle,omitempty"`
-	BlockCategory          string    `json:"practiceBlockCategory,omitempty"`
-	BlockTrack             string    `json:"practiceBlockTrack,omitempty"`
-	ObjectName             string    `json:"-"`
-	MediaKind              string    `json:"mediaKind"`
-	VideoContentType       string    `json:"videoContentType,omitempty"`
-	VideoCodec             string    `json:"videoCodec,omitempty"`
-	VideoSizeBytes         int64     `json:"videoSizeBytes,omitempty"`
-	VideoWidth             int       `json:"videoWidth,omitempty"`
-	VideoHeight            int       `json:"videoHeight,omitempty"`
-	VideoFrameRate         float64   `json:"videoFrameRate,omitempty"`
-	VideoObjectName        string    `json:"-"`
-	VideoPlaybackOptimized bool      `json:"videoPlaybackOptimized,omitempty"`
-	FxContentType          string    `json:"fxContentType,omitempty"`
-	FxSizeBytes            int64     `json:"fxSizeBytes,omitempty"`
-	FxPreset               string    `json:"fxPreset,omitempty"`
-	WaveformPeaks          []float64 `json:"waveformPeaks,omitempty"`
+	ID                        uuid.UUID `json:"id"`
+	ContentType               string    `json:"contentType"`
+	Codec                     string    `json:"codec,omitempty"`
+	SizeBytes                 int64     `json:"sizeBytes,omitempty"`
+	DurationMS                int       `json:"durationMs,omitempty"`
+	SampleRate                int       `json:"sampleRate,omitempty"`
+	Channels                  int       `json:"channels,omitempty"`
+	RecordedAt                time.Time `json:"recordedAt"`
+	Status                    string    `json:"status"`
+	TuneID                    string    `json:"tuneId,omitempty"`
+	MissionID                 string    `json:"missionId,omitempty"`
+	SkillIDs                  []string  `json:"skillIds"`
+	TakeNumber                int       `json:"takeNumber,omitempty"`
+	Notes                     string    `json:"notes,omitempty"`
+	SessionID                 string    `json:"practiceSessionId,omitempty"`
+	SessionTitle              string    `json:"practiceSessionTitle,omitempty"`
+	BlockID                   string    `json:"practiceBlockId,omitempty"`
+	BlockDate                 string    `json:"practiceDate,omitempty"`
+	BlockKey                  string    `json:"practiceBlockKey,omitempty"`
+	BlockTitle                string    `json:"practiceBlockTitle,omitempty"`
+	BlockCategory             string    `json:"practiceBlockCategory,omitempty"`
+	BlockTrack                string    `json:"practiceBlockTrack,omitempty"`
+	ObjectName                string    `json:"-"`
+	MediaKind                 string    `json:"mediaKind"`
+	VideoContentType          string    `json:"videoContentType,omitempty"`
+	VideoCodec                string    `json:"videoCodec,omitempty"`
+	VideoSizeBytes            int64     `json:"videoSizeBytes,omitempty"`
+	VideoWidth                int       `json:"videoWidth,omitempty"`
+	VideoHeight               int       `json:"videoHeight,omitempty"`
+	VideoFrameRate            float64   `json:"videoFrameRate,omitempty"`
+	VideoObjectName           string    `json:"-"`
+	VideoPlaybackOptimized    bool      `json:"videoPlaybackOptimized,omitempty"`
+	FxContentType             string    `json:"fxContentType,omitempty"`
+	FxSizeBytes               int64     `json:"fxSizeBytes,omitempty"`
+	FxPreset                  string    `json:"fxPreset,omitempty"`
+	WaveformPeaks             []float64 `json:"waveformPeaks,omitempty"`
+	SectionAssignmentRevision int64     `json:"sectionAssignmentRevision"`
 }
 
 func main() {
@@ -248,6 +263,11 @@ func main() {
 		slog.Error("google credentials failed", "error", err)
 		os.Exit(1)
 	}
+	speechTokenSource, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
+	if err != nil {
+		slog.Error("speech credentials failed", "error", err)
+		os.Exit(1)
+	}
 	iamSigner, err := iamcredentials.NewIamCredentialsClient(ctx)
 	if err != nil {
 		slog.Error("signing client failed", "error", err)
@@ -256,7 +276,7 @@ func main() {
 	defer iamSigner.Close()
 
 	app := &application{
-		cfg: cfg, db: db, storage: storageClient, tokenSource: tokenSource,
+		cfg: cfg, db: db, storage: storageClient, tokenSource: tokenSource, speechTokenSource: speechTokenSource,
 		iamSigner: iamSigner, httpClient: &http.Client{Timeout: 15 * time.Second}, logger: slog.Default(),
 	}
 	if jobID := strings.TrimSpace(os.Getenv("MAGIC_FILM_JOB_ID")); jobID != "" {
@@ -302,6 +322,17 @@ func main() {
 	// it keeps its CPU between requests (--no-cpu-throttling), while the API
 	// is throttled after each response, where a background send could stall.
 	app.fix.enabled = app.wbOnly && fixListOwnerSubject() != ""
+	// Long-tone and caption workers belong to the Jazz API, not the Workbench
+	// service that shares this image. They lease jobs from Postgres, so work
+	// left by a stopped or throttled instance is reclaimed by the next one.
+	longToneWorkerCount, captionWorkerCount := cfg.LongToneWorkers, cfg.CaptionWorkers
+	if app.wbOnly {
+		longToneWorkerCount, captionWorkerCount = 0, 0
+	}
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	workers := app.runLongToneWorkers(workerCtx, longToneWorkerCount)
+	captionWorkers := app.runCaptionWorkers(workerCtx, captionWorkerCount)
+	defer func() { stopWorkers(); workers.Wait(); captionWorkers.Wait() }()
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           app.routes(),
@@ -352,6 +383,14 @@ func main() {
 }
 
 func loadConfig() (config, error) {
+	longToneWorkers, err := strconv.Atoi(envOr("LONG_TONE_WORKERS", "1"))
+	if err != nil || longToneWorkers < 0 || longToneWorkers > 4 {
+		return config{}, errors.New("LONG_TONE_WORKERS must be between 0 and 4")
+	}
+	captionWorkers, err := strconv.Atoi(envOr("CAPTION_WORKERS", "1"))
+	if err != nil || captionWorkers < 0 || captionWorkers > 4 {
+		return config{}, errors.New("CAPTION_WORKERS must be between 0 and 4")
+	}
 	cfg := config{
 		Port:                envOr("PORT", "8080"),
 		DatabaseURL:         strings.TrimSpace(os.Getenv("DATABASE_URL")),
@@ -363,8 +402,13 @@ func loadConfig() (config, error) {
 		MagicFilmProject:    strings.TrimSpace(os.Getenv("MAGIC_FILM_PROJECT")),
 		MagicFilmRegion:     envOr("MAGIC_FILM_REGION", "us-central1"),
 		MagicFilmJob:        strings.TrimSpace(os.Getenv("MAGIC_FILM_JOB")),
+		LongToneWorkers:     longToneWorkers,
+		CaptionWorkers:      captionWorkers,
 	}
-	if cfg.DatabaseURL == "" || cfg.Bucket == "" || cfg.ServiceAccountEmail == "" {
+	if at := strings.Index(cfg.ServiceAccountEmail, "@"); at > 0 {
+		cfg.ProjectID = strings.TrimSuffix(cfg.ServiceAccountEmail[at+1:], ".iam.gserviceaccount.com")
+	}
+	if cfg.DatabaseURL == "" || cfg.Bucket == "" || cfg.ServiceAccountEmail == "" || cfg.ProjectID == "" {
 		return cfg, errors.New("DATABASE_URL, GCS_BUCKET, and GCP_SERVICE_ACCOUNT are required")
 	}
 	if cfg.GatewayKey == "" && !cfg.AllowInsecureLocal {
@@ -386,7 +430,11 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 		return err
 	}
 	// The API and Workbench services start from the same image and both
-	// migrate on startup; a session-level advisory lock keeps them in turn.
+	// migrate on startup, and Cloud Run may start several instances together;
+	// PostgreSQL's CREATE IF NOT EXISTS is not race-free across sessions, so a
+	// session-level advisory lock keeps them in turn. (The out-of-band line
+	// used lock 1245792858 for the same purpose; this one is what production
+	// has run since October 11.)
 	conn, err := db.Acquire(ctx)
 	if err != nil {
 		return err
@@ -444,6 +492,7 @@ func (app *application) routes() http.Handler {
 	mux.Handle("GET /v1/archive/days/{date}", app.authenticate(http.HandlerFunc(app.archiveDay)))
 	mux.Handle("GET /v1/studio/days/{date}", app.authenticate(http.HandlerFunc(app.clipStudioDay)))
 	mux.Handle("POST /v1/studio/days/{date}/scan", app.authenticate(http.HandlerFunc(app.scanClipStudioDay)))
+	mux.Handle("POST /v1/studio/days/{date}/captions", app.authenticate(http.HandlerFunc(app.createDayCaptions)))
 	mux.Handle("POST /v1/studio/recordings/{id}/candidates", app.authenticate(http.HandlerFunc(app.createManualClipCandidate)))
 	mux.Handle("PATCH /v1/studio/candidates/{id}", app.authenticate(http.HandlerFunc(app.updateClipCandidate)))
 	mux.Handle("POST /v1/studio/candidates/{id}/split", app.authenticate(http.HandlerFunc(app.splitClipCandidate)))
@@ -452,12 +501,22 @@ func (app *application) routes() http.Handler {
 	mux.Handle("PATCH /v1/guide-tone-drills/{id}", app.authenticate(http.HandlerFunc(app.updateGuideToneDrill)))
 	mux.Handle("POST /v1/guide-tone-drills/{id}/attempts", app.authenticate(http.HandlerFunc(app.createGuideToneAttempt)))
 	mux.Handle("GET /v1/guide-tone-drills/summary", app.authenticate(http.HandlerFunc(app.guideToneDrillSummary)))
+	mux.Handle("GET /v1/training/attempts", app.authenticate(http.HandlerFunc(app.listTrainingAttempts)))
+	mux.Handle("PUT /v1/training/attempts/{id}", app.authenticate(http.HandlerFunc(app.saveTrainingAttempt)))
+	mux.Handle("PUT /v1/training/attempts/{id}/audio", app.authenticate(http.HandlerFunc(app.trainingAudio)))
+	mux.Handle("GET /v1/training/attempts/{id}/audio", app.authenticate(http.HandlerFunc(app.trainingAudio)))
 	mux.Handle("GET /v1/recordings", app.authenticate(http.HandlerFunc(app.listRecordings)))
+	mux.Handle("GET /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.getRecording)))
 	mux.Handle("POST /v1/recordings/init", app.authenticate(http.HandlerFunc(app.initRecording)))
 	mux.Handle("POST /v1/recordings/{id}/complete", app.authenticate(http.HandlerFunc(app.completeRecording)))
 	mux.Handle("POST /v1/recordings/{id}/playback-url", app.authenticate(http.HandlerFunc(app.recordingPlaybackURL)))
+	mux.Handle("POST /v1/recordings/{id}/long-tone-analysis", app.authenticate(http.HandlerFunc(app.createLongToneAnalysis)))
+	mux.Handle("GET /v1/recordings/{id}/long-tone-analysis", app.authenticate(http.HandlerFunc(app.getLongToneAnalysis)))
+	mux.Handle("POST /v1/recordings/{id}/captions", app.authenticate(http.HandlerFunc(app.createRecordingCaptions)))
+	mux.Handle("GET /v1/recordings/{id}/captions", app.authenticate(http.HandlerFunc(app.getRecordingCaptions)))
 	mux.Handle("POST /v1/recordings/{id}/share-url", app.authenticate(http.HandlerFunc(app.recordingShareURL)))
 	mux.Handle("PATCH /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.updateRecording)))
+	mux.Handle("PATCH /v1/recordings/{id}/section", app.authenticate(http.HandlerFunc(app.updateRecordingSection)))
 	mux.Handle("DELETE /v1/recordings/{id}", app.authenticate(http.HandlerFunc(app.deleteRecording)))
 	mux.Handle("DELETE /v1/recordings/{id}/fx", app.authenticate(http.HandlerFunc(app.discardRecordingFx)))
 	return app.recoverPanic(app.logRequests(mux))
@@ -762,6 +821,13 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recordingID := uuid.New()
+	if input.ClientCaptureID != "" {
+		recordingID, err = uuid.Parse(input.ClientCaptureID)
+		if err != nil {
+			writeError(w, 422, "invalid capture id")
+			return
+		}
+	}
 	if input.PracticeSessionID != "" {
 		sessionID, parseErr := uuid.Parse(input.PracticeSessionID)
 		if parseErr != nil || !app.practiceSessionBelongs(r.Context(), userID, sessionID) {
@@ -777,6 +843,55 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer recordingTx.Rollback(r.Context())
+	if input.ClientCaptureID != "" {
+		if _, err = recordingTx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, recordingID.String()); err != nil {
+			app.serverError(w, err)
+			return
+		}
+		payload, _ := json.Marshal(input)
+		var owner uuid.UUID
+		var same bool
+		var status, object, videoObject string
+		err = recordingTx.QueryRow(r.Context(), `SELECT user_id, COALESCE(client_capture_payload=$2::jsonb,false),status,object_name,COALESCE(video_object_name,'') FROM recordings WHERE id=$1`, recordingID, payload).Scan(&owner, &same, &status, &object, &videoObject)
+		if err == nil {
+			if owner != userID || !same || status == "deleted" {
+				writeError(w, 409, "capture id already used")
+				return
+			}
+			if status == "ready" {
+				writeJSON(w, 200, map[string]any{"id": recordingID, "ready": true})
+				return
+			}
+			response := map[string]any{"id": recordingID}
+			response["uploadUrl"], err = app.createResumableUpload(r.Context(), recordingID, userID, object, baseType, input.SizeBytes, "audio", allowedUploadOrigin(r.Header.Get("Origin")))
+			if err != nil {
+				app.serverError(w, err)
+				return
+			}
+			if mediaKind == "video" {
+				response["videoUploadUrl"], err = app.createResumableUpload(r.Context(), recordingID, userID, videoObject, videoType, input.VideoSizeBytes, "video", allowedUploadOrigin(r.Header.Get("Origin")))
+				if err != nil {
+					app.serverError(w, err)
+					return
+				}
+			}
+			_, err = recordingTx.Exec(r.Context(), `UPDATE recordings SET status='uploading',uploaded_at=NULL,video_uploaded_at=NULL WHERE id=$1`, recordingID)
+			if err != nil {
+				app.serverError(w, err)
+				return
+			}
+			if err = recordingTx.Commit(r.Context()); err != nil {
+				app.serverError(w, err)
+				return
+			}
+			writeJSON(w, 200, response)
+			return
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			app.serverError(w, err)
+			return
+		}
+	}
 	sectionRemoved := false
 	var practiceBlockID *uuid.UUID
 	if input.PracticeBlockID != "" {
@@ -823,11 +938,11 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	waveformJSON, _ := json.Marshal(waveformPeaks)
 	_, err = recordingTx.Exec(r.Context(), `
 		INSERT INTO recordings
-		(id,user_id,practice_session_id,practice_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
+		(id,user_id,practice_session_id,practice_block_id,practice_time_block_id,bucket,object_name,content_type,codec,expected_size_bytes,duration_ms,sample_rate,channels,recorded_at,status,tune_id,mission_id,skill_ids,take_number,notes,
 		 media_kind,video_bucket,video_object_name,video_content_type,video_codec,video_expected_size_bytes,video_width,video_height,video_frame_rate,waveform_peaks,
 		 fx_object_name,fx_content_type,fx_expected_size_bytes,fx_preset)
-		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''),
-		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0),$27,
+		VALUES ($1,$2,NULLIF($3,''),$4,$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,0),NULLIF($11,0),NULLIF($12,0),$13,'uploading',NULLIF($14,''),NULLIF($15,''),$16,NULLIF($17,0),NULLIF($18,''),
+		 $19,CASE WHEN $19='video' THEN $5 ELSE NULL END,NULLIF($20,''),NULLIF($21,''),NULLIF($22,''),NULLIF($23::bigint,0),NULLIF($24,0),NULLIF($25,0),NULLIF($26,0),$27,
 		 NULLIF($28,''),NULLIF($29,''),NULLIF($30,0),NULLIF($31,''))`,
 		recordingID, userID, clean(input.PracticeSessionID, 160), practiceBlockID, app.cfg.Bucket, objectName, baseType, clean(input.Codec, 80), input.SizeBytes,
 		input.DurationMS, input.SampleRate, input.Channels, recordedAt, clean(input.TuneID, 100), clean(input.MissionID, 100), skillJSON,
@@ -837,6 +952,13 @@ func (app *application) initRecording(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		app.serverError(w, err)
 		return
+	}
+	if input.ClientCaptureID != "" {
+		payload, _ := json.Marshal(input)
+		if _, err = recordingTx.Exec(r.Context(), `UPDATE recordings SET client_capture_payload=$2 WHERE id=$1`, recordingID, payload); err != nil {
+			app.serverError(w, err)
+			return
+		}
 	}
 	if err := recordingTx.Commit(r.Context()); err != nil {
 		app.serverError(w, err)
@@ -1046,7 +1168,7 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name,
 		COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_codec,''),COALESCE(r.video_size_bytes,r.video_expected_size_bytes,0),
 		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),
-		`+recordingFxColumns+`,r.waveform_peaks
+		`+recordingFxColumns+`,r.waveform_peaks,r.section_assignment_revision
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text = r.practice_session_id AND ps.user_id = r.user_id
 		LEFT JOIN practice_blocks pb ON pb.id = r.practice_block_id AND pb.user_id = r.user_id
@@ -1065,7 +1187,7 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 			&item.TuneID, &item.MissionID, &skills, &item.TakeNumber, &item.Notes, &item.SessionID, &item.SessionTitle, &item.BlockID,
 			&item.BlockDate, &item.BlockKey, &item.BlockTitle, &item.BlockCategory, &item.BlockTrack, &item.ObjectName,
 			&item.MediaKind, &item.VideoContentType, &item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate, &item.VideoObjectName,
-			&item.FxContentType, &item.FxSizeBytes, &item.FxPreset, &waveform); err != nil {
+			&item.FxContentType, &item.FxSizeBytes, &item.FxPreset, &waveform, &item.SectionAssignmentRevision); err != nil {
 			app.serverError(w, err)
 			return
 		}
@@ -1078,6 +1200,46 @@ func (app *application) listRecordings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recordings": result})
+}
+
+func (app *application) getRecording(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	var recordedAt time.Time
+	var status, sessionID, sessionTitle, blockID, blockDate, blockKey, blockTitle, blockCategory, blockTrack string
+	var revision int64
+	err = app.db.QueryRow(r.Context(), `
+		SELECT r.id,r.recorded_at,r.status,COALESCE(r.practice_session_id,''),COALESCE(ps.title,''),COALESCE(r.practice_block_id::text,''),
+		       COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.section_assignment_revision
+		FROM recordings r
+		LEFT JOIN practice_sessions ps ON ps.id::text=r.practice_session_id AND ps.user_id=r.user_id
+		LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
+		WHERE r.id=$1 AND r.user_id=$2 AND r.status <> 'deleted'`, recordingID, userID).
+		Scan(&recordingID, &recordedAt, &status, &sessionID, &sessionTitle, &blockID,
+			&blockDate, &blockKey, &blockTitle, &blockCategory, &blockTrack, &revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "recording not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": recordingID, "recordedAt": recordedAt, "status": status,
+		"practiceSessionId": sessionID, "practiceSessionTitle": sessionTitle,
+		"practiceBlockId": blockID, "practiceDate": blockDate, "practiceBlockKey": blockKey,
+		"practiceBlockTitle": blockTitle, "practiceBlockCategory": blockCategory, "practiceBlockTrack": blockTrack,
+		"sectionAssignmentRevision": revision,
+	})
 }
 
 func (app *application) recordingPlaybackURL(w http.ResponseWriter, r *http.Request) {
@@ -1317,6 +1479,164 @@ func (app *application) updateRecording(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"id": recordingID, "notes": notes, "updatedAt": updatedAt})
 }
 
+func (app *application) updateRecordingSection(w http.ResponseWriter, r *http.Request) {
+	recordingID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid recording id")
+		return
+	}
+	var input recordingSectionUpdateRequest
+	if err := readJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	targetID, targetErr := uuid.Parse(input.PracticeBlockID)
+	expectedID, expectedErr := uuid.Parse(input.ExpectedPracticeBlockID)
+	if targetErr != nil || expectedErr != nil || input.ExpectedRevision < 0 {
+		writeError(w, http.StatusUnprocessableEntity, "recording section change is invalid")
+		return
+	}
+	userID, err := app.userID(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	tx, err := app.db.Begin(r.Context())
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var currentID uuid.UUID
+	var sessionID uuid.UUID
+	var practiceDate string
+	var status string
+	var currentTitle string
+	var currentCategory string
+	var currentTrack string
+	var revision int64
+	err = tx.QueryRow(r.Context(), `
+		SELECT r.practice_block_id,pb.session_id,pb.practice_date::text,r.status,pb.title,pb.category,pb.track,r.section_assignment_revision
+		FROM recordings r
+		JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
+		WHERE r.id=$1 AND r.user_id=$2 AND r.status IN ('uploading','ready')
+		FOR UPDATE OF r`, recordingID, userID).
+		Scan(&currentID, &sessionID, &practiceDate, &status, &currentTitle, &currentCategory, &currentTrack, &revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "saved recording or its current section was not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+
+	// A retried request is successful once the requested assignment is already
+	// present. It must not bump the revision or touch derived data a second time.
+	if currentID == targetID && revision == input.ExpectedRevision+1 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": recordingID, "practiceBlockId": currentID, "previousPracticeBlockId": expectedID,
+			"practiceBlockTitle": currentTitle, "practiceBlockCategory": currentCategory, "practiceBlockTrack": currentTrack,
+			"sectionAssignmentRevision": revision, "status": status,
+		})
+		return
+	}
+	if currentID != expectedID || revision != input.ExpectedRevision {
+		writeError(w, http.StatusConflict, "recording section changed on another device")
+		return
+	}
+	var lockedSession uuid.UUID
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM practice_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE`, sessionID, userID).Scan(&lockedSession); err != nil {
+		app.serverError(w, err)
+		return
+	}
+
+	var targetTitle string
+	var targetCategory string
+	var targetTrack string
+	var targetCount int
+	err = tx.QueryRow(r.Context(), `
+		SELECT pb.title,pb.category,pb.track,(SELECT COUNT(*)::int FROM recordings r WHERE r.practice_block_id=pb.id AND r.status IN ('uploading','ready'))
+		FROM practice_blocks pb
+		WHERE pb.id=$1 AND pb.user_id=$2 AND pb.session_id=$3 AND pb.practice_date=$4::date AND pb.removed_at IS NULL
+		FOR UPDATE OF pb`, targetID, userID, sessionID, practiceDate).Scan(&targetTitle, &targetCategory, &targetTrack, &targetCount)
+	if errors.Is(err, pgx.ErrNoRows) && input.CreateTarget != nil {
+		definition := input.CreateTarget
+		definition.BlockKey = strings.TrimSpace(definition.BlockKey)
+		definition.Title = strings.TrimSpace(definition.Title)
+		definition.Category = strings.TrimSpace(definition.Category)
+		definition.Track = strings.TrimSpace(definition.Track)
+		if !validBlockKey(definition.BlockKey) || definition.Title == "" || len(definition.Title) > 160 || len(definition.Instructions) > 2000 ||
+			definition.Category == "" || len(definition.Category) > 40 || definition.Track == "" || len(definition.Track) > 30 ||
+			definition.TargetMinutes < 1 || definition.TargetMinutes > 360 {
+			writeError(w, http.StatusUnprocessableEntity, "new practice section is invalid")
+			return
+		}
+		var maxPosition int
+		if err := tx.QueryRow(r.Context(), `SELECT COALESCE(MAX(position),-1) FROM practice_blocks WHERE session_id=$1 AND user_id=$2 AND practice_date=$3::date AND removed_at IS NULL`, sessionID, userID, practiceDate).Scan(&maxPosition); err != nil {
+			app.serverError(w, err)
+			return
+		}
+		if maxPosition >= 99 {
+			writeError(w, http.StatusConflict, "practice day already has the maximum number of sections")
+			return
+		}
+		err = tx.QueryRow(r.Context(), `
+			INSERT INTO practice_blocks (id,session_id,user_id,practice_date,block_key,position,title,instructions,category,track,target_minutes,carry_forward)
+			VALUES ($1,$2,$3,$4::date,$5,$6,$7,NULLIF($8,''),$9,$10,$11,false)
+			RETURNING title,category,track`, targetID, sessionID, userID, practiceDate, definition.BlockKey,
+			maxPosition+1, definition.Title, strings.TrimSpace(definition.Instructions), definition.Category, definition.Track, definition.TargetMinutes).
+			Scan(&targetTitle, &targetCategory, &targetTrack)
+		targetCount = 0
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "target practice section was not found")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if targetCount >= maxTakesPerBlock {
+		writeError(w, http.StatusConflict, "target practice section already has twenty recordings")
+		return
+	}
+
+	var newRevision int64
+	err = tx.QueryRow(r.Context(), `
+		UPDATE recordings
+		SET practice_block_id=$1,practice_time_block_id=COALESCE(practice_time_block_id,practice_block_id),
+		    section_assignment_revision=section_assignment_revision+1,updated_at=now()
+		WHERE id=$2 AND user_id=$3 AND practice_block_id=$4 AND section_assignment_revision=$5
+		RETURNING section_assignment_revision`, targetID, recordingID, userID, currentID, revision).Scan(&newRevision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusConflict, "recording section changed on another device")
+		return
+	}
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	_, err = tx.Exec(r.Context(), `
+		UPDATE clip_day_analyses
+		SET outdated_at=now(),outdated_reason='recording section changed'
+		WHERE user_id=$1 AND practice_date=$2::date`, userID, practiceDate)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		app.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": recordingID, "practiceBlockId": targetID, "practiceBlockTitle": targetTitle,
+		"practiceBlockCategory": targetCategory, "practiceBlockTrack": targetTrack,
+		"previousPracticeBlockId": currentID, "sectionAssignmentRevision": newRevision, "status": status,
+	})
+}
+
 func normalizeRecordingNote(input *string) (string, error) {
 	if input == nil {
 		return "", errors.New("recording notes are required")
@@ -1350,17 +1670,55 @@ func (app *application) deleteRecording(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	for _, assetObjectName := range []string{objectName, videoObjectName, fxObjectName} {
+	// Derived data goes with the take: the FLAC sidecars made for Speech, the
+	// transcripts, and the long-tone traces.
+	assetObjectNames := []string{objectName, videoObjectName, fxObjectName}
+	sidecars, err := app.db.Query(r.Context(), `SELECT DISTINCT source_object_name,source_generation FROM recording_caption_jobs WHERE recording_id=$1 AND user_id=$2`, recordingID, userID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	for sidecars.Next() {
+		var source string
+		var generation int64
+		if err := sidecars.Scan(&source, &generation); err != nil {
+			sidecars.Close()
+			app.serverError(w, err)
+			return
+		}
+		assetObjectNames = append(assetObjectNames, speechAudioObjectName(source, generation))
+	}
+	sidecars.Close()
+	if err := sidecars.Err(); err != nil {
+		app.serverError(w, err)
+		return
+	}
+	for _, assetObjectName := range assetObjectNames {
 		if assetObjectName == "" {
 			continue
 		}
-		if err := app.storage.Bucket(app.cfg.Bucket).Object(assetObjectName).Delete(r.Context()); err != nil && !errors.Is(err, storage.ErrObjectNotExist) {
+		if err := app.inspirationObjects().Delete(r.Context(), assetObjectName); err != nil {
 			app.serverError(w, err)
 			return
 		}
 	}
-	_, err = app.db.Exec(r.Context(), `UPDATE recordings SET status='deleted', updated_at=now() WHERE id=$1 AND user_id=$2`, recordingID, userID)
+	tx, err := app.db.Begin(r.Context())
 	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	for _, statement := range []string{
+		`UPDATE recordings SET status='deleted', updated_at=now() WHERE id=$1 AND user_id=$2`,
+		`DELETE FROM recording_caption_jobs WHERE recording_id=$1 AND user_id=$2`,
+		`DELETE FROM long_tone_analysis_jobs WHERE recording_id=$1 AND user_id=$2`,
+	} {
+		if _, err = tx.Exec(r.Context(), statement, recordingID, userID); err != nil {
+			app.serverError(w, err)
+			return
+		}
+	}
+	if err = tx.Commit(r.Context()); err != nil {
 		app.serverError(w, err)
 		return
 	}

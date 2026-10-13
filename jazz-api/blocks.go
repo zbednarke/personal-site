@@ -34,21 +34,22 @@ type practiceBlock struct {
 }
 
 type blockRecordingSummary struct {
-	ID               uuid.UUID `json:"id"`
-	Status           string    `json:"status"`
-	ContentType      string    `json:"contentType"`
-	DurationMS       int       `json:"durationMs"`
-	RecordedAt       time.Time `json:"recordedAt"`
-	TakeNumber       int       `json:"takeNumber"`
-	Notes            string    `json:"notes"`
-	PracticeBlockID  uuid.UUID `json:"practiceBlockId"`
-	MediaKind        string    `json:"mediaKind"`
-	VideoContentType string    `json:"videoContentType,omitempty"`
-	VideoWidth       int       `json:"videoWidth,omitempty"`
-	VideoHeight      int       `json:"videoHeight,omitempty"`
-	FxContentType    string    `json:"fxContentType,omitempty"`
-	FxSizeBytes      int64     `json:"fxSizeBytes,omitempty"`
-	FxPreset         string    `json:"fxPreset,omitempty"`
+	ID                        uuid.UUID `json:"id"`
+	Status                    string    `json:"status"`
+	ContentType               string    `json:"contentType"`
+	DurationMS                int       `json:"durationMs"`
+	RecordedAt                time.Time `json:"recordedAt"`
+	TakeNumber                int       `json:"takeNumber"`
+	Notes                     string    `json:"notes"`
+	PracticeBlockID           uuid.UUID `json:"practiceBlockId"`
+	MediaKind                 string    `json:"mediaKind"`
+	VideoContentType          string    `json:"videoContentType,omitempty"`
+	VideoWidth                int       `json:"videoWidth,omitempty"`
+	VideoHeight               int       `json:"videoHeight,omitempty"`
+	FxContentType             string    `json:"fxContentType,omitempty"`
+	FxSizeBytes               int64     `json:"fxSizeBytes,omitempty"`
+	FxPreset                  string    `json:"fxPreset,omitempty"`
+	SectionAssignmentRevision int64     `json:"sectionAssignmentRevision"`
 }
 
 type blockDefinition struct {
@@ -320,7 +321,12 @@ func (app *application) updatePracticeBlock(w http.ResponseWriter, r *http.Reque
 		}
 		block.TuneID = tuneID
 	}
-	reconcileBlockPracticeTime(&block)
+	attributedMS, err := app.loadAttributedRecordingPracticeMS(r.Context(), userID, block.ID)
+	if err != nil {
+		app.serverError(w, err)
+		return
+	}
+	reconcileBlockPracticeTimeWithAttributed(&block, attributedMS)
 
 	err = app.db.QueryRow(r.Context(), `
 		UPDATE practice_blocks SET notes=NULLIF($1,''),elapsed_ms=$2,status=$3,timer_started_at=$4,completed_at=$5,tune_id=NULLIF($8,''),updated_at=now()
@@ -375,7 +381,11 @@ func (app *application) loadPracticeBlocksForView(ctx context.Context, userID, s
 		if err != nil {
 			return nil, err
 		}
-		reconcileBlockPracticeTime(&blocks[index])
+		attributedMS, loadErr := app.loadAttributedRecordingPracticeMS(ctx, userID, blocks[index].ID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		reconcileBlockPracticeTimeWithAttributed(&blocks[index], attributedMS)
 	}
 	return blocks, nil
 }
@@ -401,8 +411,12 @@ const maxBlockElapsedMS = maxTakesPerBlock * maxDurationMS
 // timer may be higher because intentionally cancelled takes still count as
 // practice, but a stale timer can never make recorded time disappear.
 func reconcileBlockPracticeTime(block *practiceBlock) {
+	reconcileBlockPracticeTimeWithAttributed(block, recordingPracticeMS(block.Recordings))
+}
+
+func reconcileBlockPracticeTimeWithAttributed(block *practiceBlock, attributedMS int) {
 	block.RecordedMS = recordingPracticeMS(block.Recordings)
-	block.ElapsedMS = max(block.ElapsedMS, block.RecordedMS)
+	block.ElapsedMS = max(block.ElapsedMS, attributedMS)
 	if block.ElapsedMS < block.TargetMinutes*60*1000 {
 		return
 	}
@@ -414,11 +428,19 @@ func reconcileBlockPracticeTime(block *practiceBlock) {
 	}
 }
 
+func (app *application) loadAttributedRecordingPracticeMS(ctx context.Context, userID, blockID uuid.UUID) (int, error) {
+	var total int64
+	err := app.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(duration_ms),0)::bigint FROM recordings
+		WHERE user_id=$1 AND COALESCE(practice_time_block_id,practice_block_id)=$2 AND status IN ('uploading','ready')`, userID, blockID).Scan(&total)
+	return min(maxBlockElapsedMS, max(0, int(total))), err
+}
+
 func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID uuid.UUID) ([]blockRecordingSummary, error) {
 	rows, err := app.db.Query(ctx, `
 		SELECT r.id,r.status,r.content_type,COALESCE(r.duration_ms,0),r.recorded_at,COALESCE(r.take_number,0),COALESCE(r.notes,''),r.practice_block_id,
 		       COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_width,0),COALESCE(r.video_height,0),
-		       `+recordingFxColumns+`
+		       `+recordingFxColumns+`,r.section_assignment_revision
 		FROM recordings r WHERE r.user_id=$1 AND r.practice_block_id=$2 AND r.status <> 'deleted' ORDER BY r.recorded_at,r.id`, userID, blockID)
 	if err != nil {
 		return nil, err
@@ -429,7 +451,8 @@ func (app *application) loadBlockRecordings(ctx context.Context, userID, blockID
 		var recording blockRecordingSummary
 		if err := rows.Scan(&recording.ID, &recording.Status, &recording.ContentType, &recording.DurationMS, &recording.RecordedAt,
 			&recording.TakeNumber, &recording.Notes, &recording.PracticeBlockID, &recording.MediaKind, &recording.VideoContentType,
-			&recording.VideoWidth, &recording.VideoHeight, &recording.FxContentType, &recording.FxSizeBytes, &recording.FxPreset); err != nil {
+			&recording.VideoWidth, &recording.VideoHeight, &recording.FxContentType, &recording.FxSizeBytes, &recording.FxPreset,
+			&recording.SectionAssignmentRevision); err != nil {
 			return nil, err
 		}
 		recordings = append(recordings, recording)

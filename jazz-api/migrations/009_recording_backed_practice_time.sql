@@ -11,11 +11,12 @@ ALTER TABLE practice_blocks
     CHECK (elapsed_ms BETWEEN 0 AND 288000000);
 
 WITH recorded AS (
-    SELECT practice_block_id, LEAST(288000000, SUM(duration_ms))::integer AS duration_ms
-    FROM recordings
-    WHERE practice_block_id IS NOT NULL
-      AND status IN ('uploading','ready')
-    GROUP BY practice_block_id
+	SELECT COALESCE(practice_time_block_id,practice_block_id) AS practice_block_id,
+	       LEAST(288000000, SUM(duration_ms))::integer AS duration_ms
+	FROM recordings
+	WHERE COALESCE(practice_time_block_id,practice_block_id) IS NOT NULL
+	  AND status IN ('uploading','ready')
+	GROUP BY COALESCE(practice_time_block_id,practice_block_id)
 )
 UPDATE practice_blocks AS block
 SET elapsed_ms = GREATEST(block.elapsed_ms, recorded.duration_ms),

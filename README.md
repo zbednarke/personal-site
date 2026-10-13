@@ -2,6 +2,9 @@
 
 Personal site: [zachbednarke.com](https://zachbednarke.com).
 
+For ongoing Jazz work, start with the [Jazz workflow guide](docs/jazz-workflows.md):
+implementation map, film reproduction, pitch overlays, hosting, storage and next experiments.
+
 The hero is my name written as a function on the sphere and rebuilt from
 its spherical-harmonic expansion as you scroll: 8,281 coefficients
 synthesized live in the browser with a stable Legendre recurrence,

@@ -87,7 +87,7 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 		block_recorded AS (
 			SELECT pb.id, COALESCE(SUM(r.duration_ms) FILTER (WHERE r.status IN ('uploading','ready')),0)::bigint AS recorded_ms
 			FROM practice_blocks pb
-			LEFT JOIN recordings r ON r.practice_block_id=pb.id AND r.user_id=pb.user_id
+			LEFT JOIN recordings r ON COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.user_id=pb.user_id
 			CROSS JOIN bounds b
 			WHERE pb.user_id=$1 AND pb.practice_date BETWEEN b.from_date AND b.to_date
 			GROUP BY pb.id
@@ -103,7 +103,7 @@ func (app *application) loadArchiveCalendar(ctx context.Context, userID uuid.UUI
 			SELECT timezone('America/Los_Angeles',r.recorded_at)::date AS day,
 			       COALESCE(SUM(r.duration_ms),0)::bigint AS duration_ms
 			FROM recordings r CROSS JOIN bounds b
-			WHERE r.user_id=$1 AND r.practice_block_id IS NULL AND r.status IN ('uploading','ready')
+			WHERE r.user_id=$1 AND COALESCE(r.practice_time_block_id,r.practice_block_id) IS NULL AND r.status IN ('uploading','ready')
 			  AND timezone('America/Los_Angeles',r.recorded_at)::date BETWEEN b.from_date AND b.to_date
 			GROUP BY day
 		),
@@ -326,7 +326,7 @@ func (app *application) loadArchiveRecordings(ctx context.Context, userID uuid.U
 		COALESCE(pb.practice_date::text,''),COALESCE(pb.block_key,''),COALESCE(pb.title,''),COALESCE(pb.category,''),COALESCE(pb.track,''),r.object_name,
 		COALESCE(r.media_kind,'audio'),COALESCE(r.video_content_type,''),COALESCE(r.video_codec,''),COALESCE(r.video_size_bytes,r.video_expected_size_bytes,0),
 		COALESCE(r.video_width,0),COALESCE(r.video_height,0),COALESCE(r.video_frame_rate,0),COALESCE(r.video_object_name,''),
-		`+recordingFxColumns+`,r.waveform_peaks
+		`+recordingFxColumns+`,r.waveform_peaks,r.section_assignment_revision
 		FROM recordings r
 		LEFT JOIN practice_sessions ps ON ps.id::text=r.practice_session_id AND ps.user_id=r.user_id
 		LEFT JOIN practice_blocks pb ON pb.id=r.practice_block_id AND pb.user_id=r.user_id
@@ -347,7 +347,7 @@ func (app *application) loadArchiveRecordings(ctx context.Context, userID uuid.U
 			&item.SessionID, &item.SessionTitle, &item.BlockID, &item.BlockDate, &item.BlockKey, &item.BlockTitle,
 			&item.BlockCategory, &item.BlockTrack, &item.ObjectName, &item.MediaKind, &item.VideoContentType,
 			&item.VideoCodec, &item.VideoSizeBytes, &item.VideoWidth, &item.VideoHeight, &item.VideoFrameRate,
-			&item.VideoObjectName, &item.FxContentType, &item.FxSizeBytes, &item.FxPreset, &waveform); err != nil {
+			&item.VideoObjectName, &item.FxContentType, &item.FxSizeBytes, &item.FxPreset, &waveform, &item.SectionAssignmentRevision); err != nil {
 			return nil, err
 		}
 		if err := decodeSkills(skills, &item.SkillIDs); err != nil {

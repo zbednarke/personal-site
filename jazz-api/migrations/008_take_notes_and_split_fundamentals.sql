@@ -46,10 +46,15 @@ BEGIN
                 updated_at = now()
             WHERE id = combined.id;
         ELSE
+            -- Filing and practice-time attribution move independently, so a
+            -- take that was refiled out of the combined section stays where
+            -- it was filed, and only its time attribution follows the merge.
             UPDATE recordings
-            SET practice_block_id = articulation_id,
+            SET practice_block_id = CASE WHEN practice_block_id = combined.id THEN articulation_id ELSE practice_block_id END,
+                practice_time_block_id = CASE WHEN practice_time_block_id = combined.id THEN articulation_id ELSE practice_time_block_id END,
                 updated_at = now()
-            WHERE practice_block_id = combined.id;
+            WHERE practice_block_id = combined.id
+               OR practice_time_block_id = combined.id;
 
             UPDATE practice_blocks AS articulation
             SET elapsed_ms = LEAST(21600000, articulation.elapsed_ms + combined.elapsed_ms),

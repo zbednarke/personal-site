@@ -83,3 +83,13 @@ test("individual download snapshots only the requested clip and its current boun
     assert.throws(()=>model.clipDownloadPayload('Clip',{recordingId:'r',startMs,endMs},10000));
   }
 });
+
+
+test("discovered passages respect current source bounds and new rejections", () => {
+  const passage = clip("one", 1000, 5000), recordings = [{id:"recording-one",durationMs:10000}];
+  assert.equal(model.discoveredClipAvailable(passage, recordings, []), true);
+  assert.equal(model.discoveredClipAvailable(passage, [], []), false);
+  assert.equal(model.discoveredClipAvailable({...passage,endMs:11000}, recordings, []), false);
+  assert.equal(model.discoveredClipAvailable(passage, recordings, [{...passage,startMs:4000,reviewStatus:"rejected"}]), false);
+  assert.equal(model.discoveredClipAvailable(passage, recordings, [{...passage,startMs:5000,endMs:8000,reviewStatus:"rejected"}]), true);
+});

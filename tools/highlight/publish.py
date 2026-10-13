@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tarfile
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -53,6 +54,10 @@ def publish(folder, job):
     poster = folder / 'poster.jpg'
     run(['ffmpeg', '-v', 'error', '-y', '-ss', '1', '-i', str(video), '-frames:v', '1', '-q:v', '3', str(poster)])
     files = {'video': video, 'poster': poster}
+    for name, filename, extension in [('noteMap','note-map.html','.notes.html'), ('analysis','analysis.json','.analysis.json')]:
+        if (folder / filename).exists():
+            files[name] = folder / filename
+            film[name] = '/jazz/films/' + film['id'] + extension
     manifest = dict(film=film, hashes={key: checksum(path) for key, path in files.items()})
     save(folder / 'publish-manifest.json', manifest)
     staging = '/tmp/jazz-film-' + job['id']
@@ -60,8 +65,13 @@ def publish(folder, job):
     if not cloud:
         raise RuntimeError('Google Cloud CLI is unavailable')
     run([cloud, 'compute', 'ssh', REMOTE, *FLAGS, '--command', 'mkdir -p ' + staging])
-    run([cloud, 'compute', 'scp', *map(str, [video, poster, folder / 'publish-manifest.json', HERE / 'publish_remote.py']), REMOTE + ':' + staging + '/', *FLAGS])
-    run([cloud, 'compute', 'ssh', REMOTE, *FLAGS, '--command', 'sudo python3 ' + staging + '/publish_remote.py ' + staging])
+    # One transfer avoids stalls between files in the SSH/IAP SCP stream.
+    bundle = folder / 'publication.tar.gz'
+    with tarfile.open(bundle, 'w:gz', compresslevel=1) as archive:
+        for source in [*files.values(), folder / 'publish-manifest.json', HERE / 'publish_remote.py']:
+            archive.add(source, arcname=source.name)
+    run([cloud, 'compute', 'scp', str(bundle), REMOTE + ':' + staging + '/publication.tar.gz', *FLAGS])
+    run([cloud, 'compute', 'ssh', REMOTE, *FLAGS, '--command', 'tar -xzf ' + staging + '/publication.tar.gz -C ' + staging + ' && sudo python3 ' + staging + '/publish_remote.py ' + staging])
     # Mirror the published assets for the local development site as well.
     local = REPO / 'jazz/films'
     local.mkdir(parents=True, exist_ok=True)

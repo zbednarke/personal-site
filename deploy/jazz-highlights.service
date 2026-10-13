@@ -1,0 +1,30 @@
+[Unit]
+Description=Jazz hosted practice films
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/caddy/jazz.env
+EnvironmentFile=/etc/jazz-highlights-user.env
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/jazz-highlights
+ExecStart=/usr/bin/python3 /opt/jazz-highlights/hosted.py
+Restart=on-failure
+RestartSec=5
+Nice=10
+CPUQuota=100%
+MemoryHigh=500M
+MemoryMax=700M
+MemorySwapMax=1G
+TasksMax=128
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/jazz-highlights /srv/zachbednarke.com/films
+
+[Install]
+WantedBy=multi-user.target

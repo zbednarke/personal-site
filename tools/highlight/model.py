@@ -22,8 +22,8 @@ def snapshot(payload):
     if not number(target) or target != int(target) or not 60 <= target <= 600:
         raise ValueError('Choose a target length from 1 to 10 minutes')
     candidates, recordings = payload.get('candidates'), payload.get('recordings')
-    if not isinstance(candidates, list) or not 1 <= len(candidates) <= 500 or not isinstance(recordings, list) or len(recordings) > 100:
-        raise ValueError('Provide 1–500 existing candidate moments')
+    if not isinstance(candidates, list) or not 0 <= len(candidates) <= 500 or not isinstance(recordings, list) or len(recordings) > 100:
+        raise ValueError('Provide up to 500 candidate moments')
     sources = {}
     for r in recordings:
         if not isinstance(r, dict):
@@ -32,13 +32,11 @@ def snapshot(payload):
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', rid) or rid in sources or not number(r.get('durationMs')) or r['durationMs'] <= 0:
             raise ValueError('Invalid or duplicate recording')
         sources[rid] = dict(id=rid, durationMs=r['durationMs'], title=str(r.get('title', 'Practice'))[:200],
-                            audioUrl=media_url(r.get('audioUrl', '')), videoUrl=media_url(r['videoUrl']) if r.get('videoUrl') else None)
-    result, ids = [], set()
+                            audioUrl=media_url(r.get('audioUrl', '')), videoUrl=media_url(r['videoUrl']) if r.get('videoUrl') else None, section=str(r.get('section', r.get('title', 'Practice')))[:200], sizeBytes=max(0, int(r.get('sizeBytes', 0))), videoSizeBytes=max(0, int(r.get('videoSizeBytes', 0))))
+    result, ids, excluded = [], set(), []
     for c in candidates:
         if not isinstance(c, dict):
             raise ValueError('Invalid candidate')
-        if c.get('reviewStatus') == 'rejected':
-            continue
         cid, rid = str(c.get('id', '')), str(c.get('recordingId', ''))
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', cid) or cid in ids or rid not in sources:
             raise ValueError('Invalid candidate reference')
@@ -46,15 +44,18 @@ def snapshot(payload):
         if not number(start) or not number(end) or not 0 <= start < end <= sources[rid]['durationMs'] or end-start < 500:
             raise ValueError('Candidate boundary is outside its recording')
         ids.add(cid)
+        if c.get('reviewStatus') == 'rejected':
+            excluded.append(dict(recordingId=rid, startMs=start, endMs=end))
+            continue
         result.append(dict(id=cid, recordingId=rid, startMs=round(start), endMs=round(end),
                            manual=c.get('source') == 'manual', liked=c.get('reviewStatus') == 'kept',
                            title=str(c.get('title') or sources[rid]['title'])[:200], notes=str(c.get('notes', ''))[:2000],
                            reasons=c.get('reasons', []) if isinstance(c.get('reasons', []), list) else []))
-    if not result:
+    if not result and not payload.get('analyzeAll'):
         raise ValueError('No eligible candidates; add or scan moments in Clip Studio first')
     result.sort(key=lambda c: (not (c['manual'] or c['liked']), not c['liked'], c['recordingId'], c['startMs']))
     used = {c['recordingId'] for c in result}
-    return dict(date=payload['date'], targetSeconds=int(target), candidates=result, recordings=[r for r in sources.values() if r['id'] in used])
+    return dict(date=payload['date'], targetSeconds=int(target), candidates=result, excluded=excluded, analyzeAll=bool(payload.get('analyzeAll')), recordings=[r for r in sources.values() if payload.get('analyzeAll') or r['id'] in used])
 
 
 def validate_plan(plan, manifest):

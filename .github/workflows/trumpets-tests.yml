@@ -22,6 +22,7 @@ jobs:
     env:
       TRUMPETS_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
       JAZZ_LAYOUT_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
+      JAZZ_LONG_TONE_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -34,9 +35,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install FFmpeg (long-tone, caption and film-service media tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: All Go and database tests
         working-directory: jazz-api
         run: go test ./...
+      - name: Jazz JavaScript test dependencies (jsdom, fake-indexeddb)
+        run: npm ci --prefix assets/jazz
       - name: Jazz, trumpet, Commonplace and Workbench JavaScript tests
         run: node --test assets/jazz/*.test.js assets/trumpets/*.test.js assets/commonplace/*.test.js assets/workbench/*.test.js
       - name: Search/recheck adapters
@@ -47,6 +52,10 @@ jobs:
         run: python -m unittest discover -s tools/workbench -p 'test_*.py'
       - name: Static release packaging, upload and deploy guard (changed files only, verified upload, no out-of-band overwrite)
         run: python -m unittest discover -s tools/deploy -p 'test_*.py'
+      - name: Site-VM film service and note map (tools/highlight)
+        run: |
+          python -m pip install -r tools/highlight/requirements.txt
+          python -m unittest discover -s tools/highlight -p 'test_*.py'
       - name: Install browser test dependency
         run: npm install --no-save --package-lock=false playwright@1.58.2
       - name: Install Chromium
@@ -57,6 +66,10 @@ jobs:
         run: node tools/commonplace/browser-check.cjs
       - name: Workbench browser check (fake model, 390/768/1440 px, two devices on one thread)
         run: node tools/workbench/browser-check.cjs
+      - name: Jazz smoke check (every view at 390 and 1440 px, restored Library, Training, note-map films)
+        env:
+          JAZZ_SCREENSHOT_DIR: docs/jazz/screenshots/smoke
+        run: node tools/jazz/browser-check.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -72,3 +85,8 @@ jobs:
         with:
           name: workbench-visual-verification
           path: docs/workbench/screenshots/*.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jazz-smoke-verification
+          path: docs/jazz/screenshots/smoke/*.png

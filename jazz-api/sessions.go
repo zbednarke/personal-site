@@ -69,13 +69,13 @@ func (app *application) listPracticeSessions(w http.ResponseWriter, r *http.Requ
 		       COALESCE((
 		           SELECT SUM(GREATEST(pb.elapsed_ms::bigint, COALESCE((
 		               SELECT SUM(r.duration_ms)::bigint FROM recordings r
-		               WHERE r.user_id=ps.user_id AND r.practice_block_id=pb.id AND r.status IN ('uploading','ready')
+		               WHERE r.user_id=ps.user_id AND COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.status IN ('uploading','ready')
 		           ),0)))
 		           FROM practice_blocks pb WHERE pb.session_id=ps.id AND pb.user_id=ps.user_id
 		       ),0) + COALESCE((
 		           SELECT SUM(r.duration_ms)::bigint FROM recordings r
 		           WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status IN ('uploading','ready')
-		             AND NOT EXISTS (SELECT 1 FROM practice_blocks pb WHERE pb.id=r.practice_block_id AND pb.session_id=ps.id)
+		             AND NOT EXISTS (SELECT 1 FROM practice_blocks pb WHERE pb.id=COALESCE(r.practice_time_block_id,r.practice_block_id) AND pb.session_id=ps.id)
 		       ),0) + COALESCE((
 		           SELECT SUM(gtd.elapsed_ms)::bigint FROM guide_tone_drills gtd
 		           WHERE gtd.user_id=ps.user_id AND gtd.practice_session_id=ps.id AND gtd.practice_block_id IS NULL
@@ -181,13 +181,13 @@ func (app *application) getPracticeSession(w http.ResponseWriter, r *http.Reques
 		       COALESCE((
 		           SELECT SUM(GREATEST(pb.elapsed_ms::bigint, COALESCE((
 		               SELECT SUM(r.duration_ms)::bigint FROM recordings r
-		               WHERE r.user_id=ps.user_id AND r.practice_block_id=pb.id AND r.status IN ('uploading','ready')
+		               WHERE r.user_id=ps.user_id AND COALESCE(r.practice_time_block_id,r.practice_block_id)=pb.id AND r.status IN ('uploading','ready')
 		           ),0)))
 		           FROM practice_blocks pb WHERE pb.session_id=ps.id AND pb.user_id=ps.user_id
 		       ),0) + COALESCE((
 		           SELECT SUM(r.duration_ms)::bigint FROM recordings r
 		           WHERE r.user_id=ps.user_id AND r.practice_session_id=ps.id::text AND r.status IN ('uploading','ready')
-		             AND NOT EXISTS (SELECT 1 FROM practice_blocks pb WHERE pb.id=r.practice_block_id AND pb.session_id=ps.id)
+		             AND NOT EXISTS (SELECT 1 FROM practice_blocks pb WHERE pb.id=COALESCE(r.practice_time_block_id,r.practice_block_id) AND pb.session_id=ps.id)
 		       ),0) + COALESCE((
 		           SELECT SUM(gtd.elapsed_ms)::bigint FROM guide_tone_drills gtd
 		           WHERE gtd.user_id=ps.user_id AND gtd.practice_session_id=ps.id AND gtd.practice_block_id IS NULL

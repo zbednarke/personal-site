@@ -346,6 +346,7 @@
   }
 
   async function start() {
+    if (globalThis.JazzStudyTraining?.isBusy?.()) { $("#guide-tone-mic-status").textContent = "Finish Study 1 training first."; return; }
     if (state.running || state.starting) return;
     state.starting = true;
     const button = $("#guide-tone-start");
@@ -491,6 +492,7 @@
     syncDrill(new Date().toISOString(), true);
   });
 
+  globalThis.JazzGuideToneTrainer = { isBusy: () => state.running || state.starting };
   if (location.hash === "#guide-tones") initialize();
   $("#guide-tone-tempo").disabled = true;
 })();

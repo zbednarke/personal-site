@@ -114,7 +114,7 @@ async function waitForServer() {
     // iOS widens the layout viewport to fit anything wider than the screen, and
     // fixed bars (the top bar, this sheet) then size to the wider page, so their
     // right edge goes off-screen. Every view must fit at common iPhone widths.
-    const jazzViews = ["today", "repertoire", "library", "guide-tones", "effects", "archive", "studio"];
+    const jazzViews = ["today", "repertoire", "library", "training", "guide-tones", "effects", "archive", "studio"];
     const otherPages = ["/trumpets/", "/trumpets/#inspiration", "/commonplace/"];
     const inside = (b, w, h, label) => assert.ok(b && b.x >= -0.5 && b.y >= -0.5 && b.x + b.width <= w + 0.5 && b.y + b.height <= h + 0.5, `${label} is fully on screen (${JSON.stringify(b)})`);
     // Every nav item can be scrolled into view and tapped (the hit test lands on it, not on something covering it).

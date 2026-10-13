@@ -135,9 +135,23 @@ func TestPracticeLayoutPersistence(t *testing.T) {
 	if _, err := isolated.Exec(ctx, `UPDATE recordings SET status='uploading' WHERE id=$1`, recordingID); err != nil {
 		t.Fatal(err)
 	}
+	// Renaming is safe while a take uploads: titles are display metadata,
+	// while the upload and its parent association retain their stable IDs.
+	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{b, a}, Renames: []blockRename{{BlockID: a, PreviousTitle: "Tune", Title: "Lesson"}}}, "layout-test", 204)
+	var uploadingParent uuid.UUID
+	var uploadingStatus, uploadingObject string
+	if err := isolated.QueryRow(ctx, `SELECT practice_block_id,status,object_name FROM recordings WHERE id=$1`, recordingID).Scan(&uploadingParent, &uploadingStatus, &uploadingObject); err != nil {
+		t.Fatal(err)
+	}
+	if uploadingParent != a || uploadingStatus != "uploading" || uploadingObject != "test.wav" {
+		t.Fatal("rename changed the in-flight upload or its parent")
+	}
 	layout(blockLayoutRequest{BlockIDs: []uuid.UUID{}, RemoveIDs: []uuid.UUID{a, b}}, "layout-test", 409)
 	if _, err := isolated.Exec(ctx, `UPDATE recordings SET status='ready' WHERE id=$1`, recordingID); err != nil {
 		t.Fatal(err)
+	}
+	if got := bootstrap(); got[1].ID != a || got[1].Title != "Lesson" || len(got[1].Recordings) != 1 || got[1].Recordings[0].ID != recordingID {
+		t.Fatal("completed take did not remain under its renamed section")
 	}
 	// A crashed tab's expired heartbeat must not block deletion forever.
 	if _, err := isolated.Exec(ctx, `UPDATE practice_blocks SET status='running',timer_started_at=now()-interval '5 minutes' WHERE id=$1`, a); err != nil {
