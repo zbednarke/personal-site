@@ -1,6 +1,19 @@
 # Jazz workflow guide
 
 Last reconciled: 2026-09-30. Start here when continuing Jazz development.
+
+> **History (October 13, 2026).** This line of work (film service, note maps,
+> film editor, Library, Training, long tones, captions, moving takes between
+> sections) was built and deployed between September 11 and October 5 outside
+> this repository. From October 11 the GitHub deploy of `main` replaced the
+> page and API and hid it. It was restored by merging its last release
+> (`archive-note-map-v1`, Oct 5) into `main`. Its database migrations 021-025
+> are now 039-043; production already had their tables. The release archive
+> was truncated, so `tools/highlight/worker.py` and two of its tests here are
+> older than the VM's copy at `/opt/jazz-highlights`; see
+> [tools/highlight/README.md](../tools/highlight/README.md). Clip Studio's
+> **Make today's film** is now the cloud Magic Film; this guide's film service
+> is the **Make note-map film** button.
 Code is versioned in this repository; generated media and local job directories
 are not. A Git commit alone does not back up media or mean changes are deployed.
 
@@ -13,7 +26,7 @@ are not. A Git commit alone does not back up media or mean changes are deployed.
 | Scrolling pitch overlay | Working manual prototype; two full films published | `tools/highlight/pitch_overlay_demo.py` |
 | Whole-day overview intro | Four-second manual prototype | `tools/highlight/preroll_demo.py`; recipe below |
 | Standalone PDF library | Live; private upload, search, read and download | `tools/highlight/library.py`, `assets/jazz/library.js` |
-| Browser-compatible sign-in | Live; existing credentials retained | `deploy/jazz-auth.md`, `jazz-api/cmd/jazz-auth/` |
+| Browser-compatible sign-in | Superseded by Sign in with Google (main, October 10) | `deploy/jazz-auth.md`, `jazz-api/cmd/jazz-auth/` |
 | Study 1 trainer | Live; session recording and quick round restart | `assets/jazz/study-one-trainer.js`, [trainer spec](study-one-training.md) |
 | Long-tone overlay | See feature spec and implementation | [Long-tone spec](long-tone-overlay.md) |
 

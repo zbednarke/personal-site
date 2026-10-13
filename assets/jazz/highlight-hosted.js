@@ -19,7 +19,7 @@
   const status = document.createElement('span');status.id='studio-server-film-status';status.setAttribute('role','status');status.hidden=true;
   anchor.parentElement.append(status);
   const cancel = document.createElement('button');cancel.type='button';cancel.id='studio-cancel-server-film';cancel.textContent='Cancel note-map film';cancel.hidden=true;anchor.before(cancel);
-  const results=document.createElement('span');anchor.parentElement.append(results);
+  const results=document.createElement('span');results.id='studio-server-film-results';anchor.parentElement.append(results);
   let busy=false, creating=false, active=null, timer=null;
   const running=j=>['preparing','editing','rendering','publishing'].includes(j.phase);
   const show=message=>{status.textContent=`Note-map film · ${message}`;status.hidden=false;};

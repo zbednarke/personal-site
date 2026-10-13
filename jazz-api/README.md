@@ -95,6 +95,13 @@ managed worker deployment. Signed source URLs last five hours and decoding is
 hard-limited to four hours plus shutdown overhead. Analysis errors do not alter
 recording playback or recording state.
 
+The GitHub deploy (`.github/workflows/deploy.yml`) does not pass
+`--min-instances` or `--no-cpu-throttling`, so the service keeps whatever it
+has. If the API is CPU-throttled outside requests, long-tone and caption jobs
+still finish (they are leased in Postgres and resumed by the next instance),
+only more slowly. The Workbench service runs this image too but never starts
+these workers.
+
 ## Clip Studio renders
 
 Clip Studio render requests are authenticated, limited to 24 clips and ten

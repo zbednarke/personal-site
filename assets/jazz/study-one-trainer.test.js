@@ -154,6 +154,9 @@ function harness() {
       offline = false;
     },
     capture: () => ({ context, worklet }),
+    // Let in-flight store and cleanup work finish before the window closes, so
+    // a slow (loaded) test run cannot touch a torn-down document.
+    settle: () => new Promise((r) => setTimeout(r, 150)),
   };
 }
 test("offline trial grades promptly, commits audio, and retries sync without duplication", async () => {
@@ -241,7 +244,7 @@ test("offline trial grades promptly, commits audio, and retries sync without dup
     assert.equal(h.remote.get(start.id).audioReady, true);
     await waitFor(() => !w.document.querySelector("#study-sync").disabled);
   } finally {
-    h.dom.window.close();
+    await h.settle(); h.dom.window.close();
   }
 });
 test("local chunk failure stops the session and exposes a download instead of claiming safety", async () => {
@@ -277,7 +280,7 @@ test("local chunk failure stops the session and exposes a download instead of cl
     assert.equal(h.remote.size, 0);
     await waitFor(() => !w.document.querySelector("#study-start").hidden);
   } finally {
-    h.dom.window.close();
+    await h.settle(); h.dom.window.close();
   }
 });
 
@@ -314,7 +317,7 @@ test("unreadable audio pauses retries and quick reset reuses the pending repetit
     await waitFor(async () => (await w.JazzStudyStore.all()).filter(a => a.finalized).length === 2);
     await waitFor(() => !w.document.querySelector("#study-sync").disabled);
     await waitFor(() => !w.document.querySelector("#study-start").disabled);
-  } finally { h.dom.window.close(); }
+  } finally { await h.settle(); h.dom.window.close(); }
 });
 
 test("quick reset replays the same key without ending the session or marking a miss", async () => {
