@@ -10,8 +10,8 @@ failed), and then every file is packaged.
 publish-static-release.sh starts the new release as a copy of the live one and
 extracts this archive over it, so leaving out a file whose bytes the live
 release already has publishes exactly the same files as the full archive. Only
-the upload shrinks: it goes through the IAP tunnel at a few KB/s (2.4 MB took
-250-490 s), and a typical deploy changes a few small files. A file is left out
+the upload shrinks: it goes through the IAP tunnel (deploy/upload-static-release.sh),
+and a typical deploy changes a few small files. A file is left out
 only when the live copy's SHA-256 is the same; anything else (new, changed,
 not readable there, a symlink) is packaged.
 """
