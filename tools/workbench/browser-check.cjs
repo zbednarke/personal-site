@@ -11,6 +11,7 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
+const http = require("node:http");
 const path = require("node:path");
 const { chromium } = require("playwright");
 
@@ -501,6 +502,89 @@ async function waitForServer() {
       await page.waitForSelector("#library-empty:not([hidden])");
       assert.equal(await page.locator("#library-empty").innerText(), "No documents match your search.");
       await page.ctx.close();
+
+      // With the Workbench service worker running, reading a PDF, downloading
+      // it, opening it in its own tab, opening a film and an API URL leave no
+      // private response in Cache Storage. Playwright's request routing makes
+      // Chromium bypass service workers, so this part uses no routes: a small
+      // loopback proxy in front of the preview answers the private paths with
+      // fictional fixtures in the worst case for a cache (real PDF and video
+      // types, no Cache-Control at all) and drops the preview's no-store from
+      // the shell, so the worker does cache /jazz/ itself, showing it was active.
+      {
+        const upstream = new URL(base);
+        const pdf = Buffer.from("%PDF-1.4\n% fictional fixture, not a real document\n%%EOF\n");
+        const hits = [];
+        const proxy = http.createServer((req, res) => {
+          const u = new URL(req.url, "http://proxy");
+          hits.push(u.pathname + u.search);
+          if (u.pathname === "/jazz/highlight-api/library") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify([{ id: "test-study-a", title: "Test Study A", author: "Fictional Author", sizeBytes: pdf.length, addedAt: "2026-10-01T12:00:00Z" }]));
+          }
+          if (/^\/jazz\/highlight-api\/library\/[^/]+\/file$/.test(u.pathname)) {
+            res.writeHead(200, { "Content-Type": "application/pdf", ...(u.searchParams.get("download") === "1" ? { "Content-Disposition": 'attachment; filename="test-study-a.pdf"' } : {}) });
+            return res.end(pdf);
+          }
+          if (u.pathname.startsWith("/jazz/films/")) {
+            const json = u.pathname.endsWith(".json");
+            res.writeHead(200, { "Content-Type": json ? "application/json" : "video/mp4" });
+            return res.end(json ? "[]" : Buffer.alloc(2048));
+          }
+          const forward = http.request({ host: upstream.hostname, port: upstream.port, path: req.url, method: req.method, headers: req.headers }, (up) => {
+            const headers = { ...up.headers };
+            if (u.pathname === "/jazz/" || u.pathname.startsWith("/assets/workbench/")) delete headers["cache-control"];
+            res.writeHead(up.statusCode, headers);
+            up.pipe(res);
+          });
+          forward.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+          req.pipe(forward);
+        });
+        await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+        const swBase = `http://127.0.0.1:${proxy.address().port}`;
+        try {
+          const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "allow", acceptDownloads: true });
+          const sw = await ctx.newPage();
+          sw.on("pageerror", (e) => errors.push(`library-sw: ${e.message}`));
+          await sw.goto(`${swBase}/jazz/`);
+          await sw.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15000 });
+          await sw.reload(); // a page load the worker now controls
+          await sw.evaluate(() => { location.hash = "#library"; });
+          await sw.waitForFunction(() => document.querySelectorAll("#library-books .library-book").length === 1);
+
+          // Read: the reader's iframe navigates to the file endpoint.
+          await sw.click("#library-books .library-book:first-child button");
+          // Download: ?download=1 is a navigation in the same tab.
+          const download = sw.waitForEvent("download").catch(() => null);
+          await sw.click("#library-books .library-book:first-child a:text('Download')");
+          await (await download)?.cancel();
+          // The reader's "open the PDF in a new tab" link, a film and an API URL, each as a top-level navigation.
+          for (const target of ["/jazz/highlight-api/library/test-study-a/file", "/jazz/films/2026-10-01/test-film.mp4", "/jazz/films/index.json", "/jazz/api/v1/repertoire"]) {
+            const tab = await ctx.newPage();
+            await tab.goto(swBase + target).catch(() => { /* a PDF may turn into a download */ });
+            await tab.waitForTimeout(300);
+            await tab.close();
+          }
+          await sw.waitForTimeout(500);
+          const fileLoads = hits.filter((h) => /^\/jazz\/highlight-api\/library\/test-study-a\/file/.test(h)).length;
+          assert.ok(fileLoads >= 3, `the PDF was read, downloaded and opened (${JSON.stringify(hits.filter((h) => h.includes("highlight-api")))})`);
+          assert.ok(hits.includes("/jazz/films/2026-10-01/test-film.mp4"), "the film was opened");
+
+          const cached = await sw.evaluate(async () => {
+            const out = [];
+            for (const name of await caches.keys()) for (const req of await (await caches.open(name)).keys()) out.push(`${name} ${new URL(req.url).pathname}${new URL(req.url).search}`);
+            return out;
+          });
+          const leaked = cached.filter((entry) => /\/highlight-api\/|\/films\/|\/api\/|\/share\//.test(entry));
+          assert.deepEqual(leaked, [], `no private response in Cache Storage (${JSON.stringify(cached)})`);
+          assert.ok(cached.includes("workbench-shell-v2 /jazz/"), `the worker was active and cached the shell page (${JSON.stringify(cached)})`);
+          assert.ok(cached.every((entry) => entry.startsWith("workbench-shell-v2 ")), "only the current shell cache exists");
+          await ctx.close();
+        } finally {
+          proxy.closeAllConnections?.();
+          await new Promise((resolve) => proxy.close(resolve));
+        }
+      }
     }
 
     assert.deepEqual(errors, []);

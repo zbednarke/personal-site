@@ -4,9 +4,14 @@
  * something is waiting; the daily fix list says what failed, in counts),
  * answers approvals from the notification's buttons, and keeps a
  * network-first copy of the app pages so the sheet opens offline and its
- * outbox can queue. API calls are never cached. */
+ * outbox can queue. Only shell HTML and the sheet's own public assets are
+ * cached (sw-cache-policy.js); APIs, the highlight service and its PDF
+ * library, films, share links and anything no-store or not HTML are left to
+ * the network and never stored. */
 "use strict";
-const WB_CACHE = "workbench-shell-v1";
+importScripts("/assets/workbench/sw-cache-policy.js");
+// v2: v1 could also keep private navigations (library PDFs, films); activate deletes it.
+const WB_CACHE = "workbench-shell-v2";
 const WB_API = "/workbench/api/v1/workbench";
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -19,16 +24,13 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  if (req.method !== "GET") return;
-  const url = new URL(req.url);
-  if (url.origin !== location.origin || url.pathname.includes("/api/")) return;
-  const shell = req.mode === "navigate" || url.pathname.startsWith("/assets/workbench/");
-  if (!shell) return;
+  const kind = self.WorkbenchCachePolicy.requestKind(req, location.origin);
+  if (!kind) return; // private, cross-origin or not part of the shell: straight to the network
   event.respondWith((async () => {
     try {
       const res = await fetch(req);
-      // Only complete same-origin pages and assets; never sign-in redirects.
-      if (res.ok && res.type === "basic" && !res.redirected) {
+      // Only complete same-origin shell HTML and Workbench assets: never redirects, no-store or other types.
+      if (self.WorkbenchCachePolicy.shouldCache(kind, res)) {
         const cache = await caches.open(WB_CACHE);
         await cache.put(req, res.clone());
       }

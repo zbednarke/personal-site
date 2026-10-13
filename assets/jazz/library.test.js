@@ -175,3 +175,72 @@ test("an oversized PDF is refused before uploading", async () => {
   assert.equal(xhrs.length, 0);
   assert.equal(nodes["library-status"].textContent, "Choose a PDF up to 100 MB.");
 });
+
+test("a non-https listening link is shown as text, not a link", async () => {
+  const items = [{ id: "c", title: "Test Lead Sheet C", author: "", sizeBytes: 1024, addedAt: "2026-09-20",
+    resources: [
+      { title: "Test Recording Safe", artist: "Test Ensemble", url: "https://example.com/safe" },
+      { title: "Test Recording Script", artist: "Test Ensemble", url: "javascript:alert(1)" },
+      { title: "Test Recording Plain", artist: "Test Ensemble", url: "http://example.com/plain" },
+    ] }];
+  const { nodes } = load({ items });
+  await settle();
+  const entries = nodes["library-books"].children[0].all((n) => n.className === "library-listening-item");
+  assert.deepEqual(entries.map((n) => n.tagName), ["A", "DIV", "DIV"]);
+  assert.equal(entries[0].href, "https://example.com/safe");
+  assert.equal(entries[0].rel, "noopener noreferrer");
+  for (const entry of entries.slice(1)) {
+    assert.equal(entry.href, undefined, "no href on a non-https resource");
+    assert.equal(entry.target, undefined);
+  }
+  assert.match(entries[1].textContent, /Test Recording Script/, "the title still shows");
+});
+
+async function startUpload() {
+  const page = load({ items: [] });
+  await settle();
+  page.nodes["library-file"].files = [{ name: "Test Upload E.pdf", size: 2048 }];
+  page.nodes["library-file"].onchange();
+  page.nodes["library-form"].onsubmit({ preventDefault() {} });
+  assert.equal(page.xhrs.length, 1);
+  assert.equal(page.nodes["library-submit"].disabled, true);
+  return { ...page, xhr: page.xhrs[0] };
+}
+
+test("an upload the server refuses shows its error and keeps the form", async () => {
+  const { nodes, xhr, fetches } = await startUpload();
+  xhr.status = 413;
+  xhr.responseText = JSON.stringify({ error: "That PDF is too large." });
+  await xhr.onload();
+  assert.equal(nodes["library-status"].textContent, "That PDF is too large.");
+  assert.equal(nodes["library-submit"].disabled, false, "the button is usable again");
+  assert.equal(nodes["library-form"].resetCalled, undefined, "the chosen file and title stay for a retry");
+  assert.equal(fetches.length, 1, "no reload after a failed upload");
+});
+
+test("a non-201 without a JSON error falls back to a generic message", async () => {
+  const { nodes, xhr } = await startUpload();
+  xhr.status = 500;
+  xhr.responseText = JSON.stringify({});
+  await xhr.onload();
+  assert.equal(nodes["library-status"].textContent, "Upload failed. Please retry.");
+  assert.equal(nodes["library-submit"].disabled, false);
+});
+
+test("a non-JSON reply, a network error and a timeout all say the upload did not finish", async () => {
+  const message = "Upload did not finish. Your original file is unchanged; retry when connected.";
+  const failures = {
+    "non-JSON 502": async (xhr) => { xhr.status = 502; xhr.responseText = "<html>Bad gateway</html>"; await xhr.onload(); },
+    onerror: async (xhr) => xhr.onerror(),
+    ontimeout: async (xhr) => xhr.ontimeout(),
+  };
+  for (const [name, fail] of Object.entries(failures)) {
+    const { nodes, xhr, fetches } = await startUpload();
+    await fail(xhr);
+    assert.equal(nodes["library-status"].textContent, message, name);
+    assert.equal(nodes["library-submit"].disabled, false, name);
+    assert.equal(nodes["library-upload"].hidden, true, `${name}: the form was never opened in this test, and nothing changed it`);
+    assert.equal(nodes["library-form"].resetCalled, undefined, name);
+    assert.equal(fetches.length, 1, name);
+  }
+});

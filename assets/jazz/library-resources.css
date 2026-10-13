@@ -5,7 +5,7 @@
   background: #17201f;
 }
 .library-listening h3 { margin: 0 0 12px; color: #dce9df; font: 16px Georgia; }
-.library-listening a {
+.library-listening .library-listening-item {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 2px 14px;
@@ -14,7 +14,7 @@
   text-decoration: none;
   border-top: 1px solid #2d3a36;
 }
-.library-listening a:first-of-type { border-top: 0; }
+.library-listening h3 + .library-listening-item { border-top: 0; }
 .library-listening strong { font-size: 14px; }
 .library-listening span { color: #b8d9cb; font-size: 12px; }
 .library-listening small { grid-column: 1 / -1; color: #8fa29b; line-height: 1.35; }
