@@ -10,6 +10,8 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+// Let context.route() answer requests the service worker makes, too.
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = "1";
 const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "../..");
@@ -110,6 +112,50 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
       await page.ctx.close();
     }
 
+    // The Workbench service worker (scope /jazz/) keeps an offline copy of
+    // the app shell only. Private media and data must never land in its
+    // cache: note maps and films, the film service (jobs, edits, previews,
+    // Library PDFs) and every API call, including training audio.
+    {
+      const page = await newPage("service-worker", 1440, 900, false);
+      const ok = (body, contentType) => (r) => r.fulfill({ status: 200, contentType, body });
+      await page.ctx.route("**/jazz/films/*.notes.html", ok("<!doctype html><title>Note map</title><p>fixture</p>", "text/html"));
+      await page.ctx.route("**/jazz/films/*.mp4", ok("not really a film", "video/mp4"));
+      await page.ctx.route("**/jazz/highlight-api/library/*/file*", ok("%PDF-1.4 fixture", "application/pdf"));
+      await page.ctx.route("**/jazz/highlight-api/jobs/*/preview.mp4", ok("preview", "video/mp4"));
+      await page.ctx.route("**/jazz/highlight-api/edits/*", ok("{}", "application/json"));
+      await page.ctx.route("**/jazz/api/v1/training/attempts/*/audio", ok("RIFF fixture", "audio/wav"));
+      await page.goto(`${base}/jazz/`);
+      await page.waitForFunction(() => navigator.serviceWorker?.controller, null, { timeout: 20000 });
+      const film = FILMS[0];
+      const privateURLs = [
+        film.noteMap,
+        film.video,
+        `/jazz/highlight-api/library/${LIBRARY[0].id}/file`,
+        "/jazz/highlight-api/jobs/00000000-0000-4000-8000-000000000002/preview.mp4",
+        "/jazz/highlight-api/edits/00000000-0000-4000-8000-000000000003",
+        "/jazz/highlight-api/jobs",
+        "/jazz/api/v1/training/attempts/00000000-0000-4000-8000-000000000004/audio",
+      ];
+      // Both ways the page reaches them: a navigation (open in a new tab) and a fetch.
+      for (const url of privateURLs) {
+        await page.goto(base + url).catch(() => {});
+        await page.goto(`${base}/jazz/#studio`);
+        await page.evaluate((u) => fetch(u, { credentials: "same-origin" }).then((r) => r.arrayBuffer()).catch(() => {}), url);
+      }
+      await page.waitForTimeout(500);
+      const cached = await page.evaluate(async () => {
+        const paths = [];
+        for (const name of await caches.keys()) for (const req of await (await caches.open(name)).keys()) paths.push(new URL(req.url).pathname);
+        return paths;
+      });
+      // (The preview serves pages with no-store, so the shell itself may not be
+      // kept here; this checks only that nothing private ever is.)
+      const leaked = cached.filter((p) => /\/(highlight-api|api|films)\//.test(p));
+      assert.deepEqual(leaked, [], "service worker: no private media, film-service or API responses cached");
+      await page.ctx.close();
+    }
+
     // Phone: the top bar's menu button opens the drawer, and every view is reachable from it.
     {
       const page = await newPage("phone", 390, 844, true);
@@ -131,7 +177,7 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
     }
 
     assert.deepEqual(errors, [], "no runtime errors");
-    console.log(`Jazz smoke check passed: ${VIEWS.map((v) => v.view).join(", ")} and /jazz/plan/ at 390 px (drawer) and 1440 px (sidebar), no sideways scroll, film shelf note map and editor entry, Library fixture rendered, no runtime errors. Screenshots: ${out}`);
+    console.log(`Jazz smoke check passed: ${VIEWS.map((v) => v.view).join(", ")} and /jazz/plan/ at 390 px (drawer) and 1440 px (sidebar), no sideways scroll, film shelf note map and editor entry, service worker caches no private media or API responses, Library fixture rendered, no runtime errors. Screenshots: ${out}`);
   } catch (error) {
     console.error(error);
     if (errors.length) console.error(errors.join("\n"));
