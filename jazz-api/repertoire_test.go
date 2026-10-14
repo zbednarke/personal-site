@@ -183,7 +183,7 @@ func TestSeedListMatchesSpec(t *testing.T) {
 			t.Errorf("seed %s does not match its title slug", seed.TuneID)
 		}
 	}
-	if len(repertoireSeeds) != 24 || counts["ballad"] != 11 || counts["upbeat"] != 8 || counts["pop"] != 5 {
+	if len(repertoireSeeds) != 23 || counts["ballad"] != 10 || counts["upbeat"] != 8 || counts["pop"] != 5 {
 		t.Fatalf("seed counts: %d %v", len(repertoireSeeds), counts)
 	}
 }

@@ -506,6 +506,115 @@ func TestWorkbenchRecoversInterruptedRuns(t *testing.T) {
 	}
 }
 
+// A new tune is the owner's data, not code: jazz_add_tune proposes a card,
+// and only his approval inserts it, through the Repertoire page's handler.
+// Duplicates (any case, current or archived) and invalid input never reach a card.
+func TestWorkbenchAddTune(t *testing.T) {
+	h := newWBHarness(t, nil,
+		fakeTurn{Blocks: []fakeBlock{
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Ballad", "category": "ballad", "referenceArtist": "Sample Artist", "referenceTitle": "Sample Album (1999)", "concertKey": "db"}},
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": " darn THAT dream ", "category": "ballad"}},
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "SKYLARK", "category": "pop"}},
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Upbeat", "category": "swing"}},
+		}, Stop: "tool_use", Input: 500, Output: 100},
+		fakeTurn{Blocks: []fakeBlock{{Text: "One card is waiting; the others already exist."}}, Input: 600, Output: 10},
+		fakeTurn{Blocks: []fakeBlock{{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "sample ballad", "category": "pop", "chosen": false}}}, Stop: "tool_use", Input: 700, Output: 20},
+		fakeTurn{Blocks: []fakeBlock{{Text: "You already have it."}}, Input: 800, Output: 10},
+	)
+	ctx := context.Background()
+	user, err := h.app.userIDForSubject(ctx, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The owner already has his repertoire, with one tune archived.
+	if err := h.app.seedRepertoire(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.app.db.Exec(ctx, `UPDATE repertoire_tunes SET archived_at=now() WHERE user_id=$1 AND tune_id='skylark'`, user); err != nil {
+		t.Fatal(err)
+	}
+	count := func() (n int) {
+		h.app.db.QueryRow(ctx, `SELECT count(*) FROM repertoire_tunes WHERE user_id=$1`, user).Scan(&n)
+		return n
+	}
+	before := count()
+	thread := h.newThread()
+	h.send(thread, "Add Sample Ballad to my ballads")
+	h.wait()
+
+	finished := func() []map[string]any {
+		out := []map[string]any{}
+		for _, e := range h.events(thread, 0) {
+			if e.Type == "tool.finished" {
+				var p map[string]any
+				json.Unmarshal(e.Payload, &p)
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	results := finished()
+	if len(results) != 4 || results[0]["ok"] != true {
+		t.Fatalf("four tool steps, the first proposed: %v", results)
+	}
+	for i, want := range []string{`DUPLICATE: the repertoire already has "Darn That Dream" (id darn-that-dream)`, `"Skylark" as an archived tune (id skylark)`, "tune category is invalid"} {
+		if r := results[i+1]; r["ok"] != false || !strings.Contains(fmt.Sprint(r["error"]), want) {
+			t.Fatalf("step %d: want %q, got %v", i+2, want, r)
+		}
+	}
+	if count() != before {
+		t.Fatal("proposing a tune writes nothing until the owner approves")
+	}
+	approvals := h.call("GET", wbBase+"/threads/"+thread, nil, 200)["approvals"].([]any)
+	if len(approvals) != 1 {
+		t.Fatalf("one card for the new tune, none for the refused ones: %v", approvals)
+	}
+	card := approvals[0].(map[string]any)
+	if card["title"] != "Add tune “Sample Ballad” to the ballad list (current set); reference: Sample Artist, Sample Album (1999); key Db" || card["status"] != "pending" {
+		t.Fatalf("confirmation card: %v", card)
+	}
+
+	decided := h.call("POST", wbBase+"/approvals/"+card["id"].(string), map[string]any{"decision": "approve", "deviceId": "phone-0001"}, 200)
+	var tune struct {
+		TuneID, Title, Category, Artist, Album, Key string
+		Chosen                                      bool
+		Position                                    int
+	}
+	if err := h.app.db.QueryRow(ctx, `SELECT tune_id,title,category,chosen,position,reference_artist,reference_title,concert_key FROM repertoire_tunes WHERE user_id=$1 AND title='Sample Ballad'`, user).
+		Scan(&tune.TuneID, &tune.Title, &tune.Category, &tune.Chosen, &tune.Position, &tune.Artist, &tune.Album, &tune.Key); err != nil {
+		t.Fatalf("approval inserted the tune: %v (%v)", err, decided)
+	}
+	if tune.TuneID != "sample-ballad" || tune.Category != "ballad" || !tune.Chosen || tune.Position != 10 || tune.Artist != "Sample Artist" || tune.Album != "Sample Album (1999)" || tune.Key != "Db" || count() != before+1 {
+		t.Fatalf("inserted like the page's Add tune, after the ten seeded ballads: %+v", tune)
+	}
+	var created int
+	h.app.db.QueryRow(ctx, `SELECT count(*) FROM repertoire_events WHERE user_id=$1 AND tune_id='sample-ballad' AND event_type='tune.created'`, user).Scan(&created)
+	if created != 1 {
+		t.Fatalf("the page's event log records the creation: %d", created)
+	}
+	a := h.call("GET", wbBase+"/threads/"+thread, nil, 200)["approvals"].([]any)[0].(map[string]any)
+	result, _ := a["result"].(map[string]any)
+	resultCard, _ := result["card"].(map[string]any)
+	if a["status"] != "approved" || !strings.Contains(fmt.Sprint(result["text"]), `Added "Sample Ballad" to the ballad list as tune id sample-ballad, in the current set`) ||
+		resultCard["kind"] != "tune_added" || resultCard["tuneId"] != "sample-ballad" {
+		t.Fatalf("the result tells the agent what was created: %v", a)
+	}
+
+	// Asking again, in another case and list, is refused: nothing is added twice.
+	h.send(thread, "Add sample ballad to pop too")
+	h.wait()
+	results = finished()
+	if last := results[len(results)-1]; last["ok"] != false || !strings.Contains(fmt.Sprint(last["error"]), `already has "Sample Ballad" (id sample-ballad)`) || count() != before+1 {
+		t.Fatalf("duplicate refused: %v", last)
+	}
+	if body := fmt.Sprint(h.model.lastBody()["messages"]); !strings.Contains(body, "as tune id sample-ballad") || !strings.Contains(body, "DUPLICATE") {
+		t.Fatalf("the agent hears the approved result and the refusal: %s", body)
+	}
+	if n := len(h.call("GET", wbBase+"/threads/"+thread, nil, 200)["approvals"].([]any)); n != 1 {
+		t.Fatalf("no second card: %d", n)
+	}
+}
+
 // userIDForSubject resolves (or creates) the app user for a gateway subject.
 func (app *application) userIDForSubject(ctx context.Context, subject string) (uuid.UUID, error) {
 	return app.userID(context.WithValue(ctx, userSubjectKey, subject))

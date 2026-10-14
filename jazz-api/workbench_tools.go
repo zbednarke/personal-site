@@ -89,6 +89,17 @@ var wbToolSpecs = []wbToolSpec{
 			"keyKnown":  str("A key to add to keys known, e.g. Bb."),
 			"note":      str("Text to append to the tune's notes."),
 		}, Required: []string{"tuneId"}},
+	{Name: "jazz_add_tune", Policy: wbApprove, Description: "Add a new tune to the repertoire, the same as the Repertoire page's Add tune. Refused if a tune with the same title (ignoring case) already exists, current or archived; read jazz_repertoire first and use jazz_mark_tune for an existing tune. Needs the owner's approval.",
+		Properties: map[string]any{
+			"title":           str("Tune title, 1-160 characters, e.g. Body and Soul."),
+			"category":        enum("Which list it goes in.", repertoireCategories()...),
+			"chosen":          map[string]any{"type": "boolean", "description": "In the current set. Default true."},
+			"referenceArtist": str("Optional reference recording: the artist."),
+			"referenceTitle":  str("Optional reference recording: the album or track and year."),
+			"referenceUrl":    str("Optional https:// link to the reference recording."),
+			"concertKey":      str("Optional concert key, e.g. Db or Gm."),
+			"notes":           str("Optional notes."),
+		}, Required: []string{"title", "category"}},
 	{Name: "jazz_add_note", Policy: wbCapture, Description: "Append a note to a practice section or a recorded take. Runs immediately.",
 		Properties: map[string]any{"target": enum("What the id refers to.", "block", "recording"), "id": str("Section or take id."), "note": str("Note text.")},
 		Required:   []string{"target", "id", "note"}},
@@ -185,6 +196,12 @@ func (app *application) wbRunTool(ctx context.Context, thread, user uuid.UUID, t
 		if err != nil {
 			return "", nil, err
 		}
+		if name == "jazz_add_tune" {
+			// A duplicate is refused before the owner ever sees a card for it.
+			if err := app.wbRefuseDuplicateTune(ctx, user, detail["title"].(string)); err != nil {
+				return "", nil, err
+			}
+		}
 		a, err := app.wbPropose(ctx, thread, user, "tool", name, input, toolUseID, title, detail)
 		if err != nil {
 			return "", nil, err
@@ -241,6 +258,16 @@ func (app *application) wbDescribe(name string, input json.RawMessage) (string, 
 			return "", nil, err
 		}
 		return "Update tune " + in.TuneID + ": " + changes, map[string]any{"tuneId": in.TuneID, "changes": changes}, nil
+	case "jazz_add_tune":
+		var in wbAddTuneInput
+		if err := wbDecode(input, &in); err != nil {
+			return "", nil, err
+		}
+		if err := in.validate(); err != nil {
+			return "", nil, err
+		}
+		return in.describe(), map[string]any{"title": in.Title, "category": in.Category, "chosen": in.chosen(), "referenceArtist": in.ReferenceArtist,
+			"referenceTitle": in.ReferenceTitle, "referenceUrl": in.ReferenceURL, "concertKey": in.ConcertKey, "notes": in.Notes}, nil
 	case "commonplace_capture":
 		var in wbCaptureInput
 		if err := wbDecode(input, &in); err != nil {
@@ -546,6 +573,15 @@ func (app *application) wbExecute(ctx context.Context, user uuid.UUID, idemKey, 
 			return "", nil, err
 		}
 		return app.wbMarkTune(ctx, subject, in)
+	case "jazz_add_tune":
+		var in wbAddTuneInput
+		if err := wbDecode(input, &in); err != nil {
+			return "", nil, err
+		}
+		if err := in.validate(); err != nil {
+			return "", nil, err
+		}
+		return app.wbAddTune(ctx, subject, user, idemKey, in)
 	case "jazz_add_note":
 		var in wbNoteInput
 		if err := wbDecode(input, &in); err != nil {
@@ -774,6 +810,104 @@ func (app *application) wbMarkTune(ctx context.Context, subject string, in wbMar
 		return "", nil, wbHandlerError(code, body)
 	}
 	return fmt.Sprintf("Updated %s: %s.", current.Title, changes), map[string]any{"kind": "tune", "tuneId": in.TuneID, "title": current.Title, "changes": changes, "url": "/jazz/"}, nil
+}
+
+// wbAddTuneInput is createRepertoireTune's input minus what the server fills
+// in: the tune id comes from the title, the mutation id from the approval.
+type wbAddTuneInput struct {
+	Title           string `json:"title"`
+	Category        string `json:"category"`
+	Chosen          *bool  `json:"chosen"`
+	ReferenceArtist string `json:"referenceArtist"`
+	ReferenceTitle  string `json:"referenceTitle"`
+	ReferenceURL    string `json:"referenceUrl"`
+	ConcertKey      string `json:"concertKey"`
+	Notes           string `json:"notes"`
+}
+
+// chosen matches createRepertoireTune: a new tune is in the current set unless told otherwise.
+func (in wbAddTuneInput) chosen() bool { return in.Chosen == nil || *in.Chosen }
+
+// validate applies the Repertoire page's own rules (validateTuneFields) and
+// keeps its normalized values, so the card shows exactly what will be written.
+func (in *wbAddTuneInput) validate() error {
+	fields := tuneFields{in.Title, in.Category, in.ReferenceArtist, in.ReferenceTitle, in.ReferenceURL, in.ConcertKey, in.Notes}
+	if err := validateTuneFields(&fields); err != nil {
+		return err
+	}
+	in.Title, in.Category, in.ReferenceArtist, in.ReferenceTitle, in.ReferenceURL, in.ConcertKey, in.Notes =
+		fields.Title, fields.Category, fields.ReferenceArtist, fields.ReferenceTitle, fields.ReferenceURL, fields.ConcertKey, fields.Notes
+	return nil
+}
+
+func (in wbAddTuneInput) describe() string {
+	set := "current set"
+	if !in.chosen() {
+		set = "not in the current set"
+	}
+	title := fmt.Sprintf("Add tune “%s” to the %s list (%s)", in.Title, in.Category, set)
+	ref := []string{}
+	for _, part := range []string{in.ReferenceArtist, in.ReferenceTitle} {
+		if part != "" {
+			ref = append(ref, part)
+		}
+	}
+	if len(ref) > 0 {
+		title += "; reference: " + strings.Join(ref, ", ")
+	}
+	if in.ConcertKey != "" {
+		title += "; key " + in.ConcertKey
+	}
+	return title
+}
+
+// wbRefuseDuplicateTune refuses a title the owner already has, current or
+// archived, ignoring case. It seeds first (as any repertoire read does) so a
+// starter tune counts.
+func (app *application) wbRefuseDuplicateTune(ctx context.Context, user uuid.UUID, title string) error {
+	if err := app.seedRepertoire(ctx, user); err != nil {
+		return err
+	}
+	var tuneID, existing string
+	var archived bool
+	err := app.db.QueryRow(ctx, `SELECT tune_id,title,archived_at IS NOT NULL FROM repertoire_tunes
+		WHERE user_id=$1 AND lower(btrim(title))=lower(btrim($2)) ORDER BY archived_at IS NOT NULL, tune_id LIMIT 1`, user, title).Scan(&tuneID, &existing, &archived)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if archived {
+		return fmt.Errorf("DUPLICATE: the repertoire already has %q as an archived tune (id %s). Nothing was added; the owner can restore it from the Repertoire page", existing, tuneID)
+	}
+	return fmt.Errorf("DUPLICATE: the repertoire already has %q (id %s). Nothing was added; use jazz_mark_tune to change it", existing, tuneID)
+}
+
+// wbAddTune creates the tune through createRepertoireTune, so it gets the
+// page's validation, slug, position and event log. The mutation id comes from
+// the approval, so a retried run cannot add it twice.
+func (app *application) wbAddTune(ctx context.Context, subject string, user uuid.UUID, idemKey string, in wbAddTuneInput) (string, any, error) {
+	if err := app.wbRefuseDuplicateTune(ctx, user, in.Title); err != nil {
+		return "", nil, err
+	}
+	mutation := uuid.NewSHA1(wbCaptureNamespace, []byte("tune:"+idemKey))
+	code, body := app.wbInvoke(ctx, subject, app.createRepertoireTune, "POST", "/v1/repertoire/tunes", nil, map[string]any{
+		"title": in.Title, "category": in.Category, "chosen": in.chosen(), "referenceArtist": in.ReferenceArtist, "referenceTitle": in.ReferenceTitle,
+		"referenceUrl": in.ReferenceURL, "concertKey": in.ConcertKey, "notes": in.Notes, "clientMutationId": mutation.String(),
+	})
+	if code != 200 && code != 201 {
+		return "", nil, wbHandlerError(code, body)
+	}
+	var tune repertoireTune
+	if err := json.Unmarshal(body, &tune); err != nil {
+		return "", nil, err
+	}
+	set := "in the current set"
+	if !tune.Chosen {
+		set = "not in the current set"
+	}
+	text := fmt.Sprintf("Added %q to the %s list as tune id %s, %s, with every milestone not started.", tune.Title, tune.Category, tune.TuneID, set)
+	return text, map[string]any{"kind": "tune_added", "tuneId": tune.TuneID, "title": tune.Title, "category": tune.Category, "chosen": tune.Chosen, "url": "/jazz/"}, nil
 }
 
 type wbNoteInput struct {

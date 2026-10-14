@@ -92,6 +92,29 @@ func TestWorkbenchDescribeValidatesBeforeTheCard(t *testing.T) {
 	if _, _, err := app.wbDescribe("jazz_mark_tune", json.RawMessage(`{"tuneId":"sample-tune","milestone":"changes"}`)); err == nil {
 		t.Fatal("milestone without status")
 	}
+	// jazz_add_tune uses the Repertoire page's own validation before the card.
+	title, detail, err := app.wbDescribe("jazz_add_tune", json.RawMessage(`{"title":"  Sample Ballad ","category":"ballad","referenceArtist":"Sample Artist","referenceTitle":"Sample Album (1999)","concertKey":"db"}`))
+	if err != nil || title != "Add tune “Sample Ballad” to the ballad list (current set); reference: Sample Artist, Sample Album (1999); key Db" ||
+		detail["title"] != "Sample Ballad" || detail["chosen"] != true || detail["concertKey"] != "Db" {
+		t.Fatalf("add tune card: %q %v %v", title, detail, err)
+	}
+	if title, _, err := app.wbDescribe("jazz_add_tune", json.RawMessage(`{"title":"Sample Pop","category":"pop","chosen":false}`)); err != nil || title != "Add tune “Sample Pop” to the pop list (not in the current set)" {
+		t.Fatalf("add tune outside the set: %q %v", title, err)
+	}
+	for input, want := range map[string]string{
+		`{"title":"   ","category":"ballad"}`:                                   "title must be 1 to 160",
+		`{"title":"Sample","category":"swing"}`:                                 "category is invalid",
+		`{"title":"Sample","category":"ballad","referenceUrl":"http://x.test"}`: "https://",
+		`{"title":"Sample","category":"ballad","concertKey":"H#"}`:              "concert key",
+		`{"title":"Sample","category":"ballad","tuneId":"sample"}`:              "INVALID_JSON",
+	} {
+		if _, _, err := app.wbDescribe("jazz_add_tune", json.RawMessage(input)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s: want %q, got %v", input, want, err)
+		}
+	}
+	if s, _ := wbSpec("jazz_add_tune"); s.Policy != wbApprove || fmt.Sprint(s.Properties["category"].(map[string]any)["enum"]) != "[ballad upbeat pop standard]" {
+		t.Fatalf("adding a tune needs approval and offers the page's categories: %+v", s)
+	}
 }
 
 func TestWorkbenchHelpers(t *testing.T) {

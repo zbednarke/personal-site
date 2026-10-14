@@ -31,6 +31,15 @@ var (
 
 var repertoireCategoryOrder = map[string]int{"ballad": 0, "upbeat": 1, "pop": 2, "standard": 3}
 
+// repertoireCategories lists the categories in display order.
+func repertoireCategories() []string {
+	out := make([]string, len(repertoireCategoryOrder))
+	for category, i := range repertoireCategoryOrder {
+		out[i] = category
+	}
+	return out
+}
+
 // Milestone JSON keys and their columns, in display order. keysKnown is
 // derived from the key list and therefore not listed here.
 var tuneMilestoneColumns = []struct{ Key, Column string }{
