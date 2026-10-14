@@ -185,15 +185,22 @@ func TestRepertoireIntegration(t *testing.T) {
 		t.Fatalf("backfilled body and soul (after Prelude at 11): %+v, %d events", backfilled, seededEvents())
 	}
 	archive("body-and-soul", backfilled.Revision)
-	if err := migrate(ctx, isolated); err != nil {
-		t.Fatal(err)
-	}
 	exec(`DELETE FROM jazz_backfills WHERE name='044_repertoire_body_and_soul'`)
 	if err := migrate(ctx, isolated); err != nil {
 		t.Fatal(err)
 	}
 	if find(load("2026-10-09"), "body-and-soul") != nil || seededEvents() != 1 {
 		t.Fatal("the backfill resurrected an archived Body and Soul or logged it twice")
+	}
+	// With the marker in place the backfill never runs again, even if the row is gone.
+	exec(`DELETE FROM repertoire_tunes WHERE tune_id='body-and-soul'`)
+	if err := migrate(ctx, isolated); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	scalar(&rows, `SELECT COUNT(*) FROM repertoire_tunes WHERE tune_id='body-and-soul'`)
+	if rows != 0 || seededEvents() != 1 {
+		t.Fatalf("the backfill ran again despite its marker: %d rows, %d events", rows, seededEvents())
 	}
 
 	// 3. Practice on a linked block derives the tune's state with no manual entry.
@@ -340,7 +347,7 @@ func TestRepertoireIntegration(t *testing.T) {
 	}
 	var duplicate repertoireTune
 	_ = json.Unmarshal(call(app.createRepertoireTune, "POST", "/", nil, map[string]any{"title": "Skylark", "category": "ballad", "chosen": false, "clientMutationId": uuid.NewString()}, 201), &duplicate)
-	if duplicate.TuneID != "skylark-2" || duplicate.Chosen || duplicate.Position != 13 { // after Prelude (11) and the backfilled Body and Soul (12)
+	if duplicate.TuneID != "skylark-2" || duplicate.Chosen || duplicate.Position != 12 { // after Prelude (11); the test removed Body and Soul above
 		t.Fatalf("suffixed duplicate: %+v", duplicate)
 	}
 
