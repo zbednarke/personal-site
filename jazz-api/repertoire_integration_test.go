@@ -135,7 +135,7 @@ func TestRepertoireIntegration(t *testing.T) {
 		return nil
 	}
 	first := load("2026-10-09")
-	if len(first.Tunes) != 25 { // 23 seeds + Solar (legacy stage 1) + Prelude (backfilled practice)
+	if len(first.Tunes) != 26 { // 24 seeds + Solar (legacy stage 1) + Prelude (backfilled practice)
 		t.Fatalf("seeded %d tunes", len(first.Tunes))
 	}
 	blue, solar := find(first, "blue-bossa"), find(first, "solar")
@@ -159,8 +159,41 @@ func TestRepertoireIntegration(t *testing.T) {
 	}
 	archive("golden-hour", find(first, "golden-hour").Revision)
 	second := load("2026-10-09")
-	if len(second.Tunes) != 24 || find(second, "golden-hour") != nil {
+	if len(second.Tunes) != 25 || find(second, "golden-hour") != nil {
 		t.Fatal("archived seed came back or a seed was duplicated")
+	}
+
+	// 2b. Body and Soul (#103): new users get it from the seed list; users
+	// seeded before it existed get it once from the backfill, at the end of
+	// their ballads, and an archive is never undone.
+	if bas := find(second, "body-and-soul"); bas == nil || bas.Title != "Body and Soul" || bas.Category != "ballad" || !bas.Chosen || bas.Position != 10 ||
+		bas.Milestones["melodyByEar"] != "not_started" || bas.Milestones["gigReady"] != "not_started" || len(bas.KeysKnown) != 0 {
+		t.Fatalf("seeded body and soul: %+v", bas)
+	}
+	exec(`DELETE FROM repertoire_events WHERE tune_id='body-and-soul'`)
+	exec(`DELETE FROM repertoire_tunes WHERE tune_id='body-and-soul'`)
+	exec(`DELETE FROM jazz_backfills WHERE name='044_repertoire_body_and_soul'`)
+	if err := migrate(ctx, isolated); err != nil {
+		t.Fatal(err)
+	}
+	seededEvents := func() (count int) {
+		scalar(&count, `SELECT COUNT(*) FROM repertoire_events WHERE tune_id='body-and-soul' AND event_type='tune.seeded'`)
+		return count
+	}
+	backfilled := find(load("2026-10-09"), "body-and-soul")
+	if backfilled == nil || !backfilled.Chosen || backfilled.Category != "ballad" || backfilled.Position != 12 || len(backfilled.KeysKnown) != 0 || seededEvents() != 1 {
+		t.Fatalf("backfilled body and soul (after Prelude at 11): %+v, %d events", backfilled, seededEvents())
+	}
+	archive("body-and-soul", backfilled.Revision)
+	if err := migrate(ctx, isolated); err != nil {
+		t.Fatal(err)
+	}
+	exec(`DELETE FROM jazz_backfills WHERE name='044_repertoire_body_and_soul'`)
+	if err := migrate(ctx, isolated); err != nil {
+		t.Fatal(err)
+	}
+	if find(load("2026-10-09"), "body-and-soul") != nil || seededEvents() != 1 {
+		t.Fatal("the backfill resurrected an archived Body and Soul or logged it twice")
 	}
 
 	// 3. Practice on a linked block derives the tune's state with no manual entry.
@@ -307,7 +340,7 @@ func TestRepertoireIntegration(t *testing.T) {
 	}
 	var duplicate repertoireTune
 	_ = json.Unmarshal(call(app.createRepertoireTune, "POST", "/", nil, map[string]any{"title": "Skylark", "category": "ballad", "chosen": false, "clientMutationId": uuid.NewString()}, 201), &duplicate)
-	if duplicate.TuneID != "skylark-2" || duplicate.Chosen || duplicate.Position != 11 {
+	if duplicate.TuneID != "skylark-2" || duplicate.Chosen || duplicate.Position != 13 { // after Prelude (11) and the backfilled Body and Soul (12)
 		t.Fatalf("suffixed duplicate: %+v", duplicate)
 	}
 
