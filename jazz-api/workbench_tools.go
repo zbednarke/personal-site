@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/google/uuid"
@@ -89,6 +90,17 @@ var wbToolSpecs = []wbToolSpec{
 			"keyKnown":  str("A key to add to keys known, e.g. Bb."),
 			"note":      str("Text to append to the tune's notes."),
 		}, Required: []string{"tuneId"}},
+	{Name: "jazz_add_tune", Policy: wbApprove, Description: "Add a new tune to the repertoire, the same as the Repertoire page's Add tune. Refused if a tune with the same title (ignoring case) already exists, current or archived; read jazz_repertoire first and use jazz_mark_tune for an existing tune. Needs the owner's approval.",
+		Properties: map[string]any{
+			"title":           str("Tune title, 1-160 characters, e.g. Body and Soul."),
+			"category":        enum("Which list it goes in.", repertoireCategories()...),
+			"chosen":          map[string]any{"type": "boolean", "description": "In the current set. Default true."},
+			"referenceArtist": str("Optional reference recording: the artist."),
+			"referenceTitle":  str("Optional reference recording: the album or track and year."),
+			"referenceUrl":    str("Optional https:// link to the reference recording."),
+			"concertKey":      str("Optional concert key, e.g. Db or Gm."),
+			"notes":           str("Optional notes."),
+		}, Required: []string{"title", "category"}},
 	{Name: "jazz_add_note", Policy: wbCapture, Description: "Append a note to a practice section or a recorded take. Runs immediately.",
 		Properties: map[string]any{"target": enum("What the id refers to.", "block", "recording"), "id": str("Section or take id."), "note": str("Note text.")},
 		Required:   []string{"target", "id", "note"}},
@@ -128,13 +140,77 @@ func wbUntrusted(source string, v any) string {
 
 // wbDecode parses a tool input strictly: eager input streaming means the
 // API no longer validates it, so a truncated or malformed input is an error.
+//
+// Go matches keys case-insensitively (the last match wins) while PostgreSQL
+// jsonb keeps the last of exact duplicates and reorders keys, so an object
+// with two spellings of one key could read differently in two places. Such
+// objects are refused, at any depth.
 func wbDecode(raw []byte, out any) error {
+	if err := wbCheckKeys(json.NewDecoder(bytes.NewReader(raw))); err != nil {
+		return fmt.Errorf("INVALID_JSON: %v", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("INVALID_JSON: %v", err)
 	}
 	return nil
+}
+
+// wbCheckKeys reads one JSON value and fails on an object holding two keys
+// that are equal ignoring case (exact duplicates included).
+func wbCheckKeys(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, _ := keyTok.(string)
+			folded := wbFoldKey(key)
+			if seen[folded] {
+				return fmt.Errorf("duplicate key %q (keys must differ by more than case)", key)
+			}
+			seen[folded] = true
+			if err := wbCheckKeys(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	case json.Delim('['):
+		for dec.More() {
+			if err := wbCheckKeys(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	}
+	return nil
+}
+
+// wbFoldKey maps each rune to the smallest rune in its Unicode case-folding
+// orbit, so keys equal under strings.EqualFold (and encoding/json's own
+// matching: K, k and the Kelvin sign; s and the long s) fold the same.
+func wbFoldKey(key string) string {
+	var b strings.Builder
+	for _, r := range key {
+		min := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < min {
+				min = f
+			}
+		}
+		b.WriteRune(min)
+	}
+	return b.String()
 }
 
 // ---- Running tool calls --------------------------------------------------------------
@@ -181,86 +257,132 @@ func (app *application) wbRunTool(ctx context.Context, thread, user uuid.UUID, t
 		return app.wbTriage(ctx, thread, user, toolUseID, input)
 	}
 	if spec.Policy == wbApprove {
-		title, detail, err := app.wbDescribe(name, input)
+		p, err := app.wbPrepare(name, input)
 		if err != nil {
 			return "", nil, err
 		}
-		a, err := app.wbPropose(ctx, thread, user, "tool", name, input, toolUseID, title, detail)
+		if name == "jazz_add_tune" {
+			// A duplicate is refused before the owner ever sees a card for it
+			// (and again, under the create lock, when he approves).
+			if err := app.wbRefuseDuplicateTune(ctx, user, p.Detail["title"].(string)); err != nil {
+				return "", nil, err
+			}
+		}
+		a, err := app.wbPropose(ctx, thread, user, "tool", name, p.Input, toolUseID, p.Title, p.Detail)
 		if err != nil {
 			return "", nil, err
 		}
-		return fmt.Sprintf("Proposed to the owner as a confirmation card (approval %s): %q. It runs only if he approves. Do not propose it again.", a.ID, title), nil, nil
+		return fmt.Sprintf("Proposed to the owner as a confirmation card (approval %s): %q. It runs only if he approves. Do not propose it again.", a.ID, p.Title), nil, nil
 	}
 	return app.wbExecute(ctx, user, toolUseID, name, input)
+}
+
+// wbPrepared is a write tool call as the owner will see it on its card. Input
+// is the decoded, validated struct re-encoded: it is what an approval stores
+// and later runs, so the card and the action can never read different keys.
+type wbPrepared struct {
+	Title  string
+	Detail map[string]any
+	Input  json.RawMessage
 }
 
 // wbDescribe validates a write tool's input up front (so the owner never
 // approves something that cannot run) and renders the card's title.
 func (app *application) wbDescribe(name string, input json.RawMessage) (string, map[string]any, error) {
+	p, err := app.wbPrepare(name, input)
+	return p.Title, p.Detail, err
+}
+
+func (app *application) wbPrepare(name string, input json.RawMessage) (wbPrepared, error) {
+	var canonical any
+	var title string
+	var detail map[string]any
 	switch name {
 	case "github_create_issue":
 		var in wbIssueInput
 		if err := wbDecode(input, &in); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		if err := in.validate(); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		if !app.wb.github.canWrite() {
-			return "", nil, errors.New("GitHub writes are not configured on the server (WORKBENCH_GITHUB_TOKEN is unset). Give the owner the draft to file by hand")
+			return wbPrepared{}, errors.New("GitHub writes are not configured on the server (WORKBENCH_GITHUB_TOKEN is unset). Give the owner the draft to file by hand")
 		}
-		return "Create issue: " + in.Title, map[string]any{"title": in.Title, "body": in.Body, "labels": in.Labels}, nil
+		canonical, title, detail = in, "Create issue: "+in.Title, map[string]any{"title": in.Title, "body": in.Body, "labels": in.Labels}
 	case "github_comment":
 		var in wbCommentInput
 		if err := wbDecode(input, &in); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		if in.Number < 1 || strings.TrimSpace(in.Body) == "" || len(in.Body) > 60000 {
-			return "", nil, errors.New("number and a non-empty body are required")
+			return wbPrepared{}, errors.New("number and a non-empty body are required")
 		}
 		if !app.wb.github.canWrite() {
-			return "", nil, errors.New("GitHub writes are not configured on the server (WORKBENCH_GITHUB_TOKEN is unset)")
+			return wbPrepared{}, errors.New("GitHub writes are not configured on the server (WORKBENCH_GITHUB_TOKEN is unset)")
 		}
-		return fmt.Sprintf("Comment on #%d", in.Number), map[string]any{"number": in.Number, "body": in.Body}, nil
+		canonical, title, detail = in, fmt.Sprintf("Comment on #%d", in.Number), map[string]any{"number": in.Number, "body": in.Body}
 	case "jazz_add_practice_block":
 		var in wbBlockInput
 		if err := wbDecode(input, &in); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		if err := in.validate(); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
-		return fmt.Sprintf("Add “%s” (%d min) to %s", in.Title, in.Minutes, in.Date), map[string]any{"date": in.Date, "title": in.Title, "minutes": in.Minutes, "type": in.Type, "instructions": in.Instructions, "tuneId": in.TuneID}, nil
+		canonical, title = in, fmt.Sprintf("Add “%s” (%d min) to %s", in.Title, in.Minutes, in.Date)
+		detail = map[string]any{"date": in.Date, "title": in.Title, "minutes": in.Minutes, "type": in.Type, "instructions": in.Instructions, "tuneId": in.TuneID, "oneDay": in.OneDay}
 	case "jazz_mark_tune":
 		var in wbMarkTuneInput
 		if err := wbDecode(input, &in); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		changes, err := in.describe()
 		if err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
-		return "Update tune " + in.TuneID + ": " + changes, map[string]any{"tuneId": in.TuneID, "changes": changes}, nil
+		canonical, title = in, "Update tune "+in.TuneID+": "+changes
+		// The title clips a note; the preview shows all of it.
+		detail = map[string]any{"tuneId": in.TuneID, "changes": changes, "body": strings.TrimSpace(in.Note)}
+	case "jazz_add_tune":
+		var in wbAddTuneInput
+		if err := wbDecode(input, &in); err != nil {
+			return wbPrepared{}, err
+		}
+		if err := in.validate(); err != nil {
+			return wbPrepared{}, err
+		}
+		canonical, title = in, in.describe()
+		detail = map[string]any{"title": in.Title, "category": in.Category, "chosen": in.chosen(), "referenceArtist": in.ReferenceArtist,
+			"referenceTitle": in.ReferenceTitle, "referenceUrl": in.ReferenceURL, "concertKey": in.ConcertKey, "notes": in.Notes, "body": in.preview()}
 	case "commonplace_capture":
 		var in wbCaptureInput
 		if err := wbDecode(input, &in); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		if strings.TrimSpace(in.Text) == "" {
-			return "", nil, errors.New("text is required")
+			return wbPrepared{}, errors.New("text is required")
 		}
-		return "Save a Moment: " + wbCleanText(firstNonEmpty(in.Title, in.Text), 80), map[string]any{"text": in.Text, "kind": in.Kind, "title": in.Title, "why": in.Why}, nil
+		canonical, title = in, "Save a Moment: "+wbCleanText(firstNonEmpty(in.Title, in.Text), 80)
+		detail = map[string]any{"text": in.Text, "kind": in.Kind, "title": in.Title, "why": in.Why}
 	case "jazz_add_note":
 		var in wbNoteInput
 		if err := wbDecode(input, &in); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
 		if err := in.validate(); err != nil {
-			return "", nil, err
+			return wbPrepared{}, err
 		}
-		return "Add a note to a " + map[string]string{"block": "practice section", "recording": "take"}[in.Target], map[string]any{"target": in.Target, "id": in.ID, "note": in.Note}, nil
+		canonical, title = in, "Add a note to a "+map[string]string{"block": "practice section", "recording": "take"}[in.Target]
+		detail = map[string]any{"target": in.Target, "id": in.ID, "note": in.Note}
+	default:
+		return wbPrepared{}, fmt.Errorf("%s is not a write tool", name)
 	}
-	return "", nil, fmt.Errorf("%s is not a write tool", name)
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return wbPrepared{}, err
+	}
+	return wbPrepared{Title: title, Detail: detail, Input: raw}, nil
 }
 
 type wbTriageInput struct {
@@ -301,12 +423,13 @@ func (app *application) wbTriage(ctx context.Context, thread, user uuid.UUID, to
 	if !ok {
 		return "", nil, fmt.Errorf("%s cannot use %s", in.Category, in.Action.Tool)
 	}
-	title, detail, err := app.wbDescribe(in.Action.Tool, in.Action.Input)
+	p, err := app.wbPrepare(in.Action.Tool, in.Action.Input)
 	if err != nil {
 		return "", nil, err
 	}
-	detail = map[string]any{"category": in.Category, "label": labels[in.Category], "idea": in.Idea, "reason": in.Reason, "action": map[string]any{"tool": in.Action.Tool, "title": title, "detail": detail}}
-	a, err := app.wbPropose(ctx, thread, user, "triage", in.Action.Tool, in.Action.Input, toolUseID, labels[in.Category]+" · "+title, detail)
+	title := p.Title
+	detail := map[string]any{"category": in.Category, "label": labels[in.Category], "idea": in.Idea, "reason": in.Reason, "action": map[string]any{"tool": in.Action.Tool, "title": title, "detail": p.Detail}}
+	a, err := app.wbPropose(ctx, thread, user, "triage", in.Action.Tool, p.Input, toolUseID, labels[in.Category]+" · "+title, detail)
 	if err != nil {
 		return "", nil, err
 	}
@@ -546,6 +669,15 @@ func (app *application) wbExecute(ctx context.Context, user uuid.UUID, idemKey, 
 			return "", nil, err
 		}
 		return app.wbMarkTune(ctx, subject, in)
+	case "jazz_add_tune":
+		var in wbAddTuneInput
+		if err := wbDecode(input, &in); err != nil {
+			return "", nil, err
+		}
+		if err := in.validate(); err != nil {
+			return "", nil, err
+		}
+		return app.wbAddTune(ctx, subject, idemKey, in)
 	case "jazz_add_note":
 		var in wbNoteInput
 		if err := wbDecode(input, &in); err != nil {
@@ -774,6 +906,108 @@ func (app *application) wbMarkTune(ctx context.Context, subject string, in wbMar
 		return "", nil, wbHandlerError(code, body)
 	}
 	return fmt.Sprintf("Updated %s: %s.", current.Title, changes), map[string]any{"kind": "tune", "tuneId": in.TuneID, "title": current.Title, "changes": changes, "url": "/jazz/"}, nil
+}
+
+// wbAddTuneInput is createRepertoireTune's input minus what the server fills
+// in: the tune id comes from the title, the mutation id from the approval.
+type wbAddTuneInput struct {
+	Title           string `json:"title"`
+	Category        string `json:"category"`
+	Chosen          *bool  `json:"chosen"`
+	ReferenceArtist string `json:"referenceArtist"`
+	ReferenceTitle  string `json:"referenceTitle"`
+	ReferenceURL    string `json:"referenceUrl"`
+	ConcertKey      string `json:"concertKey"`
+	Notes           string `json:"notes"`
+}
+
+// chosen matches createRepertoireTune: a new tune is in the current set unless told otherwise.
+func (in wbAddTuneInput) chosen() bool { return in.Chosen == nil || *in.Chosen }
+
+// validate applies the Repertoire page's own rules (validateTuneFields) and
+// keeps its normalized values, so the card shows exactly what will be written.
+func (in *wbAddTuneInput) validate() error {
+	fields := tuneFields{in.Title, in.Category, in.ReferenceArtist, in.ReferenceTitle, in.ReferenceURL, in.ConcertKey, in.Notes}
+	if err := validateTuneFields(&fields); err != nil {
+		return err
+	}
+	chosen := in.chosen()
+	in.Title, in.Category, in.ReferenceArtist, in.ReferenceTitle, in.ReferenceURL, in.ConcertKey, in.Notes, in.Chosen =
+		fields.Title, fields.Category, fields.ReferenceArtist, fields.ReferenceTitle, fields.ReferenceURL, fields.ConcertKey, fields.Notes, &chosen
+	return nil
+}
+
+// describe is the card's title. It stays short (a tune title is at most 160
+// characters) so it is never clipped; preview carries every field.
+func (in wbAddTuneInput) describe() string {
+	set := "current set"
+	if !in.chosen() {
+		set = "not in the current set"
+	}
+	return fmt.Sprintf("Add tune “%s” to the %s list (%s)", in.Title, in.Category, set)
+}
+
+// preview is the card's full text: every field that will be written, unclipped.
+func (in wbAddTuneInput) preview() string {
+	none := func(v string) string { return firstNonEmpty(v, "(none)") }
+	set := "yes"
+	if !in.chosen() {
+		set = "no"
+	}
+	return strings.Join([]string{
+		"Title: " + in.Title,
+		"List: " + in.Category,
+		"In the current set: " + set,
+		"Reference artist: " + none(in.ReferenceArtist),
+		"Reference recording: " + none(in.ReferenceTitle),
+		"Reference link: " + none(in.ReferenceURL),
+		"Concert key: " + none(in.ConcertKey),
+		"Notes: " + none(in.Notes),
+	}, "\n")
+}
+
+// wbRefuseDuplicateTune refuses, before a card is shown, a title the owner
+// already has (repertoireTuneByTitle). It seeds first, as any repertoire read
+// does, so a starter tune counts. createRepertoireTune checks again under its
+// per-user lock when the owner approves.
+func (app *application) wbRefuseDuplicateTune(ctx context.Context, user uuid.UUID, title string) error {
+	if err := app.seedRepertoire(ctx, user); err != nil {
+		return err
+	}
+	tuneID, existing, archived, found, err := repertoireTuneByTitle(ctx, app.db, user, title)
+	if err != nil {
+		return err
+	}
+	if found {
+		return errors.New(duplicateTuneMessage(tuneID, existing, archived))
+	}
+	return nil
+}
+
+// wbAddTune creates the tune through createRepertoireTune, so it gets the
+// page's validation, slug, position and event log, and asks it to refuse a
+// duplicate title inside its transaction. The mutation id comes from the
+// approval, so a retried run cannot add it twice.
+func (app *application) wbAddTune(ctx context.Context, subject, idemKey string, in wbAddTuneInput) (string, any, error) {
+	mutation := uuid.NewSHA1(wbCaptureNamespace, []byte("tune:"+idemKey))
+	ctx = context.WithValue(ctx, refuseDuplicateTuneTitleKey{}, true)
+	code, body := app.wbInvoke(ctx, subject, app.createRepertoireTune, "POST", "/v1/repertoire/tunes", nil, map[string]any{
+		"title": in.Title, "category": in.Category, "chosen": in.chosen(), "referenceArtist": in.ReferenceArtist, "referenceTitle": in.ReferenceTitle,
+		"referenceUrl": in.ReferenceURL, "concertKey": in.ConcertKey, "notes": in.Notes, "clientMutationId": mutation.String(),
+	})
+	if code != 200 && code != 201 {
+		return "", nil, wbHandlerError(code, body)
+	}
+	var tune repertoireTune
+	if err := json.Unmarshal(body, &tune); err != nil {
+		return "", nil, err
+	}
+	set := "in the current set"
+	if !tune.Chosen {
+		set = "not in the current set"
+	}
+	text := fmt.Sprintf("Added %q to the %s list as tune id %s, %s, with every milestone not started.", tune.Title, tune.Category, tune.TuneID, set)
+	return text, map[string]any{"kind": "tune_added", "tuneId": tune.TuneID, "title": tune.Title, "category": tune.Category, "chosen": tune.Chosen, "url": "/jazz/"}, nil
 }
 
 type wbNoteInput struct {

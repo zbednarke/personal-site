@@ -22,7 +22,6 @@ var repertoireSeeds = []repertoireSeed{
 	{"i-cant-get-started", "I Can't Get Started", "ballad", true, "Bunny Berigan", "1937 recording"},
 	{"darn-that-dream", "Darn That Dream", "ballad", true, "", ""},
 	{"round-midnight", "'Round Midnight", "ballad", true, "Miles Davis", "'Round About Midnight (1957)"},
-	{"body-and-soul", "Body and Soul", "ballad", true, "", ""},
 
 	{"blue-bossa", "Blue Bossa", "upbeat", true, "Kenny Dorham", "Joe Henderson, Page One (1963)"},
 	{"autumn-leaves", "Autumn Leaves", "upbeat", true, "Cannonball Adderley w/ Miles Davis", "Somethin' Else (1958)"},

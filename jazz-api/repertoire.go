@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -30,6 +31,15 @@ var (
 )
 
 var repertoireCategoryOrder = map[string]int{"ballad": 0, "upbeat": 1, "pop": 2, "standard": 3}
+
+// repertoireCategories lists the categories in display order.
+func repertoireCategories() []string {
+	out := make([]string, len(repertoireCategoryOrder))
+	for category, i := range repertoireCategoryOrder {
+		out[i] = category
+	}
+	return out
+}
 
 // Milestone JSON keys and their columns, in display order. keysKnown is
 // derived from the key list and therefore not listed here.
@@ -795,6 +805,30 @@ func validateTuneFields(fields *tuneFields) error {
 	return nil
 }
 
+// refuseDuplicateTuneTitleKey, set on a request's context by an in-process
+// caller (Workbench), makes createRepertoireTune refuse a title the user
+// already has instead of suffixing the id. It cannot be set over HTTP, so the
+// page's own Add tune behaves as before.
+type refuseDuplicateTuneTitleKey struct{}
+
+// repertoireTuneByTitle finds the user's tune with this title, ignoring case
+// and surrounding spaces; a current tune is reported before an archived one.
+func repertoireTuneByTitle(ctx context.Context, db dbQuerier, userID uuid.UUID, title string) (tuneID, existing string, archived, found bool, err error) {
+	err = db.QueryRow(ctx, `SELECT tune_id,title,archived_at IS NOT NULL FROM repertoire_tunes
+		WHERE user_id=$1 AND lower(btrim(title))=lower(btrim($2)) ORDER BY archived_at IS NOT NULL, tune_id LIMIT 1`, userID, title).Scan(&tuneID, &existing, &archived)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, false, nil
+	}
+	return tuneID, existing, archived, err == nil, err
+}
+
+func duplicateTuneMessage(tuneID, title string, archived bool) string {
+	if archived {
+		return fmt.Sprintf("DUPLICATE: the repertoire already has %q as an archived tune (id %s). Nothing was added; the owner can restore it from the Repertoire page", title, tuneID)
+	}
+	return fmt.Sprintf("DUPLICATE: the repertoire already has %q (id %s). Nothing was added; use jazz_mark_tune to change it", title, tuneID)
+}
+
 type createTuneRequest struct {
 	TuneID           string `json:"tuneId"`
 	Title            string `json:"title"`
@@ -868,6 +902,18 @@ func (app *application) createRepertoireTune(w http.ResponseWriter, r *http.Requ
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		app.serverError(w, err)
 		return
+	}
+	if refuse, _ := r.Context().Value(refuseDuplicateTuneTitleKey{}).(bool); refuse {
+		// Under the per-user lock above, so two concurrent creates cannot both pass.
+		tuneID, title, archived, found, err := repertoireTuneByTitle(r.Context(), tx, userID, fields.Title)
+		if err != nil {
+			app.serverError(w, err)
+			return
+		}
+		if found {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": duplicateTuneMessage(tuneID, title, archived), "tuneId": tuneID, "title": title, "archived": archived, "duplicateTitle": true})
+			return
+		}
 	}
 	existing := func(tuneID string) (bool, bool, string, error) {
 		var archived bool

@@ -524,7 +524,7 @@
   const TOOL_LABEL = {
     triage_idea: "Sorting the idea", github_list_issues: "Reading issues", github_create_issue: "Drafting an issue", github_comment: "Drafting a comment",
     site_status: "Checking CI, PRs and deploys", jazz_today: "Reading today's plan", jazz_repertoire: "Reading the repertoire",
-    jazz_add_practice_block: "Proposing a practice section", jazz_mark_tune: "Proposing a tune update", jazz_add_note: "Adding a note", commonplace_capture: "Saving a Moment",
+    jazz_add_practice_block: "Proposing a practice section", jazz_mark_tune: "Proposing a tune update", jazz_add_tune: "Proposing a new tune", jazz_add_note: "Adding a note", commonplace_capture: "Saving a Moment",
   };
 
   function stepLabel(step) {

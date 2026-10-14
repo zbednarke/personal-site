@@ -268,6 +268,7 @@ test("small helpers", () => {
   assert.equal(M.lightFor({ status: "in_progress" }), "running");
   assert.equal(M.lightFor(null), "unknown");
   assert.equal(M.stepLabel({ name: "site_status", done: false }), "Checking CI, PRs and deploys…");
+  assert.equal(M.stepLabel({ name: "jazz_add_tune", done: true, ok: true }), "Proposing a new tune");
   assert.equal(M.streamURL("t1", 42), "/workbench/api/v1/workbench/threads/t1/events?after=42");
   assert.equal(M.isToggleKey({ key: "`", target: { tagName: "BODY" } }), true);
   assert.equal(M.isToggleKey({ key: "`", target: { tagName: "TEXTAREA" } }), false);

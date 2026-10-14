@@ -751,7 +751,7 @@
             el("a", { href: p.url, target: "_blank", rel: "noopener" }, `#${p.number} ${M.clip(p.title, 60)}`), ` · ${p.checks.passed}✓ ${p.checks.failed}✗ ${p.checks.pending}…`))));
     }
     if (card.kind === "triage") return el("div", { class: "wb-card" }, el("span", { class: "wb-tag" }, M.TRIAGE[card.category] || "Triage"), el("h4", {}, card.question || card.idea), card.reason ? el("p", {}, card.reason) : null);
-    const titles = { moment: "Moment saved", issue: "Issue created", comment: "Comment posted", practice: "Practice section added", tune: "Tune updated", note: "Note added" };
+    const titles = { moment: "Moment saved", issue: "Issue created", comment: "Comment posted", practice: "Practice section added", tune: "Tune updated", tune_added: "Tune added", note: "Note added" };
     return el("div", { class: "wb-card" }, el("span", { class: "wb-tag" }, titles[card.kind] || "Done"),
       el("h4", {}, card.title || card.note || card.changes || (card.number ? `#${card.number}` : "")),
       card.url ? el("a", { href: card.url, target: card.url.startsWith("/") ? "_self" : "_blank", rel: "noopener" }, "Open") : null);
