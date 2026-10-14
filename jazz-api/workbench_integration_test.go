@@ -512,7 +512,8 @@ func TestWorkbenchRecoversInterruptedRuns(t *testing.T) {
 func TestWorkbenchAddTune(t *testing.T) {
 	h := newWBHarness(t, nil,
 		fakeTurn{Blocks: []fakeBlock{
-			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Ballad", "category": "ballad", "referenceArtist": "Sample Artist", "referenceTitle": "Sample Album (1999)", "concertKey": "db"}},
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Ballad", "category": "ballad", "referenceArtist": "Sample Artist", "referenceTitle": "Sample Album (1999)",
+				"referenceUrl": "https://example.test/sample-take", "concertKey": "db", "notes": "Sample notes: learn the verse first."}},
 			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": " darn THAT dream ", "category": "ballad"}},
 			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "SKYLARK", "category": "pop"}},
 			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Upbeat", "category": "swing"}},
@@ -532,6 +533,11 @@ func TestWorkbenchAddTune(t *testing.T) {
 	}
 	if _, err := h.app.db.Exec(ctx, `UPDATE repertoire_tunes SET archived_at=now() WHERE user_id=$1 AND tune_id='skylark'`, user); err != nil {
 		t.Fatal(err)
+	}
+	// Another user's tune with the same title does not count.
+	if code, body := h.app.wbInvoke(ctx, "someone-else", h.app.createRepertoireTune, "POST", "/v1/repertoire/tunes", nil,
+		map[string]any{"title": "Sample Ballad", "category": "ballad", "clientMutationId": uuid.NewString()}); code != 201 {
+		t.Fatalf("other user's tune: %d %s", code, body)
 	}
 	count := func() (n int) {
 		h.app.db.QueryRow(ctx, `SELECT count(*) FROM repertoire_tunes WHERE user_id=$1`, user).Scan(&n)
@@ -570,21 +576,30 @@ func TestWorkbenchAddTune(t *testing.T) {
 		t.Fatalf("one card for the new tune, none for the refused ones: %v", approvals)
 	}
 	card := approvals[0].(map[string]any)
-	if card["title"] != "Add tune “Sample Ballad” to the ballad list (current set); reference: Sample Artist, Sample Album (1999); key Db" || card["status"] != "pending" {
-		t.Fatalf("confirmation card: %v", card)
+	detail, _ := card["detail"].(map[string]any)
+	if card["title"] != "Add tune “Sample Ballad” to the ballad list (current set)" || card["status"] != "pending" ||
+		detail["body"] != "Title: Sample Ballad\nList: ballad\nIn the current set: yes\nReference artist: Sample Artist\nReference recording: Sample Album (1999)\nReference link: https://example.test/sample-take\nConcert key: Db\nNotes: Sample notes: learn the verse first." {
+		t.Fatalf("the confirmation card shows every field, the notes and link included: %v", card)
+	}
+	// What is stored to run is the validated input the card was drawn from.
+	var stored wbAddTuneInput
+	storedRaw, _ := json.Marshal(card["input"])
+	if err := wbDecode(storedRaw, &stored); err != nil || stored.Title != "Sample Ballad" || stored.ConcertKey != "Db" || stored.ReferenceURL != "https://example.test/sample-take" || stored.Chosen == nil || !*stored.Chosen {
+		t.Fatalf("stored input: %s %v", storedRaw, err)
 	}
 
 	decided := h.call("POST", wbBase+"/approvals/"+card["id"].(string), map[string]any{"decision": "approve", "deviceId": "phone-0001"}, 200)
 	var tune struct {
-		TuneID, Title, Category, Artist, Album, Key string
-		Chosen                                      bool
-		Position                                    int
+		TuneID, Title, Category, Artist, Album, URL, Key, Notes string
+		Chosen                                                  bool
+		Position                                                int
 	}
-	if err := h.app.db.QueryRow(ctx, `SELECT tune_id,title,category,chosen,position,reference_artist,reference_title,concert_key FROM repertoire_tunes WHERE user_id=$1 AND title='Sample Ballad'`, user).
-		Scan(&tune.TuneID, &tune.Title, &tune.Category, &tune.Chosen, &tune.Position, &tune.Artist, &tune.Album, &tune.Key); err != nil {
+	if err := h.app.db.QueryRow(ctx, `SELECT tune_id,title,category,chosen,position,reference_artist,reference_title,reference_url,concert_key,notes FROM repertoire_tunes WHERE user_id=$1 AND title='Sample Ballad'`, user).
+		Scan(&tune.TuneID, &tune.Title, &tune.Category, &tune.Chosen, &tune.Position, &tune.Artist, &tune.Album, &tune.URL, &tune.Key, &tune.Notes); err != nil {
 		t.Fatalf("approval inserted the tune: %v (%v)", err, decided)
 	}
-	if tune.TuneID != "sample-ballad" || tune.Category != "ballad" || !tune.Chosen || tune.Position != 10 || tune.Artist != "Sample Artist" || tune.Album != "Sample Album (1999)" || tune.Key != "Db" || count() != before+1 {
+	if tune.TuneID != "sample-ballad" || tune.Category != "ballad" || !tune.Chosen || tune.Position != 10 || tune.Artist != "Sample Artist" || tune.Album != "Sample Album (1999)" ||
+		tune.URL != "https://example.test/sample-take" || tune.Key != "Db" || tune.Notes != "Sample notes: learn the verse first." || count() != before+1 {
 		t.Fatalf("inserted like the page's Add tune, after the ten seeded ballads: %+v", tune)
 	}
 	var created int
@@ -612,6 +627,70 @@ func TestWorkbenchAddTune(t *testing.T) {
 	}
 	if n := len(h.call("GET", wbBase+"/threads/"+thread, nil, 200)["approvals"].([]any)); n != 1 {
 		t.Fatalf("no second card: %d", n)
+	}
+}
+
+// A card is checked again when it is approved: a tune added after the card was
+// shown, or by a second card approved at the same moment, is not added twice.
+func TestWorkbenchAddTuneRechecksOnApproval(t *testing.T) {
+	h := newWBHarness(t, nil,
+		fakeTurn{Blocks: []fakeBlock{
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Late", "category": "ballad"}},
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "Sample Twice", "category": "pop"}},
+			{ToolName: "jazz_add_tune", ToolInput: map[string]any{"title": "sample twice", "category": "upbeat"}},
+		}, Stop: "tool_use", Input: 500, Output: 100},
+		fakeTurn{Blocks: []fakeBlock{{Text: "Three cards."}}, Input: 600, Output: 10},
+	)
+	ctx := context.Background()
+	user, _ := h.app.userIDForSubject(ctx, "owner")
+	thread := h.newThread()
+	h.send(thread, "Add these")
+	h.wait()
+	approvals := h.call("GET", wbBase+"/threads/"+thread, nil, 200)["approvals"].([]any)
+	if len(approvals) != 3 {
+		t.Fatalf("all three pass the proposal check (nothing exists yet): %v", approvals)
+	}
+	ids := map[string]string{}
+	for _, raw := range approvals {
+		a := raw.(map[string]any)
+		ids[a["title"].(string)] = a["id"].(string)
+	}
+	titled := func(title string) (n int) {
+		h.app.db.QueryRow(ctx, `SELECT count(*) FROM repertoire_tunes WHERE user_id=$1 AND lower(title)=lower($2)`, user, title).Scan(&n)
+		return n
+	}
+
+	// Between the card and the approval, the owner adds it on the Repertoire page.
+	if code, body := h.app.wbInvoke(ctx, "owner", h.app.createRepertoireTune, "POST", "/v1/repertoire/tunes", nil,
+		map[string]any{"title": "SAMPLE LATE", "category": "ballad", "clientMutationId": uuid.NewString()}); code != 201 {
+		t.Fatalf("page add: %d %s", code, body)
+	}
+	late := h.call("POST", wbBase+"/approvals/"+ids["Add tune “Sample Late” to the ballad list (current set)"], map[string]any{"decision": "approve", "deviceId": "phone-0001"}, 200)
+	a := late["approval"].(map[string]any)
+	if result, _ := a["result"].(map[string]any); a["status"] != "failed" || !strings.Contains(fmt.Sprint(result["error"]), `DUPLICATE: the repertoire already has "SAMPLE LATE" (id sample-late)`) || titled("Sample Late") != 1 {
+		t.Fatalf("approval re-checks and refuses: %v, %d rows", late, titled("Sample Late"))
+	}
+
+	// Two cards for one title, approved at the same moment: exactly one inserts.
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i, title := range []string{"Add tune “Sample Twice” to the pop list (current set)", "Add tune “sample twice” to the upbeat list (current set)"} {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			codes[i], _ = h.do("POST", wbBase+"/approvals/"+id, map[string]any{"decision": "approve", "deviceId": fmt.Sprintf("device-%04d", i)}, nil)
+		}(i, ids[title])
+	}
+	wg.Wait()
+	statuses := map[string]int{}
+	for _, raw := range h.call("GET", wbBase+"/threads/"+thread, nil, 200)["approvals"].([]any) {
+		a := raw.(map[string]any)
+		if strings.Contains(strings.ToLower(a["title"].(string)), "sample twice") {
+			statuses[a["status"].(string)]++
+		}
+	}
+	if codes[0] != 200 || codes[1] != 200 || statuses["approved"] != 1 || statuses["failed"] != 1 || titled("Sample Twice") != 1 {
+		t.Fatalf("one of two concurrent approvals inserts: %v %v, %d rows", codes, statuses, titled("Sample Twice"))
 	}
 }
 

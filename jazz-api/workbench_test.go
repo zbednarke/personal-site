@@ -94,8 +94,9 @@ func TestWorkbenchDescribeValidatesBeforeTheCard(t *testing.T) {
 	}
 	// jazz_add_tune uses the Repertoire page's own validation before the card.
 	title, detail, err := app.wbDescribe("jazz_add_tune", json.RawMessage(`{"title":"  Sample Ballad ","category":"ballad","referenceArtist":"Sample Artist","referenceTitle":"Sample Album (1999)","concertKey":"db"}`))
-	if err != nil || title != "Add tune “Sample Ballad” to the ballad list (current set); reference: Sample Artist, Sample Album (1999); key Db" ||
-		detail["title"] != "Sample Ballad" || detail["chosen"] != true || detail["concertKey"] != "Db" {
+	if err != nil || title != "Add tune “Sample Ballad” to the ballad list (current set)" ||
+		detail["title"] != "Sample Ballad" || detail["chosen"] != true || detail["concertKey"] != "Db" ||
+		detail["body"] != "Title: Sample Ballad\nList: ballad\nIn the current set: yes\nReference artist: Sample Artist\nReference recording: Sample Album (1999)\nReference link: (none)\nConcert key: Db\nNotes: (none)" {
 		t.Fatalf("add tune card: %q %v %v", title, detail, err)
 	}
 	if title, _, err := app.wbDescribe("jazz_add_tune", json.RawMessage(`{"title":"Sample Pop","category":"pop","chosen":false}`)); err != nil || title != "Add tune “Sample Pop” to the pop list (not in the current set)" {
@@ -114,6 +115,101 @@ func TestWorkbenchDescribeValidatesBeforeTheCard(t *testing.T) {
 	}
 	if s, _ := wbSpec("jazz_add_tune"); s.Policy != wbApprove || fmt.Sprint(s.Properties["category"].(map[string]any)["enum"]) != "[ballad upbeat pop standard]" {
 		t.Fatalf("adding a tune needs approval and offers the page's categories: %+v", s)
+	}
+}
+
+// Keys that differ only in case would be read one way by Go (last
+// case-insensitive match wins) and stored another way by jsonb, so they are
+// refused anywhere in a tool input.
+func TestWorkbenchDecodeRefusesCaseVariantKeys(t *testing.T) {
+	var in wbAddTuneInput
+	for _, raw := range []string{
+		`{"title":"Shown Title","Title":"Hidden Title","category":"ballad"}`,
+		`{"Title":"Hidden Title","title":"Shown Title","category":"ballad"}`,
+		`{"title":"A","title":"B","category":"ballad"}`,
+		`{"title":"A","category":"ballad","concertKey":"C","concert\u212aey":"D"}`, // Kelvin sign: Go matches it to k
+		`{"title":"A","category":"ballad","notes":"x","NOTES":"y"}`,
+	} {
+		if err := wbDecode([]byte(raw), &in); err == nil || !strings.Contains(err.Error(), "INVALID_JSON: duplicate key") {
+			t.Fatalf("%s: %v", raw, err)
+		}
+	}
+	var triage wbTriageInput
+	if err := wbDecode([]byte(`{"idea":"x","category":"keep_it","reason":"r","action":{"tool":"commonplace_capture","input":{"text":"a","TEXT":"b"}}}`), &triage); err == nil {
+		t.Fatal("nested objects are checked too")
+	}
+	if err := wbDecode([]byte(`{"title":"Sample","category":"ballad","notes":"{\"title\":1,\"Title\":2}"}`), &in); err != nil || in.Title != "Sample" {
+		t.Fatalf("a string that looks like JSON is just text: %v", err)
+	}
+}
+
+// What an approval runs is the canonical re-encoding of what the card shows:
+// preparing that encoding again yields the same card and the same bytes.
+func TestWorkbenchCardEqualsWhatRuns(t *testing.T) {
+	app := &application{wb: newWorkbench(wbConfig{GitHubRepo: "fixture/site", GitHubAPI: "http://127.0.0.1:1", GitHubToken: "gh-test-token"})}
+	inputs := map[string]string{
+		"github_create_issue":     `{"title":"  Sample issue ","body":"Sample body","labels":["do-now"]}`,
+		"github_comment":          `{"number":7,"body":"Sample comment"}`,
+		"jazz_add_practice_block": `{"date":"2026-01-02","title":" Sample tones ","minutes":10,"type":"made-up","instructions":"Soft.","oneDay":true}`,
+		"jazz_mark_tune":          `{"tuneId":"sample-tune","note":"Sample note that is longer than sixty characters, so the title clips it here."}`,
+		"jazz_add_tune":           `{"title":" Sample Ballad ","category":"ballad","referenceUrl":"https://example.test/take","concertKey":"eb","notes":"Sample notes"}`,
+		"commonplace_capture":     `{"text":"Sample idea","kind":"idea"}`,
+		"jazz_add_note":           `{"target":"block","id":"6f1b2d1e-5a3c-4e0b-9d57-3c2a8f0e7b11","note":" Sample note "}`,
+	}
+	for _, s := range wbToolSpecs {
+		if s.Policy == wbApprove && inputs[s.Name] == "" {
+			t.Fatalf("approval tool %s has no case here", s.Name)
+		}
+	}
+	for name, raw := range inputs {
+		first, err := app.wbPrepare(name, json.RawMessage(raw))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		again, err := app.wbPrepare(name, first.Input)
+		if err != nil || again.Title != first.Title || fmt.Sprint(again.Detail) != fmt.Sprint(first.Detail) || string(again.Input) != string(first.Input) {
+			t.Fatalf("%s: the stored input must describe the same card: %v\n%+v\n%+v", name, err, first, again)
+		}
+	}
+	// The reviewer's probe: the card and the run can no longer disagree.
+	if _, err := app.wbPrepare("jazz_add_tune", json.RawMessage(`{"title":"Shown Title","Title":"Hidden Title","category":"ballad"}`)); err == nil {
+		t.Fatal("case-variant keys are refused before any card")
+	}
+	p, _ := app.wbPrepare("jazz_add_tune", json.RawMessage(inputs["jazz_add_tune"]))
+	var stored wbAddTuneInput
+	if err := wbDecode(p.Input, &stored); err != nil || stored.Title != p.Detail["title"] || stored.Title != "Sample Ballad" || stored.ConcertKey != "Eb" || stored.Chosen == nil || !*stored.Chosen {
+		t.Fatalf("the stored input is the validated one: %s %v", p.Input, err)
+	}
+	// jazz_mark_tune's title clips a note; its preview carries all of it.
+	p, _ = app.wbPrepare("jazz_mark_tune", json.RawMessage(inputs["jazz_mark_tune"]))
+	if p.Detail["body"] != "Sample note that is longer than sixty characters, so the title clips it here." {
+		t.Fatalf("mark tune preview: %v", p.Detail)
+	}
+}
+
+// Every field jazz_add_tune writes is on the card, unclipped.
+func TestWorkbenchAddTuneCardShowsEverything(t *testing.T) {
+	app := &application{wb: newWorkbench(wbConfig{GitHubRepo: "fixture/site", GitHubAPI: "http://127.0.0.1:1"})}
+	title := strings.Repeat("Sample ", 22) + "Ballad" // 160 characters, the maximum
+	notes := strings.Repeat("Sample practice note. ", 363) + "END"
+	input, _ := json.Marshal(map[string]any{"title": title, "category": "standard", "chosen": false, "referenceArtist": strings.Repeat("A", 160),
+		"referenceTitle": strings.Repeat("R", 160), "referenceUrl": "https://example.test/sample-take?t=42", "concertKey": "F#m", "notes": notes})
+	p, err := app.wbPrepare("jazz_add_tune", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len([]rune(title)) != 160 || len(notes) > 8000 || len(notes) < 7900 {
+		t.Fatalf("fixture sizes: %d %d", len([]rune(title)), len(notes))
+	}
+	if !strings.Contains(p.Title, "“"+title+"”") || len([]rune(p.Title)) > 300 {
+		t.Fatalf("the card title holds the whole tune title and is never clipped (300 runes): %d %q", len([]rune(p.Title)), p.Title)
+	}
+	body := p.Detail["body"].(string)
+	for _, want := range []string{"Title: " + title, "List: standard", "In the current set: no", "Reference artist: " + strings.Repeat("A", 160),
+		"Reference recording: " + strings.Repeat("R", 160), "Reference link: https://example.test/sample-take?t=42", "Concert key: F#m", "Notes: " + notes} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the card preview is missing %.60q", want)
+		}
 	}
 }
 
