@@ -194,6 +194,18 @@ func TestCommonplaceCaptureEditAndMargin(t *testing.T) {
 	if w := h.raw("POST", base+"/moments/"+uuid.NewString()+"/artifacts", png, map[string]string{"Content-Type": "image/png"}); w.Code != 404 {
 		t.Fatal("upload to a missing Moment", w.Code)
 	}
+	// Only app uploads count: an imported copy of the same bytes (which a
+	// re-import may drop) does not swallow a new upload.
+	importedPNG := syntheticPNG(t, 30, 30, 90)
+	if w := h.raw("POST", base+"/moments/"+id+"/artifacts", importedPNG, map[string]string{"Content-Type": "image/png"}); w.Code != 201 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if _, err := h.app.db.Exec(context.Background(), `UPDATE cp_artifacts SET artifact_key='bundle-fixture' WHERE moment_id=$1 AND width=30`, id); err != nil {
+		t.Fatal(err)
+	}
+	if w := h.raw("POST", base+"/moments/"+id+"/artifacts", importedPNG, map[string]string{"Content-Type": "image/png"}); w.Code != 201 {
+		t.Fatal("an imported copy must not count as the upload", w.Code, w.Body.String())
+	}
 	if w := h.raw("POST", base+"/moments/"+id+"/artifacts", []byte("not an image"), map[string]string{"Content-Type": "image/png"}); w.Code != 400 {
 		t.Fatal("bad image accepted", w.Code)
 	}

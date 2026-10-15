@@ -367,8 +367,10 @@
       $("#capSave").disabled = true;
       status.className = "status";
       status.textContent = "Keeping it…";
-      if (!pending || (extra.captureId && pending.id !== extra.captureId)) pending = { id: extra.captureId || M.newId(), momentId: "" };
-      const askDetails = M.detailsAfterCapture(parsed, files);
+      // Decided once per capture, so a retry with the text box cleared still
+      // opens Details for a Moment that was kept with words.
+      if (!pending || (extra.captureId && pending.id !== extra.captureId)) pending = { id: extra.captureId || M.newId(), momentId: "", askDetails: M.detailsAfterCapture(parsed, files) };
+      const askDetails = pending.askDetails;
       try {
         if (!pending.momentId) {
           const body = { clientCaptureId: pending.id, text: parsed.text, url: parsed.url, timezone: BROWSER_TZ, ...extra.fields };

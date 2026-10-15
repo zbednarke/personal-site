@@ -178,16 +178,43 @@ func (app *application) cpUploadArtifact(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Uploads are idempotent per Moment: the same bytes sent again (a retry
-	// whose response was lost, a double tap) return the artifact already kept.
-	// Locking the Moment row serializes concurrent uploads to it.
+	// whose response was lost, a double tap) return the upload already kept.
+	// Only app uploads count; an imported copy can be dropped by a re-import.
+	const findUpload = `SELECT ` + cpArtifactColumns + ` FROM cp_artifacts a
+ WHERE a.moment_id=$1 AND a.user_id=$2 AND a.sha256=$3 AND a.artifact_key LIKE 'upload-%' ORDER BY a.position LIMIT 1`
+	kept := func(q pgx.Row) bool {
+		a, err := cpScanArtifact(q)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false
+		}
+		if err != nil {
+			app.serverError(w, err)
+			return true
+		}
+		writeJSON(w, 200, map[string]any{"artifact": a, "duplicate": true})
+		return true
+	}
+	if !app.cpMomentExists(w, r, user, moment) || kept(app.db.QueryRow(r.Context(), findUpload, moment, user, media.SHA256)) {
+		return
+	}
+	// Store the file before taking the Moment lock, so a slow upload never
+	// holds it; the check is repeated under the lock for concurrent retries.
+	id := uuid.New()
+	name := cpObjectName(user, moment, id, media)
+	if err := cpPutMedia(r.Context(), app.inspirationObjects(), name, user, moment, id, media); err != nil {
+		app.serverError(w, err)
+		return
+	}
 	tx, err := app.db.Begin(r.Context())
 	if err != nil {
+		app.deleteObjectsBestEffort(r.Context(), []string{name})
 		app.serverError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	var locked int
 	if err := tx.QueryRow(r.Context(), `SELECT 1 FROM cp_moments WHERE id=$1 AND user_id=$2 FOR UPDATE`, moment, user).Scan(&locked); err != nil {
+		app.deleteObjectsBestEffort(r.Context(), []string{name})
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, 404, "moment not found")
 			return
@@ -195,25 +222,8 @@ func (app *application) cpUploadArtifact(w http.ResponseWriter, r *http.Request)
 		app.serverError(w, err)
 		return
 	}
-	var existing uuid.UUID
-	err = tx.QueryRow(r.Context(), `SELECT id FROM cp_artifacts WHERE moment_id=$1 AND user_id=$2 AND sha256=$3 ORDER BY position LIMIT 1`, moment, user, media.SHA256).Scan(&existing)
-	if err == nil {
-		a, err := cpScanArtifact(tx.QueryRow(r.Context(), `SELECT `+cpArtifactColumns+` FROM cp_artifacts a WHERE a.id=$1`, existing))
-		if err != nil {
-			app.serverError(w, err)
-			return
-		}
-		writeJSON(w, 200, map[string]any{"artifact": a, "duplicate": true})
-		return
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		app.serverError(w, err)
-		return
-	}
-	id := uuid.New()
-	name := cpObjectName(user, moment, id, media)
-	if err := cpPutMedia(r.Context(), app.inspirationObjects(), name, user, moment, id, media); err != nil {
-		app.serverError(w, err)
+	if kept(tx.QueryRow(r.Context(), findUpload, moment, user, media.SHA256)) {
+		app.deleteObjectsBestEffort(r.Context(), []string{name})
 		return
 	}
 	// App uploads use the upload- prefix so bundle re-imports keep them.
