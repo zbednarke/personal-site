@@ -14,9 +14,12 @@ import (
 )
 
 func TestCleanMagicFilmDirection(t *testing.T) {
-	got, err := cleanMagicFilmDirection("  quiet and reflective\r\nslow pacing\x00\x07\t ")
+	got, err := cleanMagicFilmDirection("  quiet and \u202ereflective\u200b\r\nslow pacing\x00\x07\t ")
 	if err != nil || got != "quiet and reflective\nslow pacing" {
 		t.Fatalf("got %q, %v", got, err)
+	}
+	if got, _ := cleanMagicFilmDirection("trumpet 👨\u200d🎤"); got != "trumpet 👨\u200d🎤" {
+		t.Fatalf("emoji joiners must survive: %q", got)
 	}
 	if got, err := cleanMagicFilmDirection("   "); err != nil || got != "" {
 		t.Fatalf("blank direction: %q, %v", got, err)

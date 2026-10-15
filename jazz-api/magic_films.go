@@ -58,12 +58,13 @@ type magicFilmCreateRequest struct {
 // maxMagicFilmDirection caps the owner's creative direction, in characters.
 const maxMagicFilmDirection = 1000
 
-// cleanMagicFilmDirection trims the direction, strips control characters other
-// than line breaks and tabs, and rejects text over the cap rather than cutting
+// cleanMagicFilmDirection trims the direction, strips control and invisible
+// format characters (bidi overrides, zero-width spaces) other than line breaks,
+// tabs and the zero-width joiner inside emoji, and rejects text over the cap rather than cutting
 // a sentence in half.
 func cleanMagicFilmDirection(value string) (string, error) {
 	value = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+		if r == '\n' || r == '\t' || r == '\u200d' || !(unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) {
 			return r
 		}
 		return -1

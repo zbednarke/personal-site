@@ -42,8 +42,13 @@
   phonePanel.className = "studio-magic-phone"; phonePanel.setAttribute("aria-label", "Magic Film");
   document.querySelector("#studio .clip-studio-header")?.after(phonePanel);
   function place() {
-    const target = phone.matches && phonePanel.isConnected ? phonePanel : anchor.parentElement;
-    for (const element of [lengthLabel, directionLabel, button, cancel, statusElement]) if (element.parentElement !== target) target.append(element);
+    if (phone.matches && phonePanel.isConnected) {
+      for (const element of [lengthLabel, directionLabel, button, cancel, statusElement]) if (element.parentElement !== phonePanel) phonePanel.append(element);
+      return;
+    }
+    // Back on the dock, in the original order (before open/restore) for tabbing.
+    if (lengthLabel.parentElement !== anchor.parentElement) open.before(lengthLabel, directionLabel, button, cancel);
+    if (statusElement.parentElement !== anchor.parentElement) anchor.parentElement.append(statusElement);
   }
   phone.addEventListener?.("change", place);
   place();
