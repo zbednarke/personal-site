@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -50,12 +52,35 @@ type magicFilmCreateRequest struct {
 	ClientID      string `json:"clientId"`
 	Date          string `json:"date"`
 	TargetSeconds int    `json:"targetSeconds"`
+	Direction     string `json:"direction"`
+}
+
+// maxMagicFilmDirection caps the owner's creative direction, in characters.
+const maxMagicFilmDirection = 1000
+
+// cleanMagicFilmDirection trims the direction, strips control and invisible
+// format characters (bidi overrides, zero-width spaces) other than line breaks,
+// tabs and the zero-width joiner inside emoji, and rejects text over the cap rather than cutting
+// a sentence in half.
+func cleanMagicFilmDirection(value string) (string, error) {
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r == '\u200d' || !(unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) {
+			return r
+		}
+		return -1
+	}, strings.ToValidUTF8(strings.ReplaceAll(value, "\r\n", "\n"), ""))
+	value = strings.TrimSpace(value)
+	if utf8.RuneCountInString(value) > maxMagicFilmDirection {
+		return "", fmt.Errorf("keep the direction to %d characters or fewer", maxMagicFilmDirection)
+	}
+	return value, nil
 }
 
 type magicFilmJob struct {
 	ID              uuid.UUID       `json:"id"`
 	Date            string          `json:"date"`
 	TargetSeconds   int             `json:"targetSeconds"`
+	Direction       string          `json:"direction"`
 	Status          string          `json:"status"`
 	Message         string          `json:"message"`
 	Model           string          `json:"model"`
@@ -73,11 +98,11 @@ type magicFilmJob struct {
 	HasPoster       bool            `json:"hasPoster"`
 }
 
-const magicFilmJobColumns = `id,practice_date::text,target_seconds,status,message,model,effort,COALESCE(project,'null'::jsonb),summary,reviews,duration_ms,error,cancel_requested,created_at,started_at,finished_at,output_object IS NOT NULL,poster_object IS NOT NULL`
+const magicFilmJobColumns = `id,practice_date::text,target_seconds,direction,status,message,model,effort,COALESCE(project,'null'::jsonb),summary,reviews,duration_ms,error,cancel_requested,created_at,started_at,finished_at,output_object IS NOT NULL,poster_object IS NOT NULL`
 
 func scanMagicFilmJob(row pgx.Row) (magicFilmJob, error) {
 	var job magicFilmJob
-	err := row.Scan(&job.ID, &job.Date, &job.TargetSeconds, &job.Status, &job.Message, &job.Model, &job.Effort,
+	err := row.Scan(&job.ID, &job.Date, &job.TargetSeconds, &job.Direction, &job.Status, &job.Message, &job.Model, &job.Effort,
 		&job.Project, &job.Summary, &job.Reviews, &job.DurationMS, &job.Error, &job.CancelRequested,
 		&job.CreatedAt, &job.StartedAt, &job.FinishedAt, &job.HasVideo, &job.HasPoster)
 	if string(job.Project) == "null" {
@@ -152,6 +177,11 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusUnprocessableEntity, "choose a valid practice day")
 		return
 	}
+	direction, err := cleanMagicFilmDirection(input.Direction)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	if app.magicFilmInvoke == nil && (app.cfg.MagicFilmProject == "" || app.cfg.MagicFilmJob == "") {
 		writeError(w, http.StatusServiceUnavailable, "Magic Film cloud worker is not configured")
 		return
@@ -180,8 +210,8 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 	}
 	jobID := uuid.New()
 	model := envOr("MAGIC_FILM_MODEL", "gpt-6-astra")
-	_, err = app.db.Exec(r.Context(), `INSERT INTO magic_film_jobs(id,user_id,client_id,practice_date,target_seconds,status,message,model,effort,manifest)
-		VALUES($1,$2,$3,$4::date,$5,'queued','Queued for an on-demand cloud worker',$6,'medium',$7)`, jobID, userID, clientID, input.Date, input.TargetSeconds, model, encoded)
+	_, err = app.db.Exec(r.Context(), `INSERT INTO magic_film_jobs(id,user_id,client_id,practice_date,target_seconds,direction,status,message,model,effort,manifest)
+		VALUES($1,$2,$3,$4::date,$5,$6,'queued','Queued for an on-demand cloud worker',$7,'medium',$8)`, jobID, userID, clientID, input.Date, input.TargetSeconds, direction, model, encoded)
 	if err != nil {
 		var dbErr *pgconn.PgError
 		if errors.As(err, &dbErr) && dbErr.Code == "23505" {

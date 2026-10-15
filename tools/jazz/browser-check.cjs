@@ -176,8 +176,49 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
       await page.ctx.close();
     }
 
+    // Phone: a finished cloud Magic Film shows the direction it was made with,
+    // and "Re-make with new direction" loads it into the optional direction box
+    // so an edited direction starts a new film (fictional job, mocked API).
+    {
+      const page = await newPage("magic-direction", 390, 844, true);
+      const finished = { id: "00000000-0000-4000-8000-0000000000f1", date: today, targetSeconds: 180, direction: "Quiet and reflective, slow pacing.", status: "complete", message: "Your film is ready", model: "example", effort: "medium", project: { version: 1, date: today, title: "Example quiet film", clips: [] }, summary: "Fictional summary.", reviews: [], durationMs: 61000, cancelRequested: false, createdAt: `${today}T09:00:00Z`, hasVideo: true, hasPoster: true };
+      const posts = [];
+      await page.ctx.route("**/jazz/api/v1/studio/magic-films**", async (r) => {
+        const url = new URL(r.request().url());
+        if (url.pathname.endsWith("/media")) return r.fulfill({ status: 404, json: { error: "fixture" } });
+        if (r.request().method() === "POST") {
+          const body = r.request().postDataJSON();
+          posts.push(body);
+          return r.fulfill({ status: 202, json: { ...finished, id: "00000000-0000-4000-8000-0000000000f2", targetSeconds: body.targetSeconds, direction: body.direction, status: "starting", message: "Starting", project: null, hasVideo: false } });
+        }
+        if (url.pathname.endsWith("/magic-films")) return r.fulfill({ json: { jobs: [finished] } });
+        return r.fulfill({ json: { ...finished, id: url.pathname.split("/").pop(), status: "failed", message: "Fixture stops here", error: "fixture" } });
+      });
+      await page.goto(`${base}/jazz/`);
+      await page.tap("#jazz-menu-button");
+      await page.waitForSelector("body.jazz-nav-open .virtuoso-nav");
+      await page.tap('.virtuoso-nav [data-jazz-view="studio"]');
+      await page.waitForSelector(".finished-film-direction", { state: "attached" });
+      assert.match(await page.locator(".finished-film-direction").innerText(), /Quiet and reflective, slow pacing\./, "magic film: the finished film shows its direction");
+      assert.equal(await page.locator("#studio-magic-direction").inputValue(), "", "magic film: the direction box starts empty");
+      await page.locator(".finished-film button:text('Re-make with new direction')").tap();
+      assert.equal(await page.locator("#studio-magic-direction").inputValue(), finished.direction, "magic film: re-make loads the film's direction");
+      assert.equal(await page.locator("#studio-magic-length").inputValue(), "180", "magic film: re-make keeps the film's length");
+      await page.locator("#studio-magic-direction").fill("Brighter, focus on the opening.");
+      assert.ok(await page.locator("#studio-make-film").isVisible(), "magic film: the make button is reachable on a phone");
+      await page.locator("#studio-make-film").tap();
+      await page.waitForFunction(() => document.querySelector("#studio-magic-direction")?.disabled === false && /Fixture stops here/.test(document.querySelector("#studio-magic-status")?.textContent || ""));
+      assert.equal(posts.length, 1, "magic film: one new film was requested");
+      assert.equal(posts[0].direction, "Brighter, focus on the opening.", "magic film: the edited direction is sent");
+      assert.equal(posts[0].targetSeconds, 180);
+      await page.locator("#studio-magic-direction").scrollIntoViewIfNeeded();
+      await noSideScroll(page, "390px magic film direction");
+      await page.screenshot({ path: path.join(out, "phone-magic-film-direction.png") });
+      await page.ctx.close();
+    }
+
     assert.deepEqual(errors, [], "no runtime errors");
-    console.log(`Jazz smoke check passed: ${VIEWS.map((v) => v.view).join(", ")} and /jazz/plan/ at 390 px (drawer) and 1440 px (sidebar), no sideways scroll, film shelf note map and editor entry, service worker caches no private media or API responses, Library fixture rendered, no runtime errors. Screenshots: ${out}`);
+    console.log(`Jazz smoke check passed: ${VIEWS.map((v) => v.view).join(", ")} and /jazz/plan/ at 390 px (drawer) and 1440 px (sidebar), no sideways scroll, film shelf note map and editor entry, Magic Film direction and re-make at 390 px, service worker caches no private media or API responses, Library fixture rendered, no runtime errors. Screenshots: ${out}`);
   } catch (error) {
     console.error(error);
     if (errors.length) console.error(errors.join("\n"));

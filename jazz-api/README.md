@@ -150,6 +150,15 @@ the configured OpenAI Responses model for a strict edit plan, validates source
 boundaries, renders with FFmpeg, and stores the MP4/poster privately in GCS.
 The browser can close and later recover job status and finished films.
 
+The owner can add an optional creative direction (up to 1000 characters,
+migration 044) when starting a film. It is stored with the job, shown on the
+finished film, and given to the model as quoted owner direction that shapes
+tone, focus and pacing but not the length, source-boundary or no-added-effects
+rules, which the worker still validates. An empty direction sends the default
+prompt unchanged. "Re-make with new direction" loads a finished film's
+direction and length back into the form; making it again creates a new job and
+keeps the earlier film.
+
 Create the worker once (dry-run first), then enable image updates in deploys:
 
 ```sh

@@ -16,6 +16,14 @@
   const length = document.createElement("select"); length.id = "studio-magic-length";
   for (const minutes of [1, 2, 3, 5, 10]) length.append(new Option(`${minutes} min`, String(minutes * 60), false, minutes === 2));
   lengthLabel.append(lengthText, length);
+  // Optional creative direction for the editor; empty keeps today's behaviour.
+  const directionLabel = document.createElement("label");
+  directionLabel.className = "studio-magic-direction";
+  const directionText = document.createElement("span"); directionText.textContent = "How should this come out? (optional)";
+  const direction = document.createElement("textarea"); direction.id = "studio-magic-direction";
+  direction.maxLength = 1000; direction.rows = 2;
+  direction.placeholder = "e.g. quiet and reflective, focus on the second half, slow pacing";
+  directionLabel.append(directionText, direction);
   const cancel = document.createElement("button");
   cancel.type = "button"; cancel.id = "studio-cancel-film"; cancel.textContent = "Cancel Magic Film"; cancel.hidden = true;
   const open = document.createElement("button");
@@ -25,8 +33,25 @@
   restore.title = "Restore the timeline saved before opening a Magic Film draft";
   const statusElement = document.createElement("span");
   statusElement.id = "studio-magic-status"; statusElement.setAttribute("role", "status"); statusElement.hidden = true;
-  for (const element of [lengthLabel, button, cancel, open, restore]) anchor.before(element);
+  for (const element of [lengthLabel, directionLabel, button, cancel, open, restore]) anchor.before(element);
   anchor.parentElement.append(statusElement);
+  // Phones hide the output dock, so the film controls move to a panel under
+  // the Clip Studio header there (the timeline's open/restore stay behind).
+  const phone = matchMedia("(max-width: 760px)");
+  const phonePanel = document.createElement("section");
+  phonePanel.className = "studio-magic-phone"; phonePanel.setAttribute("aria-label", "Magic Film");
+  document.querySelector("#studio .clip-studio-header")?.after(phonePanel);
+  function place() {
+    if (phone.matches && phonePanel.isConnected) {
+      for (const element of [lengthLabel, directionLabel, button, cancel, statusElement]) if (element.parentElement !== phonePanel) phonePanel.append(element);
+      return;
+    }
+    // Back on the dock, in the original order (before open/restore) for tabbing.
+    if (lengthLabel.parentElement !== anchor.parentElement) open.before(lengthLabel, directionLabel, button, cancel);
+    if (statusElement.parentElement !== anchor.parentElement) anchor.parentElement.append(statusElement);
+  }
+  phone.addEventListener?.("change", place);
+  place();
 
   function status(message) {
     statusElement.textContent = message ? `Magic Film · ${message}` : "";
@@ -45,7 +70,7 @@
   function render(job) {
     active = job || null;
     const running = job && !terminal.has(job.status);
-    button.disabled = Boolean(running); length.disabled = Boolean(running);
+    button.disabled = Boolean(running); length.disabled = Boolean(running); direction.disabled = Boolean(running);
     cancel.hidden = !running; open.hidden = job?.status !== "complete" || !job.project;
     if (!job) status("");
     else if (job.status === "failed") status(`${job.message} · ${job.error || "Try again."}`);
@@ -69,7 +94,7 @@
     button.disabled = true; status("Submitting to the on-demand cloud worker…");
     try {
       const clientId = crypto.randomUUID();
-      render(await request("", { method: "POST", body: JSON.stringify({ clientId, date: selectedDate(), targetSeconds: Number(length.value) }) }));
+      render(await request("", { method: "POST", body: JSON.stringify({ clientId, date: selectedDate(), targetSeconds: Number(length.value), direction: direction.value.trim() }) }));
       timer = setTimeout(refresh, 1500);
     } catch (error) { status(error.message); button.disabled = false; }
   });
@@ -88,6 +113,19 @@
     try { globalThis.JazzClipStudioMagic.restorePrevious(); status("Previous timeline restored."); }
     catch (error) { status(error.message); }
   });
+  // "Re-make with new direction" on a finished film: load its direction and
+  // length here to edit. Making the film again starts a new job, so the
+  // earlier film stays on the shelf.
+  globalThis.JazzMagicFilmComposer = {
+    remake(job) {
+      if (active && !terminal.has(active.status)) { status("Wait for the running film to finish, or cancel it first."); return; }
+      direction.value = String(job?.direction || "");
+      if ([...length.options].some(option => option.value === String(job?.targetSeconds))) length.value = String(job.targetSeconds);
+      direction.scrollIntoView({ block: "center", behavior: "smooth" });
+      direction.focus();
+      status("Edit the direction, then make the film again. The earlier film stays.");
+    },
+  };
   document.addEventListener("jazz:studio-date-change", () => { active = null; refresh(); });
   document.addEventListener("jazz:view-change", event => { if (event.detail?.view === "studio") refresh(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
