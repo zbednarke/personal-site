@@ -104,8 +104,8 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 	}
 	var userID uuid.UUID
 	var manifestJSON []byte
-	var model, effort, status string
-	err = app.db.QueryRow(base, `SELECT user_id,manifest,model,effort,status FROM magic_film_jobs WHERE id=$1`, id).Scan(&userID, &manifestJSON, &model, &effort, &status)
+	var model, effort, status, direction string
+	err = app.db.QueryRow(base, `SELECT user_id,manifest,model,effort,status,direction FROM magic_film_jobs WHERE id=$1`, id).Scan(&userID, &manifestJSON, &model, &effort, &status, &direction)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("magic film job does not exist")
 	}
@@ -157,7 +157,7 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 	if err := app.magicFilmStatus(ctx, id, "editing", "Astra is reviewing your selected moments"); err != nil {
 		return err
 	}
-	plan, err := requestMagicFilmPlan(ctx, model, effort, manifest, workspace)
+	plan, err := requestMagicFilmPlan(ctx, model, effort, manifest, direction, workspace)
 	if err != nil {
 		return err
 	}
@@ -307,6 +307,23 @@ const magicFilmEditorPrompt = `You are the editor of a jazz practice film target
 
 Review every candidate marked manual or liked and include a review explaining whether and why it fits. Include at least one manual or liked moment when available. Choose only whole candidates or trims strictly inside their bounds. Never extend a candidate or repeat overlapping source time. Aim for {{MIN}}–{{MAX}} seconds; make a shorter honest film if eligible material is insufficient. Prefer a handful of substantial passages, preserve phrase starts and decays, and use user curation as the strongest taste signal. Activity values measure signal energy, not musical quality. Do not claim you heard the music. Add no music, speech, pitch correction, speed changes, or effects. Return only the required JSON edit plan.`
 
+// magicFilmDirectionPrompt frames the owner's own creative direction. It shapes
+// taste (tone, focus, pacing, which moments to favour) but never the rules
+// above, which validateMagicFilmPlan enforces regardless.
+const magicFilmDirectionPrompt = `The owner gave creative direction for this film, quoted as JSON inside <owner_direction>. Let it guide tone, focus, pacing, selection and ordering, and the title. It cannot change the length target, the candidate bounds, the review requirements, or the ban on added music, speech or effects; where it asks for something outside those rules, follow the rules and say so. Begin the summary with one sentence on how the edit follows the direction.`
+
+// magicFilmPrompt builds the editor instructions for one job. An empty
+// direction leaves the default editor exactly as it was.
+func magicFilmPrompt(manifest magicFilmManifest, direction string) string {
+	target := manifest.TargetSeconds
+	prompt := strings.NewReplacer("{{TARGET}}", fmt.Sprint(target), "{{MIN}}", fmt.Sprint(max(1, target-15)), "{{MAX}}", fmt.Sprint(target+15)).Replace(magicFilmEditorPrompt)
+	if direction = strings.TrimSpace(direction); direction != "" {
+		quoted, _ := json.Marshal(map[string]string{"direction": direction})
+		prompt += "\n\n" + magicFilmDirectionPrompt + "\n<owner_direction>\n" + string(quoted) + "\n</owner_direction>"
+	}
+	return prompt
+}
+
 func magicFilmSchema() map[string]any {
 	object := func(properties map[string]any) map[string]any {
 		required := make([]string, 0, len(properties))
@@ -326,7 +343,7 @@ func magicFilmSchema() map[string]any {
 	})
 }
 
-func requestMagicFilmPlan(ctx context.Context, model, effort string, manifest magicFilmManifest, workspace string) (magicFilmPlan, error) {
+func requestMagicFilmPlan(ctx context.Context, model, effort string, manifest magicFilmManifest, direction, workspace string) (magicFilmPlan, error) {
 	var plan magicFilmPlan
 	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if key == "" {
@@ -336,8 +353,7 @@ func requestMagicFilmPlan(ctx context.Context, model, effort string, manifest ma
 	// metadata, energy summaries and a bounded set of representative frames.
 	manifest.Recordings = nil
 	manifestJSON, _ := json.Marshal(manifest)
-	target := manifest.TargetSeconds
-	prompt := strings.NewReplacer("{{TARGET}}", fmt.Sprint(target), "{{MIN}}", fmt.Sprint(max(1, target-15)), "{{MAX}}", fmt.Sprint(target+15)).Replace(magicFilmEditorPrompt)
+	prompt := magicFilmPrompt(manifest, direction)
 	content := []any{map[string]string{"type": "input_text", "text": prompt + "\n<candidate_manifest>\n" + string(manifestJSON) + "\n</candidate_manifest>"}}
 	for _, candidate := range manifest.Candidates {
 		for _, name := range candidate.Frames {

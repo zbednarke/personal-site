@@ -6,7 +6,7 @@
   shelf.className = "finished-films"; shelf.setAttribute("aria-label", "Finished films"); shelf.hidden = true;
   header.after(shelf);
   const style = document.createElement("style");
-  style.textContent = `.finished-films{margin:12px 0 30px;border:1px solid #515b46;background:#1b2018;border-radius:8px;overflow:hidden}.finished-films[hidden]{display:none}.finished-film-copy{padding:22px 26px}.finished-film-eyebrow{color:#c2d7a9;font-size:10px;letter-spacing:.18em;text-transform:uppercase;margin:0 0 10px}.finished-film-title{font:400 clamp(22px,3vw,34px)/1.2 Georgia,serif;color:#f0f3e9;margin:0 0 9px}.finished-film-description{color:#b9c3b0;font-size:13px;line-height:1.6;margin:0;max-width:65ch}.finished-film-player{display:block;width:100%;max-height:70vh;aspect-ratio:16/9;background:#0c0e0b;object-fit:contain}.finished-film-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:16px 26px;color:#bac7ad;font-size:12px}.finished-film-footer a{display:inline-block;color:#e4f0d8;border:1px solid #667455;border-radius:4px;padding:9px 14px;text-decoration:none}.finished-film+.finished-film{border-top:1px solid #515b46}@media(max-width:600px){.finished-film-copy{padding:18px}.finished-film-footer{padding:14px 18px}.finished-film-description{font-size:12px}}`;
+  style.textContent = `.finished-films{margin:12px 0 30px;border:1px solid #515b46;background:#1b2018;border-radius:8px;overflow:hidden}.finished-films[hidden]{display:none}.finished-film-copy{padding:22px 26px}.finished-film-eyebrow{color:#c2d7a9;font-size:10px;letter-spacing:.18em;text-transform:uppercase;margin:0 0 10px}.finished-film-title{font:400 clamp(22px,3vw,34px)/1.2 Georgia,serif;color:#f0f3e9;margin:0 0 9px}.finished-film-description{color:#b9c3b0;font-size:13px;line-height:1.6;margin:0;max-width:65ch}.finished-film-player{display:block;width:100%;max-height:70vh;aspect-ratio:16/9;background:#0c0e0b;object-fit:contain}.finished-film-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:16px 26px;color:#bac7ad;font-size:12px}.finished-film-footer a{display:inline-block;color:#e4f0d8;border:1px solid #667455;border-radius:4px;padding:9px 14px;text-decoration:none}.finished-film+.finished-film{border-top:1px solid #515b46}.finished-film-direction{margin:12px 0 0;max-width:65ch;color:#d6dfcb;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.finished-film-direction b{color:#c2d7a9;font-weight:400;font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin-right:8px}.finished-film-footer button{color:#e4f0d8;background:transparent;border:1px solid #667455;border-radius:4px;padding:9px 14px;font:inherit;cursor:pointer}@media(max-width:600px){.finished-film-copy{padding:18px}.finished-film-footer{padding:14px 18px}.finished-film-description{font-size:12px}}`;
   document.head.append(style);
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text) node.textContent = text; return node; };
   let films = [];
@@ -18,7 +18,7 @@
   }
   function cloudFilm(job) {
     const base = `./api/v1/studio/magic-films/${encodeURIComponent(job.id)}/media`;
-    return { id: job.id, date: job.date, title: job.project?.title || "Magic Film", description: job.summary || "A finished practice-room edit.", duration: durationLabel(job.durationMs), video: `${base}?asset=video`, poster: `${base}?asset=poster`, download: `${base}?asset=video&download=1`, cloud: true };
+    return { id: job.id, date: job.date, title: job.project?.title || "Magic Film", description: job.summary || "A finished practice-room edit.", duration: durationLabel(job.durationMs), video: `${base}?asset=video`, poster: `${base}?asset=poster`, download: `${base}?asset=video&download=1`, cloud: true, direction: job.direction || "", targetSeconds: job.targetSeconds };
   }
   function renderDay() {
     const date = document.querySelector("#studio-date")?.value;
@@ -30,6 +30,9 @@
       const card = el("article", "finished-film");
       const copy = el("div", "finished-film-copy");
       copy.append(el("p", "finished-film-eyebrow", "Finished films · The daily cut"), el("h2", "finished-film-title", film.title), el("p", "finished-film-description", film.description));
+      if (film.cloud && film.direction) {
+        const asked = el("p", "finished-film-direction"); asked.append(el("b", "", "You asked"), document.createTextNode(film.direction)); copy.append(asked);
+      }
       const player = el("video", "finished-film-player");
       player.controls = true; player.playsInline = true; player.preload = "none"; player.src = film.video; player.poster = film.poster; player.setAttribute("aria-label", film.title);
       player.addEventListener("play", () => shelf.querySelectorAll("video").forEach(other => { if (other !== player) other.pause(); }));
@@ -42,6 +45,11 @@
       // film service; cloud Magic Films have no saved edit to open.
       if (!film.cloud && globalThis.JazzFilmEditor) {
         const edit = el("button", "", "Edit this film"); edit.type = "button"; edit.onclick = () => { player.pause(); globalThis.JazzFilmEditor.open(film); }; footer.append(edit);
+      }
+      if (film.cloud && globalThis.JazzMagicFilmComposer) {
+        const remake = el("button", "", "Re-make with new direction"); remake.type = "button";
+        remake.onclick = () => { player.pause(); globalThis.JazzMagicFilmComposer.remake(film); };
+        footer.append(remake);
       }
       footer.append(el("span", "", `${film.duration} · Finished and ready to watch`), download);
       card.append(copy, player, footer); shelf.append(card);
