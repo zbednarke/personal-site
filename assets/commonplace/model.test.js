@@ -132,3 +132,12 @@ test("wall-clock input converts through the Moment's zone, across DST", () => {
   assert.equal(M.isoToLocalInput("2026-03-15T06:41:00Z", "America/Los_Angeles"), "2026-03-14T23:41");
   assert.equal(M.zonedToISO("bad", "UTC"), "");
 });
+
+test("a screenshot-only capture skips the Details sheet (#110)", () => {
+  const png = { type: "image/png", name: "shot.png" };
+  assert.equal(M.detailsAfterCapture({ text: "", url: "" }, [png, { type: "", name: "IMG_1.JPG" }]), false);
+  assert.equal(M.detailsAfterCapture({ text: "said at dinner", url: "" }, [png]), true);
+  assert.equal(M.detailsAfterCapture({ text: "", url: "https://example.com" }, [png]), true);
+  assert.equal(M.detailsAfterCapture({ text: "", url: "" }, [png, { type: "audio/mp4", name: "memo.m4a" }]), true);
+  assert.equal(M.detailsAfterCapture({ text: "words", url: "" }, []), true);
+});

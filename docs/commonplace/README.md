@@ -38,6 +38,8 @@ Keyboard: `/` or `⌘K` search, `M` margin, `T` or `1`–`4` switch views, `I` I
 **Capture.** Paste or drop a screenshot (it is kept instantly), pick files,
 or paste words or a link. Nothing else is required; Details (title, kind, who
 with which role, when and until in which time zone, where, why) can come later.
+A capture of only screenshots lands on the Moment without opening Details;
+words, a link or audio still open it.
 
 **The margin.** Folded by default: small ticks show where there is pencil.
 `M` unfolds it. Notes sit beside the line or the box on the screenshot they
@@ -92,7 +94,7 @@ that needs a CORS preflight: JSON, raw media for artifact uploads, or
 | `GET /moments/{id}` | The full Moment: artifacts, lines, annotations, threads with knots, doorways |
 | `PATCH /moments/{id}` | `{expectedRevision, kind?, title?, why?, occurredAt?, endedAt?, timezone?, source?, sourceDetail?, people?: [{id or name, role}]}`; 409 with the current Moment on a stale revision |
 | `DELETE /moments/{id}` | Deletes the Moment and its stored files |
-| `POST /moments/{id}/artifacts` | Raw image or audio body (validated like inspiration images); headers `X-File-Name`, `X-Image-Width/Height` (WebP), `X-Duration-Ms` |
+| `POST /moments/{id}/artifacts` | Raw image or audio body (validated like inspiration images); headers `X-File-Name`, `X-Image-Width/Height` (WebP), `X-Duration-Ms`; idempotent per Moment on the file's SHA-256 (201, then 200 with `duplicate: true` and the kept artifact) |
 | `DELETE /artifacts/{id}` | Removes one artifact |
 | `GET /media/{artifactId}` | 302 to a 10-minute signed URL in the private bucket |
 | `POST /moments/{id}/lines`, `PATCH /lines/{id}`, `DELETE /lines/{id}` | Transcript lines (PATCH needs `expectedRevision`) |

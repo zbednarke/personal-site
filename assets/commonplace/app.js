@@ -367,7 +367,10 @@
       $("#capSave").disabled = true;
       status.className = "status";
       status.textContent = "Keeping it…";
-      if (!pending || (extra.captureId && pending.id !== extra.captureId)) pending = { id: extra.captureId || M.newId(), momentId: "" };
+      // Decided once per capture, so a retry with the text box cleared still
+      // opens Details for a Moment that was kept with words.
+      if (!pending || (extra.captureId && pending.id !== extra.captureId)) pending = { id: extra.captureId || M.newId(), momentId: "", askDetails: M.detailsAfterCapture(parsed, files) };
+      const askDetails = pending.askDetails;
       try {
         if (!pending.momentId) {
           const body = { clientCaptureId: pending.id, text: parsed.text, url: parsed.url, timezone: BROWSER_TZ, ...extra.fields };
@@ -383,10 +386,11 @@
         }
         pending = null;
         text.value = "";
-        const target = `#m/${id}?details=1`;
+        const target = askDetails ? `#m/${id}?details=1` : `#m/${id}`;
         // A shared link must not be captured again by Back or a reload.
         if (extra.replace) location.replace(target);
         else location.hash = target;
+        if (!askDetails) toast("Kept. Add details any time.");
       } catch (err) {
         status.className = "status err";
         status.textContent = err.message;
