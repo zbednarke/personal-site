@@ -398,6 +398,17 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
+  /**
+   * Whether the Details sheet should open after a capture. A capture of only
+   * screenshots needs nothing else (#110), so it lands on the Moment quietly;
+   * anything with words, a link or audio still asks who, when and why.
+   */
+  function detailsAfterCapture(parsed, files) {
+    const list = [...(files || [])];
+    if ((parsed && (parsed.text || parsed.url)) || !list.length) return true;
+    return !list.every((f) => /^image\//.test(f.type || "") || /\.(png|jpe?g|webp|gif)$/i.test(f.name || ""));
+  }
+
   function excerpt(s, n = 160) {
     s = String(s || "").replace(/\s+/g, " ").trim();
     if (s.length <= n) return s;
@@ -409,6 +420,6 @@
     KINDS, KIND_LABEL, SOURCES, SOURCE_LABEL, MONTHS, WEEKDAYS, ALWAYS_DARK, PHASE_NOTE,
     localParts, zonedToISO, isoToLocalInput, formatHour, hourText, formatDate, duration, relative, lightFor, dialSVG, wallLabel, momentInstant,
     initials, hue, withLabel, isSpecial, parseCapture, parseShareHash, route, layoutNotes, visibleNotes, pencilCount,
-    threadGeometry, waveY, splitSnippet, metaBits, batchFiles, pickExportFile, suggestKind, newId, captureIdFor, excerpt,
+    threadGeometry, waveY, splitSnippet, metaBits, batchFiles, pickExportFile, suggestKind, newId, captureIdFor, detailsAfterCapture, excerpt,
   };
 });

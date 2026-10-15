@@ -180,6 +180,20 @@ func TestCommonplaceCaptureEditAndMargin(t *testing.T) {
 	if h.objects.count("commonplace/") != 1 {
 		t.Fatal("object not stored under commonplace/")
 	}
+	// The same bytes again (a retry whose response was lost) return the kept
+	// artifact instead of a duplicate; different bytes are a new artifact.
+	w = h.raw("POST", base+"/moments/"+id+"/artifacts", png, map[string]string{"Content-Type": "image/png", "X-File-Name": "again.png"})
+	var repeat struct {
+		Artifact  cpArtifact
+		Duplicate bool
+	}
+	json.Unmarshal(w.Body.Bytes(), &repeat)
+	if w.Code != 200 || !repeat.Duplicate || repeat.Artifact.ID != up.Artifact.ID || h.objects.count("commonplace/") != 1 {
+		t.Fatal("repeated upload was not idempotent", w.Code, w.Body.String())
+	}
+	if w := h.raw("POST", base+"/moments/"+uuid.NewString()+"/artifacts", png, map[string]string{"Content-Type": "image/png"}); w.Code != 404 {
+		t.Fatal("upload to a missing Moment", w.Code)
+	}
 	if w := h.raw("POST", base+"/moments/"+id+"/artifacts", []byte("not an image"), map[string]string{"Content-Type": "image/png"}); w.Code != 400 {
 		t.Fatal("bad image accepted", w.Code)
 	}

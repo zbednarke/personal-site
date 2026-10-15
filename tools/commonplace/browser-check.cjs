@@ -194,6 +194,17 @@ function discordFixtureDir() {
     await page.unroute("**/commonplace/api/v1/commonplace/moments/*/artifacts");
     await page.keyboard.press("Escape");
 
+    // A screenshot alone is kept without the Details sheet (#110).
+    await page.goto(base + "/commonplace/");
+    await page.waitForSelector("#capText");
+    await page.setInputFiles("#capFiles", { name: "fixture-only.png", mimeType: "image/png", buffer: syntheticShot(40, 80, 7) });
+    await page.waitForFunction(() => /^#m\/[^?]+$/.test(location.hash));
+    await page.waitForFunction(() => /add details any time/i.test(document.querySelector("#toastMsg")?.textContent || ""));
+    await page.waitForTimeout(400);
+    assert.equal(await page.locator(".sheet").count(), 0, "a screenshot-only capture must not open Details");
+    const quiet = await call("GET", `/moments/${(await page.evaluate(() => location.hash)).slice(3)}`);
+    assert.equal(quiet.artifacts.filter((a) => a.kind === "image").length, 1);
+
     // The bundle Moment: the hour lights the page, the label, the screenshots.
     await page.goto(`${base}/commonplace/#m/${bundleId}`);
     // Wait for this Moment, not the one still on screen from the capture above.
@@ -334,7 +345,7 @@ function discordFixtureDir() {
     errors.splice(0, errors.length, ...errors.filter((e) => !/401/.test(e)));
 
     assert.deepEqual(errors, []);
-    console.log("Commonplace browser checks passed: capture (share route once, retry after a failed upload), Moment view (light, label, views), margin keep/erase/undo, owner note, thread and doorways, search, Discord import preview and confirm, Idea space (level, naming, dive, phone opens on newest), 390/1440 px, signed-out banner, no runtime errors.");
+    console.log("Commonplace browser checks passed: capture (share route once, retry after a failed upload, screenshot-only without Details), Moment view (light, label, views), margin keep/erase/undo, owner note, thread and doorways, search, Discord import preview and confirm, Idea space (level, naming, dive, phone opens on newest), 390/1440 px, signed-out banner, no runtime errors.");
   } finally {
     if (browser) await browser.close();
     if (glBrowser) await glBrowser.close();

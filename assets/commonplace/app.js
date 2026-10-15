@@ -368,6 +368,7 @@
       status.className = "status";
       status.textContent = "Keeping it…";
       if (!pending || (extra.captureId && pending.id !== extra.captureId)) pending = { id: extra.captureId || M.newId(), momentId: "" };
+      const askDetails = M.detailsAfterCapture(parsed, files);
       try {
         if (!pending.momentId) {
           const body = { clientCaptureId: pending.id, text: parsed.text, url: parsed.url, timezone: BROWSER_TZ, ...extra.fields };
@@ -383,10 +384,11 @@
         }
         pending = null;
         text.value = "";
-        const target = `#m/${id}?details=1`;
+        const target = askDetails ? `#m/${id}?details=1` : `#m/${id}`;
         // A shared link must not be captured again by Back or a reload.
         if (extra.replace) location.replace(target);
         else location.hash = target;
+        if (!askDetails) toast("Kept. Add details any time.");
       } catch (err) {
         status.className = "status err";
         status.textContent = err.message;
