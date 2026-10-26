@@ -59,6 +59,21 @@ jobs:
           if report.get('caddy_integrity') and not report['caddy_integrity']['matches_managed_build']:
               raise SystemExit('The proxy binary changed outside the verified patch workflow; review vendor updates before trusting the old scan.')
           PY
+      - name: Inspect shared-host listeners, SSH policy and package metadata without secrets
+        run: |
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'sudo python3 - --host-audit' < deploy/inventory-site-runtime.py > host-audit-transport.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[s.split('=',1)[1] for s in Path('host-audit-transport.txt').read_text().splitlines() if s.startswith('HOST_SECURITY_INVENTORY=')]
+          if len(rows)!=1: raise SystemExit('No unique host audit receipt')
+          report=json.loads(rows[0])
+          Path('host-security-inventory.json').write_text(json.dumps(report,indent=2))
+          for section,value in report.items():
+              msg=json.dumps(value,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+              print('::notice title=HOST_AUDIT_'+section+'::'+msg)
+          PY
       - name: Inspect the one-time reboot without requesting another
         if: github.event_name != 'schedule'
         run: |
@@ -108,4 +123,42 @@ jobs:
           r=json.loads(Path('verified-reboot.json').read_text())
           msg=json.dumps(r,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
           print('::notice title=SITE_POST_REBOOT_SECURITY_RECEIPT::'+msg)
+          PY
+  cloud-audit:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test read-only command boundaries and redaction
+        run: python3 -m unittest discover -s tools/deploy -p test_runtime_inventory.py
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Read cloud configuration with existing permissions; never grant missing access
+        env:
+          CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
+        run: |
+          python3 deploy/inventory-site-runtime.py --cloud-audit > cloud-audit-transport.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[s.split('=',1)[1] for s in Path('cloud-audit-transport.txt').read_text().splitlines() if s.startswith('CLOUD_SECURITY_INVENTORY=')]
+          if len(rows)!=1: raise SystemExit('No unique cloud audit receipt')
+          report=json.loads(rows[0])
+          Path('cloud-security-inventory.json').write_text(json.dumps(report,indent=2))
+          gaps=[]
+          for project,sections in report['projects'].items():
+              for section,value in sections.items():
+                  msg=json.dumps(value,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+                  print('::notice title=CLOUD_AUDIT_'+project+'_'+section+'::'+msg)
+                  if value['status']!='observed': gaps.append(project+'/'+section+': '+value['status'])
+          summary={'observed_sections':sum(v['status']=='observed' for p in report['projects'].values() for v in p.values()),'coverage_gaps':gaps}
+          print('::notice title=CLOUD_AUDIT_COVERAGE::'+json.dumps(summary).replace('%','%25'))
+          if gaps: print('::warning::Cloud audit has explicit coverage gaps; a green collection job is not an all-clear.')
           PY
