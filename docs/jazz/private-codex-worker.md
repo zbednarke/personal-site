@@ -10,8 +10,9 @@ repository's CI to run subscription sessions.
 - VM/network/service account: `jazz-film-private`, project `parabolio-prod`, zone
   `us-central1-a`. The network permits SSH only through IAP. Its external address
   supplies outbound internet access; no public web ports are opened.
-- Debian 13, e2-medium, 40 GB persistent disk. The VM, disk and storage have normal
-  GCP costs even though model work uses subscription limits.
+- Debian 13, e2-medium, 40 GB persistent disk. With on-demand power control,
+  CPU/RAM are billed while running; the disk and stored media remain billable
+  while stopped. Stopping preserves the subscription login.
 - Official `@openai/codex` version **0.164.0** is pinned. Update deliberately and
   rerun the structured-output and login tests when upgrading.
 - `magic-film` runs the Go service; a separate `magic-codex` OS user runs Codex.
@@ -59,6 +60,89 @@ Cloud Run Job. Normal releases preserve that environment setting. The private
 worker binary is upgraded explicitly with the installer, then restarted; CI has
 no login file and no permission added here to access it. The legacy Cloud Run
 job can remain available for historical operations, but is never a fallback.
+
+## On-demand VM lifecycle
+
+Power control is off by default until explicitly configured. The API immediately
+starts `jazz-film-private` after persisting a Codex film request. An authenticated
+Cloud Scheduler request every minute reconciles the database queue, so failed
+starts and a film arriving during guest shutdown are retried without depending
+on an open browser. `STOPPING` produces a retryable response; a later check
+starts the VM once it is `TERMINATED`.
+
+The worker requests guest poweroff after **five minutes without useful work**.
+It checks the queue again and calls a root-owned, argument-free shutdown helper
+only between jobs. Active editing/rendering, Codex processes, remote operator
+sessions and unfinished bootstrap prevent shutdown. Failed queue or host
+inspection defers shutdown. After an accepted poweroff it claims no more jobs.
+Bootstrap is versioned on disk, so ordinary starts do not reinstall packages or
+replace credentials.
+
+Quota pauses can shut down while awaiting their next attempt; Scheduler wakes
+the VM when a `waiting_usage` retry is due. `sign_in_required` alone does not
+wake it repeatedly. To reauthenticate, start the VM manually and keep IAP SSH
+open through device login. Operator sessions deliberately keep it running;
+close them to allow idle shutdown.
+
+Roll out in this order from a trusted administrator workspace:
+
+```sh
+# Deploy this API release normally, leaving power control disabled initially.
+# Enable cloudscheduler.googleapis.com beforehand if not already enabled.
+python deploy/configure-private-film-power.py          # inspect read-only plan
+python deploy/configure-private-film-power.py --apply  # IAM, timer, API settings
+# Build/test and install the matching worker. Installer verifies the deployed
+# capability, enabled API flag and enabled Scheduler before enabling idle stop.
+(cd jazz-api && go test ./... && go build -trimpath -o /tmp/private-film-jazz-api .)
+python deploy/install-private-film-worker.py --binary /tmp/private-film-jazz-api
+gcloud compute ssh jazz-film-private --project=parabolio-prod --zone=us-central1-a \
+  --tunnel-through-iap --command='sudo systemctl enable --now magic-film-worker'
+```
+
+The configuration script preserves unrelated environment variables and updates
+only this VM's startup-script metadata. It never switches providers or edits old
+API-backed jobs. If setup fails, leave the old worker running and correct the
+control plane before installing an idle-stopping worker. Installation stops the
+worker; upgrade between films to avoid interrupting a render. Persisted job,
+plan and checkpoint recovery remain available after a service restart.
+
+| Identity | New grant | Scope |
+| --- | --- | --- |
+| Existing Jazz API runtime service account | Custom `jazzFilmVmStarter`: `compute.instances.get`, `compute.instances.start` | Only `jazz-film-private` |
+| `jazz-film-wake@parabolio-prod.iam.gserviceaccount.com` | `roles/run.invoker` | Only `jazz-api` |
+| Private worker runtime service account | No new Compute permissions | Restricted local guest-shutdown helper |
+
+The reconciler verifies Google's OIDC signature, audience, issuer, verified email
+and exact Scheduler account email. It does not accept the website gateway
+secret. Scheduler uses the raw Cloud Run URL as its OIDC audience. The API gets
+no permission to delete or stop the VM. CI gets no worker login or new IAM grant.
+
+One-time setup needs an administrator able to create the custom role and
+Scheduler account/job; change this VM's IAM/startup metadata and the API's
+configuration/IAM; and act as the Scheduler and API runtime service accounts.
+Normal worker operators need Compute read/start on this VM, IAP SSH, OS Admin
+Login if enabled, actAs on its attached runtime account, and read access to API
+configuration/Scheduler for installation. Resolving a Secret Manager reference
+also needs access to that specific secret. These setup privileges should not be
+granted to the worker runtime or retained by a routine operator. A project
+Owner/Editor grant is unnecessary; the script prints each exact mutation.
+
+Verify that a film request wakes a stopped VM and completes. Close operator SSH
+and confirm this reports `TERMINATED` after the idle interval plus shutdown time:
+
+```sh
+gcloud compute instances describe jazz-film-private --project=parabolio-prod \
+  --zone=us-central1-a --format='value(status)'
+```
+
+Test another film after that stop and verify the disk and ChatGPT login survived.
+Unit tests alone do not establish that production power management is active.
+
+To disable automation, first set `MAGIC_FILM_VM_POWER_CONTROL=0` in the worker's
+root-owned environment and restart/keep the VM running, then disable the API
+flag and pause `jazz-film-wake`. Follow that order before rolling back to an API
+release without the wake endpoint. Keeping worker idle stop enabled while
+disabling its wake path can strand queued films.
 
 ## Sign in and preserve the session
 

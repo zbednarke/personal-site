@@ -197,6 +197,9 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if existing, err := scanMagicFilmJob(app.db.QueryRow(r.Context(), `SELECT `+magicFilmJobColumns+` FROM magic_film_jobs WHERE user_id=$1 AND client_id=$2`, userID, clientID)); err == nil {
+		if existing.Provider == "codex" && existing.Status != "complete" && existing.Status != "failed" && existing.Status != "cancelled" {
+			app.requestPrivateFilmWake(r.Context())
+		}
 		writeJSON(w, http.StatusOK, existing)
 		return
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -234,6 +237,8 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 	ref := "private-codex-worker"
 	if provider == "api" {
 		ref, err = app.invokeMagicFilm(r.Context(), jobID)
+	} else {
+		app.requestPrivateFilmWake(r.Context())
 	}
 	if err != nil {
 		_, _ = app.db.Exec(r.Context(), `UPDATE magic_film_jobs SET status='failed',message='Cloud worker could not start',error=$2,finished_at=now(),updated_at=now() WHERE id=$1`, jobID, clean(err.Error(), 4000))
