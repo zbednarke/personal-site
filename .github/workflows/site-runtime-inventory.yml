@@ -222,7 +222,7 @@ jobs:
         env:
           AUDIT_IMAGE: ${{ matrix.image }}
         run: python3 deploy/inventory-site-runtime.py --scan-image "$AUDIT_IMAGE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: production-image-${{ strategy.job-index }}
           path: production-image-scan/sanitized.json

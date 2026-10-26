@@ -109,22 +109,22 @@ jobs:
         env:
           JAZZ_SCREENSHOT_DIR: docs/jazz/screenshots/smoke
         run: node tools/jazz/browser-check.cjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: trumpet-visual-verification
           path: docs/trumpets/screenshots/*.png
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: commonplace-visual-verification
           path: docs/commonplace/screenshots/*.png
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: workbench-visual-verification
           path: docs/workbench/screenshots/*.png
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: jazz-smoke-verification
