@@ -698,3 +698,76 @@ func TestWorkbenchAddTuneRechecksOnApproval(t *testing.T) {
 func (app *application) userIDForSubject(ctx context.Context, subject string) (uuid.UUID, error) {
 	return app.userID(context.WithValue(ctx, userSubjectKey, subject))
 }
+
+func TestWorkbenchStreamEndsBeforeTheRequestTimeoutAndResumes(t *testing.T) {
+	h := newWBHarness(t, nil)
+	h.app.wb.streamLifetime = 1500 * time.Millisecond
+	thread := h.newThread()
+	id := uuid.MustParse(thread)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := h.app.wbEmit(ctx, id, "test.event", map[string]any{"n": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	frames, err := h.subscribe(sctx, thread, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The server ends the response itself after its lifetime, having sent
+	// every event, rather than being cut off by Cloud Run's request timeout.
+	var got []int64
+	deadline := time.After(10 * time.Second)
+read:
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				break read
+			}
+			got = append(got, f.ID)
+		case <-deadline:
+			t.Fatalf("stream did not end on its own; got %v", got)
+		}
+	}
+	if fmt.Sprint(got) != "[1 2 3]" {
+		t.Fatalf("all events before the stream ended: %v", got)
+	}
+	// Events written while the browser is reconnecting are not lost: resuming
+	// from the last id it saw delivers exactly the newer ones.
+	if _, err := h.app.wbEmit(ctx, id, "test.event", map[string]any{"n": 3}); err != nil {
+		t.Fatal(err)
+	}
+	h.app.wb.streamLifetime = time.Hour
+	frames, err = h.subscribe(sctx, thread, got[len(got)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next := collect(t, frames, "test.event", 5*time.Second); len(next) != 1 || next[0].ID != 4 {
+		t.Fatalf("resume after a lifetime end: %v", next)
+	}
+}
+
+func TestWorkbenchDrainEndsOpenStreams(t *testing.T) {
+	h := newWBHarness(t, nil)
+	thread := h.newThread()
+	sctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frames, err := h.subscribe(sctx, thread, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	h.app.wbCloseStreams()
+	h.app.wbCloseStreams() // safe to call twice
+	select {
+	case _, ok := <-frames:
+		if ok {
+			t.Fatal("no events were written, so the stream should just end")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("open stream kept running after the drain")
+	}
+}

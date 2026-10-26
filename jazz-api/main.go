@@ -358,6 +358,9 @@ func main() {
 			// Counter flushes run during and right after the drain, inside
 			// 8 s, leaving the shutdown below within Cloud Run's 10 s.
 			app.drainAndFlush(func() { app.wbDrain(wbCancelRuns, 7*time.Second) }, 8*time.Second)
+			// Runs are done or cancelled, so their events are in the log: end
+			// the streams cleanly so Shutdown is not left waiting on them.
+			app.wbCloseStreams()
 			shutdown, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			if err := server.Shutdown(shutdown); err != nil {

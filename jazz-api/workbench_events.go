@@ -188,6 +188,11 @@ func wbResumeFrom(r *http.Request) (int64, error) {
 	return n, nil
 }
 
+// wbCloseStreams ends every open event stream on this instance (once).
+func (app *application) wbCloseStreams() {
+	app.wb.closeStreamsOne.Do(func() { close(app.wb.streamsDone) })
+}
+
 func (app *application) wbStream(w http.ResponseWriter, r *http.Request) {
 	thread, _, ok := app.wbThreadFor(w, r)
 	if !ok {
@@ -213,6 +218,15 @@ func (app *application) wbStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "retry: 2000\n: workbench stream\n\n")
 	flusher.Flush()
 	ctx := r.Context()
+	started := time.Now()
+	// How the stream ended, logged without thread or message content so
+	// interrupted subscriptions can be diagnosed.
+	reason := "client"
+	defer func() {
+		app.logger.Info("workbench stream ended", "reason", reason, "duration_ms", time.Since(started).Milliseconds(), "last_event_id", after)
+	}()
+	lifetime := time.NewTimer(app.wb.streamLifetime)
+	defer lifetime.Stop()
 	heartbeat := time.NewTicker(app.wb.heartbeat)
 	defer heartbeat.Stop()
 	poll := time.NewTimer(app.wb.pollEvery)
@@ -221,6 +235,7 @@ func (app *application) wbStream(w http.ResponseWriter, r *http.Request) {
 		events, err := app.wbEventsAfter(ctx, thread, after, 500)
 		if err != nil {
 			if ctx.Err() == nil {
+				reason = "read_error"
 				app.logger.Error("workbench stream read failed", "error", err)
 			}
 			return
@@ -228,6 +243,7 @@ func (app *application) wbStream(w http.ResponseWriter, r *http.Request) {
 		for _, e := range events {
 			// One frame per event; the payload JSON is a single line.
 			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, e.Payload); err != nil {
+				reason = "write_error"
 				return
 			}
 			after = e.ID
@@ -247,10 +263,18 @@ func (app *application) wbStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-lifetime.C:
+			// Every event read so far has been sent and flushed above.
+			reason = "lifetime"
+			return
+		case <-app.wb.streamsDone:
+			reason = "drain"
+			return
 		case <-wake:
 		case <-poll.C:
 		case <-heartbeat.C:
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				reason = "write_error"
 				return
 			}
 			flusher.Flush()
