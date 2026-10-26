@@ -214,7 +214,7 @@ def cloud_audit():
             return value
         collect('project_iam', ['projects', 'get-iam-policy', project], 'bindings', iam_summary)
         collect('instances', ['compute', 'instances', 'list', '--project=' + project],
-                'name,status,zone,tags,networkInterfaces.network,networkInterfaces.accessConfigs.type,serviceAccounts.email,serviceAccounts.scopes,shieldedInstanceConfig',
+                'name,status,zone,tags,networkInterfaces,serviceAccounts,shieldedInstanceConfig',
                 lambda rows: [instance_summary(r) for r in rows])
         collect('firewalls', ['compute', 'firewall-rules', 'list', '--project=' + project],
                 'name,direction,disabled,priority,allowed,denied,sourceRanges,sourceTags,sourceServiceAccounts,targetTags,targetServiceAccounts,network',
@@ -234,14 +234,14 @@ def cloud_audit():
                 collect('bucket_iam_' + alias(name), ['storage', 'buckets', 'get-iam-policy', 'gs://' + name, '--project=' + project], 'bindings', iam_summary)
         for region in ('us-central1', 'us-west1'):
             services = collect('run_' + region, ['run', 'services', 'list', '--region=' + region, '--project=' + project],
-                               'metadata.name,metadata.annotations."run.googleapis.com/ingress",metadata.annotations."run.googleapis.com/invoker-iam-disabled",status.url,status.latestReadyRevisionName,status.traffic,spec.template.spec.serviceAccountName,spec.template.spec.containers.image',
+                               'metadata.name,metadata.annotations."run.googleapis.com/ingress",metadata.annotations."run.googleapis.com/invoker-iam-disabled",status.url,status.latestReadyRevisionName,status.traffic,spec.template.spec.serviceAccountName,spec.template.spec.containers[].image',
                                lambda rows: [run_summary(r) for r in rows])
             for svc in (services or [])[:30]:
                 name = svc.get('metadata', {}).get('name', '')
                 if re.fullmatch(r'[a-z][a-z0-9-]{0,62}', name):
                     collect('run_iam_' + alias(name), ['run', 'services', 'get-iam-policy', name, '--region=' + region, '--project=' + project], 'bindings', iam_summary)
             collect('jobs_' + region, ['run', 'jobs', 'list', '--region=' + region, '--project=' + project],
-                    'metadata.name,spec.template.spec.template.spec.containers.image,spec.template.spec.template.spec.serviceAccountName',
+                    'metadata.name,spec.template.spec.template.spec.containers[].image,spec.template.spec.template.spec.serviceAccountName',
                     lambda rows: [{'id': alias(r.get('metadata', {}).get('name')), 'template': sanitized_job(r)} for r in rows])
         functions = collect('functions', ['functions', 'list', '--project=' + project],
                             'name,status,runtime,ingressSettings,httpsTrigger.url,serviceAccountEmail,versionId,serviceConfig.uri,serviceConfig.ingressSettings,buildConfig.runtime',

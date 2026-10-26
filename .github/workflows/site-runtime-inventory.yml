@@ -154,9 +154,11 @@ jobs:
           Path('cloud-security-inventory.json').write_text(json.dumps(report,indent=2))
           gaps=[]
           for project,sections in report['projects'].items():
+              # GitHub caps notices per step. One bounded record per project
+              # preserves all sections rather than silently dropping the rest.
+              msg=json.dumps(sections,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+              print('::notice title=CLOUD_AUDIT_PROJECT_'+project+'::'+msg)
               for section,value in sections.items():
-                  msg=json.dumps(value,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
-                  print('::notice title=CLOUD_AUDIT_'+project+'_'+section+'::'+msg)
                   if value['status']!='observed': gaps.append(project+'/'+section+': '+value['status'])
           summary={'observed_sections':sum(v['status']=='observed' for p in report['projects'].values() for v in p.values()),'coverage_gaps':gaps}
           print('::notice title=CLOUD_AUDIT_COVERAGE::'+json.dumps(summary).replace('%','%25'))
