@@ -387,7 +387,7 @@ func requestMagicFilmPlan(ctx context.Context, model, effort string, manifest ma
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return plan, fmt.Errorf("Astra returned %d: %s", response.StatusCode, clean(string(responseBody), 2000))
+		return plan, magicFilmProviderError(response.StatusCode, responseBody)
 	}
 	var decoded struct {
 		Output []struct {
@@ -416,6 +416,28 @@ func requestMagicFilmPlan(ctx context.Context, model, effort string, manifest ma
 		return plan, fmt.Errorf("decode Astra edit plan: %w", err)
 	}
 	return plan, nil
+}
+
+// Provider response bodies can contain account details. Persist only actionable,
+// controlled messages, and distinguish exhausted credit from transient throttling.
+func magicFilmProviderError(status int, body []byte) error {
+	var response struct {
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &response)
+	if response.Error.Type == "insufficient_quota" || response.Error.Code == "insufficient_quota" || response.Error.Code == "credit_balance_exhausted" {
+		return errors.New("OpenAI API credits or quota are exhausted. Magic Film uses separately billed API access; ChatGPT/Codex subscriptions do not cover it. Check the API project's billing and limits before retrying. Your earlier films are unchanged.")
+	}
+	if status == http.StatusTooManyRequests {
+		return errors.New("OpenAI temporarily rate-limited the film editor. Wait a few minutes, then retry. Your earlier films are unchanged.")
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return errors.New("The film editor cannot access its OpenAI API account or model. Check the worker's API key and model permissions. Your earlier films are unchanged.")
+	}
+	return fmt.Errorf("The film editor's OpenAI API request failed (HTTP %d). Your earlier films are unchanged.", status)
 }
 
 func validateMagicFilmPlan(plan magicFilmPlan, manifest magicFilmManifest) (int, error) {

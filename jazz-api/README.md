@@ -143,6 +143,15 @@ gcloud run deploy jazz-api --source . --region us-central1 \
 
 ## Magic Film Cloud Run job
 
+The cloud editor calls the OpenAI Responses API with `OPENAI_API_KEY`. These
+requests are billed separately from ChatGPT/Codex subscriptions, including a
+re-make with new creative direction. The key's API project must have available
+quota/credit; review billing at
+https://platform.openai.com/settings/organization/billing/ and its usage limits.
+Exhausted credit is not a temporary rate limit and retrying does not restore it.
+Failed re-makes keep earlier films intact. The worker never automatically retries
+or switches models after a billing failure.
+
 Magic Film is asynchronous and does not need a local server or an always-on
 renderer. The API freezes the chosen day's eligible moments in Postgres and
 invokes one Cloud Run Job execution. The worker builds bounded evidence, asks

@@ -73,7 +73,13 @@
     button.disabled = Boolean(running); length.disabled = Boolean(running); direction.disabled = Boolean(running);
     cancel.hidden = !running; open.hidden = job?.status !== "complete" || !job.project;
     if (!job) status("");
-    else if (job.status === "failed") status(`${job.message} · ${job.error || "Try again."}`);
+    else if (job.status === "failed") {
+      // Older saved jobs may still contain the provider's raw quota response.
+      const error = String(job.error || "");
+      if (/credit_balance_exhausted|insufficient_quota|no credits remaining/i.test(error)) {
+        status("OpenAI API credits or quota are exhausted. API billing is separate from your ChatGPT/Codex subscription. Check API billing and limits before retrying. Your earlier films are unchanged.");
+      } else status(error || job.message || "The film could not finish. Try again.");
+    }
     else status(job.message);
     document.dispatchEvent(new CustomEvent("jazz:magic-films-updated", { detail: { job } }));
   }
