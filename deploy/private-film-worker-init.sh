@@ -59,7 +59,7 @@ After=network-online.target nftables.service
 Wants=network-online.target
 Requires=nftables.service
 ConditionPathExists=/etc/magic-film/worker.env
-ConditionPathIsExecutable=/opt/magic-film/jazz-api
+ConditionFileIsExecutable=/opt/magic-film/jazz-api
 
 [Service]
 Type=simple
