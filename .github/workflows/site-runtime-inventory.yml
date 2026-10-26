@@ -59,3 +59,53 @@ jobs:
           if report.get('caddy_integrity') and not report['caddy_integrity']['matches_managed_build']:
               raise SystemExit('The proxy binary changed outside the verified patch workflow; review vendor updates before trusting the old scan.')
           PY
+      - name: Inspect the one-time reboot without requesting another
+        if: github.event_name != 'schedule'
+        run: |
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'sudo python3 -' > reboot-diagnostic-transport.txt <<'PY'
+          import datetime, importlib.util, json
+          from pathlib import Path
+          def load(name, filename):
+              s=importlib.util.spec_from_file_location(name,Path('/usr/local/libexec/site-security')/filename)
+              m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
+          inventory=load('inventory','inventory-site-runtime.py').inventory()
+          reboot=load('reboot','reboot-site-once.py')
+          previous=json.loads(reboot.STATE.read_text()) if reboot.STATE.exists() else None
+          decision=reboot.decision(previous,inventory['boot_id'],inventory['reboot_required'],datetime.datetime.now(datetime.timezone.utc))
+          print('SITE_REBOOT_DIAGNOSTICS='+json.dumps({'inventory':inventory,'recorded_request':previous,'decision':decision}))
+          PY
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[s.split('=',1)[1] for s in Path('reboot-diagnostic-transport.txt').read_text().splitlines() if s.startswith('SITE_REBOOT_DIAGNOSTICS=')]
+          if len(rows)!=1: raise SystemExit('No unique reboot diagnostic')
+          d=json.loads(rows[0]);Path('reboot-diagnostic.json').write_text(json.dumps(d))
+          msg=json.dumps(d,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+          print('::notice title=SITE_REBOOT_DIAGNOSTICS::'+msg)
+          PY
+      - name: Verify any completed reboot and private/public access
+        if: github.event_name != 'schedule'
+        run: |
+          python3 - <<'PY'
+          import importlib.util,json
+          from pathlib import Path
+          d=json.loads(Path('reboot-diagnostic.json').read_text())
+          if d['decision']!='already_completed' or not d.get('recorded_request'):
+              raise SystemExit('No completed reboot observed; no second reboot requested.')
+          s=importlib.util.spec_from_file_location('check','deploy/check-post-reboot.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+          r=m.validate({'boot_id':d['recorded_request']['boot_id']},d['inventory'],'request_reboot')
+          r['reboot_action']='verified_prior_request'
+          Path('verified-reboot.json').write_text(json.dumps(r))
+          PY
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'sudo python3 /usr/local/libexec/site-security/verify-jazz-auth.py >/dev/null 2>&1 && echo PRIVATE_ROUTES_VERIFIED'
+          curl --fail --silent --show-error --output /dev/null --retry 3 https://zachbednarke.com/
+          curl --fail --silent --show-error --output /dev/null --retry 3 https://uncleugga.com/
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('verified-reboot.json').read_text())
+          msg=json.dumps(r,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+          print('::notice title=SITE_POST_REBOOT_SECURITY_RECEIPT::'+msg)
+          PY
