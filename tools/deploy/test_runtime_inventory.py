@@ -115,6 +115,10 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.assertEqual(result[1]['port'], 8080)
         self.assertNotIn('127.0.0.1', str(result))
 
+    def test_tailscale_cgnat_address_is_not_labeled_public_internet(self):
+        result = inventory.listener_summary('tcp LISTEN 0 128 100.100.100.100:443 0.0.0.0:* users:(("tailscaled",pid=1,fd=3))')
+        self.assertEqual(result[0]['binding'], 'cgnat_or_overlay')
+
     def test_firewall_disabled_rule_stays_explicit_and_ssh_iap_is_not_worldwide(self):
         result = inventory.firewall_summary({'name': 'ssh', 'disabled': True, 'sourceRanges': ['35.235.240.0/20'], 'allowed': [{'IPProtocol': 'tcp', 'ports': ['22']}]})
         self.assertTrue(result['disabled'])

@@ -237,7 +237,12 @@ def cloud_audit():
         for bucket in (buckets or [])[:30]:
             name = bucket.get('name', '')
             if re.fullmatch(r'[a-z0-9][a-z0-9._-]{1,221}[a-z0-9]', name):
-                collect('bucket_iam_' + alias(name), ['storage', 'buckets', 'get-iam-policy', 'gs://' + name, '--project=' + project], 'bindings', iam_summary)
+                label = 'bucket_iam_' + alias(name)
+                policy = collect(label, ['storage', 'buckets', 'get-iam-policy', 'gs://' + name, '--project=' + project], 'bindings', iam_summary)
+                if policy and any('allUsers' in b.get('members', []) and b.get('role') == 'roles/storage.objectViewer' for b in policy.get('bindings', [])):
+                    # Identify deliberately public resources for external checks;
+                    # keep private bucket names and all object names undisclosed.
+                    sections[label]['public_bucket_name'] = name
         for region in ('us-central1', 'us-west1'):
             services = collect('run_' + region, ['run', 'services', 'list', '--region=' + region, '--project=' + project],
                                'metadata.name,metadata.annotations."run.googleapis.com/ingress",metadata.annotations."run.googleapis.com/invoker-iam-disabled",status.url,status.latestReadyRevisionName,status.traffic,spec.template.spec.serviceAccountName,spec.template.spec.containers[].image',
@@ -303,7 +308,8 @@ def listener_summary(text):
         host = host.strip('[]').split('%')[0]
         try:
             addr = ipaddress.ip_address(host)
-            binding = 'wildcard' if addr.is_unspecified else 'loopback' if addr.is_loopback else 'private' if addr.is_private else 'public'
+            cgnat = addr.version == 4 and addr in ipaddress.ip_network('100.64.0.0/10')
+            binding = 'wildcard' if addr.is_unspecified else 'loopback' if addr.is_loopback else 'cgnat_or_overlay' if cgnat else 'private' if addr.is_private else 'public'
         except ValueError:
             binding = 'unknown'
         processes = [p for p in re.findall(r'\("([^"\s]+)"', line) if re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', p)]
@@ -354,6 +360,12 @@ def host_audit():
             exe = None
         node_services[name] = {'uses_system_node': exe == '/usr/bin/node'}
     report['node_service_processes'] = node_services
+    funnel = output(['tailscale', 'funnel', 'status', '--json'])
+    try:
+        state = json.loads(funnel) if funnel is not None else None
+        report['tailscale_funnel_enabled'] = any(v is True for v in state.get('AllowFunnel', {}).values()) if isinstance(state, dict) else None
+    except ValueError:
+        report['tailscale_funnel_enabled'] = None
     return report
 
 
