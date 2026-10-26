@@ -75,14 +75,16 @@
   // take in the Studio player at the clip's start.
   function renderClips(list, film, player) {
     const sources = globalThis.JazzClipStudioSources;
+    const loading = Boolean(sources?.loading?.());
     const rows = globalThis.JazzFilmClipsModel.filmClipRows(film.project, id => sources?.describe(id) || null);
     list.replaceChildren(...rows.map(row => {
       const item = el("li", "");
       const copy = el("div", "finished-film-clip-copy");
-      copy.append(el("strong", "", row.title), el("span", "", [row.source || "Take not on this day", `${row.range} in the take`].join(" · ")));
-      const status = el("p", "finished-film-clip-status");
-      const play = el("button", "", row.playable ? "Play original" : "Unavailable"); play.type = "button"; play.disabled = !row.playable;
-      play.setAttribute("aria-label", `Play original take for clip ${row.order}, ${row.title}, from ${row.range.split("–")[0]}`);
+      const missing = loading ? "Loading this day’s takes…" : "Take not on this day";
+      copy.append(el("strong", "", row.title), el("span", "", [row.source || missing, `${row.range} in the take`].join(" · ")));
+      const status = el("p", "finished-film-clip-status"); status.setAttribute("role", "status");
+      const play = el("button", "", row.playable ? "Play original" : (loading ? "Loading…" : "Unavailable")); play.type = "button"; play.disabled = !row.playable;
+      play.setAttribute("aria-label", row.playable ? `Play original take for clip ${row.order}, ${row.title}, from ${row.range.split("–")[0]}` : `Clip ${row.order}, ${row.title}: ${missing}`);
       play.onclick = async () => {
         status.textContent = ""; player.pause();
         try { await sources.play(row.recordingId, row.startMs); } catch (error) { status.textContent = error.message || "Could not open this take."; }
@@ -115,6 +117,13 @@
     if (changed && !Array.from(shelf.querySelectorAll("video")).some(player => !player.paused)) renderDay();
   }
   document.addEventListener("jazz:studio-date-change", refreshFilms);
+  // An open "Clips used" list built while the day was loading names its takes
+  // once the day's recordings arrive.
+  document.addEventListener("jazz:studio-day-loaded", () => shelf.querySelectorAll(".finished-film-clips:not([hidden])").forEach(list => {
+    const film = films.find(item => list.id === `finished-film-clips-${item.id}`);
+    const player = list.closest(".finished-film")?.querySelector("video");
+    if (film && player) renderClips(list, film, player);
+  }));
   document.addEventListener("jazz:magic-films-updated", refreshFilms);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshFilms(); });
   document.addEventListener("jazz:view-change", event => {

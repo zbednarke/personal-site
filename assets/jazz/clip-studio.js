@@ -95,6 +95,7 @@
 
   // Lets a finished film's "Clips used" list name and open its source takes.
   globalThis.JazzClipStudioSources = {
+    loading() { return state.loadingDay; },
     describe(recordingID) {
       if (state.loadingDay) return null;
       const recording = state.recordings.find((item) => item.id === recordingID);
@@ -237,6 +238,7 @@
       if (request === state.loadRequest) {
         state.loadingDay = false;
         syncAddClipControl();
+        document.dispatchEvent(new CustomEvent("jazz:studio-day-loaded", { detail: { date } }));
       }
     }
   }
