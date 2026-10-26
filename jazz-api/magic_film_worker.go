@@ -104,8 +104,9 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 	}
 	var userID uuid.UUID
 	var manifestJSON []byte
-	var model, effort, status, direction string
-	err = app.db.QueryRow(base, `SELECT user_id,manifest,model,effort,status,direction FROM magic_film_jobs WHERE id=$1`, id).Scan(&userID, &manifestJSON, &model, &effort, &status, &direction)
+	var model, effort, status, direction, provider string
+	var savedPlan []byte
+	err = app.db.QueryRow(base, `SELECT user_id,manifest,model,effort,status,direction,provider,plan FROM magic_film_jobs WHERE id=$1`, id).Scan(&userID, &manifestJSON, &model, &effort, &status, &direction, &provider, &savedPlan)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("magic film job does not exist")
 	}
@@ -115,8 +116,11 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 	if status == "cancelled" || status == "complete" {
 		return nil
 	}
-	tag, err := app.db.Exec(base, `UPDATE magic_film_jobs SET status='preparing',message='Preparing candidate evidence',started_at=COALESCE(started_at,now()),updated_at=now()
-		WHERE id=$1 AND status IN ('queued','starting') AND NOT cancel_requested`, id)
+	if provider == "codex" && os.Getenv("MAGIC_FILM_PRIVATE_WORKER") != "1" {
+		return errors.New("subscription jobs require the private Codex worker; API fallback is disabled")
+	}
+	tag, err := app.db.Exec(base, `UPDATE magic_film_jobs SET status='preparing',message='Preparing candidate evidence',next_attempt_at=NULL,started_at=COALESCE(started_at,now()),updated_at=now()
+		WHERE id=$1 AND status IN ('queued','starting','waiting_usage','sign_in_required') AND NOT cancel_requested`, id)
 	if err != nil {
 		return err
 	}
@@ -134,6 +138,21 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 		if returnErr == nil {
 			return
 		}
+		var pause *magicFilmPause
+		if errors.As(returnErr, &pause) {
+			message := "Waiting for subscription usage reset. Your progress is saved; retrying automatically later."
+			if pause.Status == "sign_in_required" {
+				message = "Codex sign-in required. Your progress is saved; work resumes after the private worker is signed in."
+			}
+			_, err := app.db.Exec(context.Background(), `UPDATE magic_film_jobs SET status=CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,message=CASE WHEN cancel_requested THEN 'Cancelled' ELSE $3 END,next_attempt_at=$4,error='',finished_at=CASE WHEN cancel_requested THEN now() ELSE NULL END,updated_at=now() WHERE id=$1`, id, pause.Status, message, pause.RetryAt)
+			returnErr = err
+			return
+		}
+		if errors.Is(base.Err(), context.Canceled) && provider == "codex" {
+			_, _ = app.db.Exec(context.Background(), `UPDATE magic_film_jobs SET status=CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,message='Progress saved; waiting for the worker to resume',next_attempt_at=now()+interval '2 minutes',updated_at=now() WHERE id=$1`, id)
+			returnErr = nil
+			return
+		}
 		if errors.Is(returnErr, context.Canceled) || errors.Is(returnErr, errMagicFilmCancelled) {
 			_, _ = app.db.Exec(context.Background(), `UPDATE magic_film_jobs SET status='cancelled',message='Cancelled',error='',finished_at=now(),updated_at=now() WHERE id=$1`, id)
 			returnErr = nil
@@ -142,24 +161,71 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 		returnErr = app.failMagicFilm(context.Background(), id, returnErr)
 	}()
 
-	workspace, err := os.MkdirTemp("", "magic-film-"+id.String()+"-")
+	workspace := ""
+	if provider == "codex" {
+		workspace = filepath.Join(envOr("MAGIC_FILM_WORKSPACE", "/var/lib/magic-film/jobs"), id.String())
+		err = os.MkdirAll(workspace, 0750)
+	} else {
+		workspace, err = os.MkdirTemp("", "magic-film-"+id.String()+"-")
+	}
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(workspace)
+	defer func() {
+		// Pauses/restarts retain evidence. Successful/failed/cancelled work is
+		// cleaned; valid plans remain in Postgres and never need another model call.
+		var pause *magicFilmPause
+		if provider == "api" || (base.Err() == nil && !errors.As(returnErr, &pause)) {
+			_ = os.RemoveAll(workspace)
+		}
+	}()
+	if provider == "codex" && len(savedPlan) == 0 && !codexSubscriptionReady(ctx) {
+		return &magicFilmPause{"sign_in_required", time.Now().Add(2 * time.Minute)}
+	}
 	recordings, err := app.magicFilmSources(ctx, manifest)
 	if err != nil {
 		return err
 	}
-	if err := prepareMagicFilmEvidence(ctx, &manifest, recordings, workspace); err != nil {
-		return err
-	}
-	if err := app.magicFilmStatus(ctx, id, "editing", "Astra is reviewing your selected moments"); err != nil {
-		return err
-	}
-	plan, err := requestMagicFilmPlan(ctx, model, effort, manifest, direction, workspace)
-	if err != nil {
-		return err
+	var plan magicFilmPlan
+	if provider == "codex" && len(savedPlan) > 0 {
+		if err := json.Unmarshal(savedPlan, &plan); err != nil {
+			return errors.New("saved edit plan is invalid")
+		}
+	} else {
+		checkpoint := filepath.Join(workspace, "evidence.json")
+		var evidence magicFilmManifest
+		data, readErr := os.ReadFile(checkpoint)
+		if provider == "codex" && readErr == nil && json.Unmarshal(data, &evidence) == nil {
+			manifest = evidence
+		} else {
+			if err := prepareMagicFilmEvidence(ctx, &manifest, recordings, workspace); err != nil {
+				return err
+			}
+			if provider == "codex" {
+				data, _ := json.Marshal(manifest)
+				if err := os.WriteFile(checkpoint+".tmp", data, 0600); err != nil {
+					return err
+				}
+				if err := os.Rename(checkpoint+".tmp", checkpoint); err != nil {
+					return err
+				}
+			}
+		}
+		message := "Astra is reviewing your selected moments"
+		if provider == "codex" {
+			message = "Codex is reviewing your selected moments using your subscription"
+		}
+		if err := app.magicFilmStatus(ctx, id, "editing", message); err != nil {
+			return err
+		}
+		if provider == "codex" {
+			plan, err = requestCodexMagicFilmPlan(ctx, model, effort, manifest, direction, workspace)
+		} else {
+			plan, err = requestMagicFilmPlan(ctx, model, effort, manifest, direction, workspace)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	durationMS, err := validateMagicFilmPlan(plan, manifest)
 	if err != nil {
@@ -191,7 +257,7 @@ func (app *application) runMagicFilmJob(base context.Context, rawID string) (ret
 	projectJSON, _ := json.Marshal(project)
 	reviewsJSON, _ := json.Marshal(plan.Reviews)
 	_, err = app.db.Exec(ctx, `UPDATE magic_film_jobs SET status='complete',message='Your film is ready',project=$2,summary=$3,reviews=$4,
-		output_object=$5,poster_object=$6,duration_ms=$7,error='',finished_at=now(),updated_at=now() WHERE id=$1`,
+		output_object=$5,poster_object=$6,duration_ms=$7,error='',next_attempt_at=NULL,finished_at=now(),updated_at=now() WHERE id=$1`,
 		id, projectJSON, clean(plan.Summary, 4000), reviewsJSON, videoObject, posterObject, actualMS)
 	return err
 }

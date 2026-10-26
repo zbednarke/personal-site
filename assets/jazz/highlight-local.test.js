@@ -91,3 +91,16 @@ test("successful refresh clears the alert", async t => {
   assert.equal(panel.hasAttribute("data-error"), false);
   assert.match(panel.textContent, /Film is ready/);
 });
+
+for (const state of ["waiting_usage", "sign_in_required"]) test(`${state} preserves the job and offers status refresh/cancellation`, async t => {
+  const { win, panel, button, calls } = await load(t, { job: { id: "paused-job", status: state, provider: "codex", nextAttemptAt: "2026-10-26T12:00:00Z" } });
+  assert.equal(button.disabled, true, "paused work must not be resubmitted");
+  assert.equal(win.document.querySelector("#studio-cancel-film").hidden, false);
+  assert.equal(panel.getAttribute("role"), "status");
+  assert.match(panel.textContent, /completed work are saved/);
+  assert.match(panel.textContent, /No paid API fallback/);
+  assert.match(panel.textContent, state === "waiting_usage" ? /Next check:/ : /Sign in to Codex on the private worker/);
+  panel.querySelector("button").click();
+  await settle();
+  assert.ok(calls.every(call => !call.options.method));
+});

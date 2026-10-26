@@ -9,7 +9,7 @@
 
   const button = document.createElement("button");
   button.type = "button"; button.id = "studio-make-film"; button.textContent = "Make today's film";
-  button.title = "Start an on-demand cloud editor; you may close this page while it works";
+  button.title = "Start the film editor; you may close this page while it works";
   const lengthLabel = document.createElement("label");
   lengthLabel.className = "studio-magic-length";
   const lengthText = document.createElement("span"); lengthText.textContent = "Film length";
@@ -110,6 +110,16 @@
     button.textContent = job?.status === "failed" ? (job.failure?.retryable === false ? "Try again after fixing access" : "Make film again") : "Make today's film";
     cancel.hidden = !running; open.hidden = job?.status !== "complete" || !job.project;
     if (!job) status("");
+    else if (job.status === "waiting_usage" || job.status === "sign_in_required") {
+      const waiting = job.status === "waiting_usage";
+      const next = job.nextAttemptAt && Number.isFinite(Date.parse(job.nextAttemptAt)) ? ` Next check: ${new Date(job.nextAttemptAt).toLocaleString()}.` : "";
+      failure({
+        title: waiting ? "Waiting for usage reset" : "Codex sign-in required",
+        message: "Your film is paused. Its selected moments and completed work are saved.",
+        action: waiting ? `The private worker will try again automatically.${next} No paid API fallback will be used.` : "Sign in to Codex on the private worker. This film resumes automatically after sign-in; signing in to the website is separate. No paid API fallback will be used.",
+      }, job.id);
+      statusElement.setAttribute("role", "status");
+    }
     else if (job.status === "failed") failure(job.failure || { title: "Film could not finish", message: "Something went wrong while making this film.", action: "Try again once. If it fails again, use the job reference to investigate." }, job.id);
     else status(job.message);
     document.dispatchEvent(new CustomEvent("jazz:magic-films-updated", { detail: { job } }));
@@ -125,7 +135,7 @@
         render((result.jobs || []).find(job => !terminal.has(job.status)) || result.jobs?.[0] || null);
       }
     } catch (error) { showRequestFailure(error); }
-    if (active && !terminal.has(active.status)) timer = setTimeout(refresh, 3000);
+    if (active && !terminal.has(active.status)) timer = setTimeout(refresh, ["waiting_usage", "sign_in_required"].includes(active.status) ? 30000 : 3000);
   }
   button.addEventListener("click", async () => {
     button.disabled = true; status("Submitting to the on-demand cloud worker…");

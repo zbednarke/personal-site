@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/cloudsqlconn"
 	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
 	credentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	"cloud.google.com/go/storage"
@@ -74,6 +76,7 @@ type config struct {
 	MagicFilmProject    string
 	MagicFilmRegion     string
 	MagicFilmJob        string
+	MagicFilmProvider   string
 	LongToneWorkers     int
 	CaptionWorkers      int
 	ProjectID           string
@@ -237,7 +240,23 @@ func main() {
 	}
 
 	ctx := context.Background()
-	db, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	dbConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("database configuration failed")
+		os.Exit(1)
+	}
+	if instance := os.Getenv("MAGIC_FILM_SQL_INSTANCE"); os.Getenv("MAGIC_FILM_PRIVATE_WORKER") == "1" && instance != "" {
+		dialer, err := cloudsqlconn.NewDialer(ctx)
+		if err != nil {
+			slog.Error("database connector failed", "error", err)
+			os.Exit(1)
+		}
+		defer dialer.Close()
+		dbConfig.ConnConfig.DialFunc = func(ctx context.Context, _, _ string) (net.Conn, error) { return dialer.Dial(ctx, instance) }
+		dbConfig.ConnConfig.TLSConfig = nil // Connector provides authenticated TLS.
+		dbConfig.MaxConns = 4
+	}
+	db, err := pgxpool.NewWithConfig(ctx, dbConfig)
 	if err != nil {
 		slog.Error("database configuration failed", "error", err)
 		os.Exit(1)
@@ -278,6 +297,15 @@ func main() {
 	app := &application{
 		cfg: cfg, db: db, storage: storageClient, tokenSource: tokenSource, speechTokenSource: speechTokenSource,
 		iamSigner: iamSigner, httpClient: &http.Client{Timeout: 15 * time.Second}, logger: slog.Default(),
+	}
+	if os.Getenv("MAGIC_FILM_PRIVATE_WORKER") == "1" {
+		workerCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
+		defer stop()
+		if err := app.runPrivateMagicFilmWorker(workerCtx); err != nil {
+			slog.Error("private film worker stopped", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if jobID := strings.TrimSpace(os.Getenv("MAGIC_FILM_JOB_ID")); jobID != "" {
 		jobCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
@@ -402,6 +430,7 @@ func loadConfig() (config, error) {
 		MagicFilmProject:    strings.TrimSpace(os.Getenv("MAGIC_FILM_PROJECT")),
 		MagicFilmRegion:     envOr("MAGIC_FILM_REGION", "us-central1"),
 		MagicFilmJob:        strings.TrimSpace(os.Getenv("MAGIC_FILM_JOB")),
+		MagicFilmProvider:   envOr("MAGIC_FILM_PROVIDER", "api"),
 		LongToneWorkers:     longToneWorkers,
 		CaptionWorkers:      captionWorkers,
 	}
@@ -411,7 +440,10 @@ func loadConfig() (config, error) {
 	if cfg.DatabaseURL == "" || cfg.Bucket == "" || cfg.ServiceAccountEmail == "" || cfg.ProjectID == "" {
 		return cfg, errors.New("DATABASE_URL, GCS_BUCKET, and GCP_SERVICE_ACCOUNT are required")
 	}
-	if cfg.GatewayKey == "" && !cfg.AllowInsecureLocal {
+	if cfg.MagicFilmProvider != "api" && cfg.MagicFilmProvider != "codex" {
+		return cfg, errors.New("MAGIC_FILM_PROVIDER must be api or codex")
+	}
+	if cfg.GatewayKey == "" && !cfg.AllowInsecureLocal && os.Getenv("MAGIC_FILM_PRIVATE_WORKER") != "1" {
 		return cfg, errors.New("GATEWAY_KEY is required outside local development")
 	}
 	return cfg, nil
