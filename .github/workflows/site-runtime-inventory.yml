@@ -69,15 +69,16 @@ jobs:
           gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
             --command 'sudo python3 - --host-audit' < deploy/inventory-site-runtime.py > host-audit-transport.txt
           python3 - <<'PY'
-          import json
+          import importlib.util,json
           from pathlib import Path
           rows=[s.split('=',1)[1] for s in Path('host-audit-transport.txt').read_text().splitlines() if s.startswith('HOST_SECURITY_INVENTORY=')]
           if len(rows)!=1: raise SystemExit('No unique host audit receipt')
           report=json.loads(rows[0])
           Path('host-security-inventory.json').write_text(json.dumps(report,indent=2))
-          for section,value in report.items():
-              msg=json.dumps(value,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
-              print('::notice title=HOST_AUDIT_'+section+'::'+msg)
+          spec=importlib.util.spec_from_file_location('audit','deploy/inventory-site-runtime.py')
+          audit=importlib.util.module_from_spec(spec);spec.loader.exec_module(audit)
+          for part in audit.receipt_chunks(report):
+              print('::notice title=HOST_AUDIT_RECEIPT_'+str(part['part'])+'::'+json.dumps(part))
           PY
       - name: Inspect the one-time reboot without requesting another
         if: github.event_name != 'schedule'
