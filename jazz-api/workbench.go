@@ -80,15 +80,24 @@ type workbench struct {
 	// it re-reads the log (a safety net under LISTEN/NOTIFY).
 	pollEvery time.Duration
 	heartbeat time.Duration
-	runs      sync.WaitGroup
-	baseCtx   context.Context
+	// streamLifetime ends each event stream cleanly before Cloud Run's 3600 s
+	// request timeout would cut it mid-response; the browser's EventSource
+	// reconnects with Last-Event-ID and resumes from the persisted log.
+	streamLifetime time.Duration
+	// streamsDone closes on SIGTERM so open streams end cleanly during the
+	// drain instead of being force-closed by the server shutdown.
+	streamsDone     chan struct{}
+	closeStreamsOne sync.Once
+	runs            sync.WaitGroup
+	baseCtx         context.Context
 	// mu guards draining (set on SIGTERM) against new runs being added.
 	mu       sync.Mutex
 	draining bool
 }
 
 func newWorkbench(cfg wbConfig, opts ...option.RequestOption) *workbench {
-	wb := &workbench{cfg: cfg, hub: newWBHub(), instance: uuid.NewString(), pollEvery: 10 * time.Second, heartbeat: 20 * time.Second, baseCtx: context.Background()}
+	wb := &workbench{cfg: cfg, hub: newWBHub(), instance: uuid.NewString(), pollEvery: 10 * time.Second, heartbeat: 20 * time.Second,
+		streamLifetime: 55 * time.Minute, streamsDone: make(chan struct{}), baseCtx: context.Background()}
 	if cfg.AnthropicKey != "" {
 		client := anthropic.NewClient(append([]option.RequestOption{option.WithAPIKey(cfg.AnthropicKey)}, opts...)...)
 		wb.llm = &client
