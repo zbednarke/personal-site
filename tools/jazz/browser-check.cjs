@@ -181,7 +181,7 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
     // so an edited direction starts a new film (fictional job, mocked API).
     {
       const page = await newPage("magic-direction", 390, 844, true);
-      const finished = { id: "00000000-0000-4000-8000-0000000000f1", date: today, targetSeconds: 180, direction: "Quiet and reflective, slow pacing.", status: "complete", message: "Your film is ready", model: "example", effort: "medium", project: { version: 1, date: today, title: "Example quiet film", clips: [] }, summary: "Fictional summary.", reviews: [], durationMs: 61000, cancelRequested: false, createdAt: `${today}T09:00:00Z`, hasVideo: true, hasPoster: true };
+      const finished = { id: "00000000-0000-4000-8000-0000000000f1", date: today, targetSeconds: 180, direction: "Quiet and reflective, slow pacing.", status: "complete", message: "Your film is ready", model: "example", effort: "medium", project: { version: 1, date: today, title: "Example quiet film", clips: [{ id: "clip-a", candidateId: "cand-a", recordingId: "00000000-0000-4000-8000-0000000000a1", startMs: 65000, endMs: 79000, title: "Example opening phrase", liked: true, notes: "" }, { id: "clip-b", candidateId: "cand-b", recordingId: "00000000-0000-4000-8000-0000000000a9", startMs: 2000, endMs: 9000, title: "Example removed take", liked: false, notes: "" }] }, summary: "Fictional summary.", reviews: [], durationMs: 61000, cancelRequested: false, createdAt: `${today}T09:00:00Z`, hasVideo: true, hasPoster: true };
       const posts = [];
       await page.ctx.route("**/jazz/api/v1/studio/magic-films**", async (r) => {
         const url = new URL(r.request().url());
@@ -194,12 +194,34 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
         if (url.pathname.endsWith("/magic-films")) return r.fulfill({ json: { jobs: [finished] } });
         return r.fulfill({ json: { ...finished, id: url.pathname.split("/").pop(), status: "failed", message: "Fixture stops here", error: "fixture" } });
       });
+      // One fictional take on the day; the film's second clip points at a take
+      // that is no longer there. Playback URLs 404 so no media loads.
+      await page.ctx.route(`**/jazz/api/v1/studio/days/${today}`, (r) => r.fulfill({ json: { recordings: [{ id: "00000000-0000-4000-8000-0000000000a1", durationMs: 120000, mediaKind: "audio", practiceBlockTitle: "Example long tones", takeNumber: 2, waveformPeaks: [] }], candidates: [], analysis: { needsScan: false } } }));
+      await page.ctx.route("**/jazz/api/v1/recordings/*/playback-url**", (r) => r.fulfill({ status: 404, json: { error: "fixture" } }));
       await page.goto(`${base}/jazz/`);
       await page.tap("#jazz-menu-button");
       await page.waitForSelector("body.jazz-nav-open .virtuoso-nav");
       await page.tap('.virtuoso-nav [data-jazz-view="studio"]');
       await page.waitForSelector(".finished-film-direction", { state: "attached" });
       assert.match(await page.locator(".finished-film-direction").innerText(), /Quiet and reflective, slow pacing\./, "magic film: the finished film shows its direction");
+      // "Clips used" lists the film's source sub-clips in film order with their
+      // take and time range, and opens the original take at that point.
+      await page.waitForFunction(() => /Example long tones/.test(document.querySelector(".clip-studio-recording")?.textContent || ""));
+      const clipsButton = page.locator(".finished-film button:text('Clips used (2)')");
+      assert.equal(await clipsButton.getAttribute("aria-expanded"), "false", "clips used: the list starts closed");
+      await clipsButton.tap();
+      assert.equal(await clipsButton.getAttribute("aria-expanded"), "true", "clips used: the button opens the list");
+      const rows = page.locator(".finished-film-clips li");
+      assert.equal(await rows.count(), 2, "clips used: one row per clip");
+      assert.match(await rows.nth(0).innerText(), /Example opening phrase[\s\S]*Example long tones · Take 2 · 1:05–1:19 in the take/, "clips used: first clip shows its take and time range");
+      assert.match(await rows.nth(1).innerText(), /Example removed take[\s\S]*Take not on this day · 0:02–0:09/, "clips used: a missing take is named as unavailable");
+      assert.ok(await rows.nth(1).locator("button").isDisabled(), "clips used: a missing take cannot be played");
+      await page.locator(".finished-film-clips").scrollIntoViewIfNeeded();
+      await noSideScroll(page, "390px clips used");
+      await page.screenshot({ path: path.join(out, "phone-magic-film-clips.png") });
+      await rows.nth(0).locator("button:text('Play original')").tap();
+      await page.waitForFunction(() => /Example long tones · Take 2/.test(document.querySelector("#studio-preview-title")?.textContent || ""));
+      assert.match(await page.locator("#studio-playback-mode").innerText(), /Browsing raw recording/i, "clips used: play opens the original take");
       assert.equal(await page.locator("#studio-magic-direction").inputValue(), "", "magic film: the direction box starts empty");
       await page.locator(".finished-film button:text('Re-make with new direction')").tap();
       assert.equal(await page.locator("#studio-magic-direction").inputValue(), finished.direction, "magic film: re-make loads the film's direction");
@@ -218,7 +240,7 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
     }
 
     assert.deepEqual(errors, [], "no runtime errors");
-    console.log(`Jazz smoke check passed: ${VIEWS.map((v) => v.view).join(", ")} and /jazz/plan/ at 390 px (drawer) and 1440 px (sidebar), no sideways scroll, film shelf note map and editor entry, Magic Film direction and re-make at 390 px, service worker caches no private media or API responses, Library fixture rendered, no runtime errors. Screenshots: ${out}`);
+    console.log(`Jazz smoke check passed: ${VIEWS.map((v) => v.view).join(", ")} and /jazz/plan/ at 390 px (drawer) and 1440 px (sidebar), no sideways scroll, film shelf note map and editor entry, Magic Film direction, re-make and clips used at 390 px, service worker caches no private media or API responses, Library fixture rendered, no runtime errors. Screenshots: ${out}`);
   } catch (error) {
     console.error(error);
     if (errors.length) console.error(errors.join("\n"));
