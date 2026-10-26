@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.request
 
-FRONTEND=['jazz/index.html','assets/jazz/jazz.css','assets/jazz/archive.js','assets/jazz/archive-utils.js','assets/jazz/clip-studio.js','assets/jazz/finished-films.js','assets/jazz/highlight-local.js','assets/jazz/film-edit-model.js','assets/jazz/film-editor.js','assets/jazz/film-editor.css','assets/jazz/library.js','assets/jazz/library.css','assets/jazz/library-resources.css']
+FRONTEND=['jazz/index.html','assets/jazz/jazz.css','assets/jazz/archive.js','assets/jazz/archive-utils.js','assets/jazz/clip-studio.js','assets/jazz/film-clips-model.js','assets/jazz/finished-films.js','assets/jazz/highlight-local.js','assets/jazz/film-edit-model.js','assets/jazz/film-editor.js','assets/jazz/film-editor.css','assets/jazz/library.js','assets/jazz/library.css','assets/jazz/library-resources.css']
 
 def install(staging,expected,name):
     if not re.fullmatch(r'[a-zA-Z0-9-]+',name):raise SystemExit('Invalid release name')

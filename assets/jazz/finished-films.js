@@ -6,7 +6,7 @@
   shelf.className = "finished-films"; shelf.setAttribute("aria-label", "Finished films"); shelf.hidden = true;
   header.after(shelf);
   const style = document.createElement("style");
-  style.textContent = `.finished-films{margin:12px 0 30px;border:1px solid #515b46;background:#1b2018;border-radius:8px;overflow:hidden}.finished-films[hidden]{display:none}.finished-film-copy{padding:22px 26px}.finished-film-eyebrow{color:#c2d7a9;font-size:10px;letter-spacing:.18em;text-transform:uppercase;margin:0 0 10px}.finished-film-title{font:400 clamp(22px,3vw,34px)/1.2 Georgia,serif;color:#f0f3e9;margin:0 0 9px}.finished-film-description{color:#b9c3b0;font-size:13px;line-height:1.6;margin:0;max-width:65ch}.finished-film-player{display:block;width:100%;max-height:70vh;aspect-ratio:16/9;background:#0c0e0b;object-fit:contain}.finished-film-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:16px 26px;color:#bac7ad;font-size:12px}.finished-film-footer a{display:inline-block;color:#e4f0d8;border:1px solid #667455;border-radius:4px;padding:9px 14px;text-decoration:none}.finished-film+.finished-film{border-top:1px solid #515b46}.finished-film-direction{margin:12px 0 0;max-width:65ch;color:#d6dfcb;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.finished-film-direction b{color:#c2d7a9;font-weight:400;font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin-right:8px}.finished-film-footer button{color:#e4f0d8;background:transparent;border:1px solid #667455;border-radius:4px;padding:9px 14px;font:inherit;cursor:pointer}@media(max-width:600px){.finished-film-copy{padding:18px}.finished-film-footer{padding:14px 18px}.finished-film-description{font-size:12px}}`;
+  style.textContent = `.finished-films{margin:12px 0 30px;border:1px solid #515b46;background:#1b2018;border-radius:8px;overflow:hidden}.finished-films[hidden]{display:none}.finished-film-copy{padding:22px 26px}.finished-film-eyebrow{color:#c2d7a9;font-size:10px;letter-spacing:.18em;text-transform:uppercase;margin:0 0 10px}.finished-film-title{font:400 clamp(22px,3vw,34px)/1.2 Georgia,serif;color:#f0f3e9;margin:0 0 9px}.finished-film-description{color:#b9c3b0;font-size:13px;line-height:1.6;margin:0;max-width:65ch}.finished-film-player{display:block;width:100%;max-height:70vh;aspect-ratio:16/9;background:#0c0e0b;object-fit:contain}.finished-film-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:16px 26px;color:#bac7ad;font-size:12px}.finished-film-footer a{display:inline-block;color:#e4f0d8;border:1px solid #667455;border-radius:4px;padding:9px 14px;text-decoration:none}.finished-film+.finished-film{border-top:1px solid #515b46}.finished-film-direction{margin:12px 0 0;max-width:65ch;color:#d6dfcb;font-size:13px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.finished-film-direction b{color:#c2d7a9;font-weight:400;font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin-right:8px}.finished-film-footer button{color:#e4f0d8;background:transparent;border:1px solid #667455;border-radius:4px;padding:9px 14px;font:inherit;cursor:pointer}.finished-film-clips{margin:0;padding:4px 26px 18px;list-style:none;border-top:1px solid #3a4233}.finished-film-clips[hidden]{display:none}.finished-film-clips li{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:4px 14px;padding:12px 0;border-bottom:1px solid #2c3327}.finished-film-clips li:last-child{border-bottom:0}.finished-film-clip-order{color:#8f9c84;font-size:12px;font-variant-numeric:tabular-nums;min-width:2ch}.finished-film-clip-copy{min-width:0}.finished-film-clip-copy strong{display:block;color:#eef3e6;font-weight:400;font-size:14px;overflow-wrap:anywhere}.finished-film-clip-copy span{display:block;color:#aab69f;font-size:12px;margin-top:3px;overflow-wrap:anywhere}.finished-film-clips button{color:#e4f0d8;background:transparent;border:1px solid #667455;border-radius:4px;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}.finished-film-clips button:disabled{opacity:.55;cursor:default}.finished-film-clip-status{grid-column:2/-1;color:#e3b7a2;font-size:12px}.finished-film-clip-status:empty{display:none}@media(max-width:600px){.finished-film-copy{padding:18px}.finished-film-footer{padding:14px 18px}.finished-film-description{font-size:12px}.finished-film-clips{padding:2px 18px 14px}.finished-film-clips li{grid-template-columns:auto 1fr}.finished-film-clips button{grid-column:2;justify-self:start}}`;
   document.head.append(style);
   const el = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text) node.textContent = text; return node; };
   let films = [];
@@ -18,7 +18,7 @@
   }
   function cloudFilm(job) {
     const base = `./api/v1/studio/magic-films/${encodeURIComponent(job.id)}/media`;
-    return { id: job.id, date: job.date, title: job.project?.title || "Magic Film", description: job.summary || "A finished practice-room edit.", duration: durationLabel(job.durationMs), video: `${base}?asset=video`, poster: `${base}?asset=poster`, download: `${base}?asset=video&download=1`, cloud: true, direction: job.direction || "", targetSeconds: job.targetSeconds };
+    return { id: job.id, date: job.date, title: job.project?.title || "Magic Film", description: job.summary || "A finished practice-room edit.", duration: durationLabel(job.durationMs), video: `${base}?asset=video`, poster: `${base}?asset=poster`, download: `${base}?asset=video&download=1`, cloud: true, direction: job.direction || "", targetSeconds: job.targetSeconds, project: job.project || null };
   }
   function renderDay() {
     const date = document.querySelector("#studio-date")?.value;
@@ -52,10 +52,46 @@
         footer.append(remake);
       }
       footer.append(el("span", "", `${film.duration} · Finished and ready to watch`), download);
-      card.append(copy, player, footer); shelf.append(card);
+      card.append(copy, player, footer);
+      const clipCount = film.cloud ? (globalThis.JazzFilmClipsModel?.filmClipRows(film.project).length || 0) : 0;
+      if (clipCount) {
+        const list = el("ol", "finished-film-clips"); list.hidden = true; list.id = `finished-film-clips-${film.id}`;
+        list.setAttribute("aria-label", `Clips used in ${film.title}`);
+        const toggle = el("button", "", `Clips used (${clipCount})`); toggle.type = "button";
+        toggle.setAttribute("aria-expanded", "false"); toggle.setAttribute("aria-controls", list.id);
+        toggle.onclick = () => {
+          const open = list.hidden;
+          if (open) renderClips(list, film, player);
+          list.hidden = !open; toggle.setAttribute("aria-expanded", String(open));
+        };
+        footer.prepend(toggle); card.append(list);
+      }
+      shelf.append(card);
     }
     shelf.hidden = !shelf.childElementCount;
     rendered = JSON.stringify(films.filter(film => film.date === date).map(film => film.id));
+  }
+  // Lists the film's source sub-clips in film order; each opens its original
+  // take in the Studio player at the clip's start.
+  function renderClips(list, film, player) {
+    const sources = globalThis.JazzClipStudioSources;
+    const loading = Boolean(sources?.loading?.());
+    const rows = globalThis.JazzFilmClipsModel.filmClipRows(film.project, id => sources?.describe(id) || null);
+    list.replaceChildren(...rows.map(row => {
+      const item = el("li", "");
+      const copy = el("div", "finished-film-clip-copy");
+      const missing = loading ? "Loading this day’s takes…" : "Take not on this day";
+      copy.append(el("strong", "", row.title), el("span", "", [row.source || missing, `${row.range} in the take`].join(" · ")));
+      const status = el("p", "finished-film-clip-status"); status.setAttribute("role", "status");
+      const play = el("button", "", row.playable ? "Play original" : (loading ? "Loading…" : "Unavailable")); play.type = "button"; play.disabled = !row.playable;
+      play.setAttribute("aria-label", row.playable ? `Play original take for clip ${row.order}, ${row.title}, from ${row.range.split("–")[0]}` : `Clip ${row.order}, ${row.title}: ${missing}`);
+      play.onclick = async () => {
+        status.textContent = ""; player.pause();
+        try { await sources.play(row.recordingId, row.startMs); } catch (error) { status.textContent = error.message || "Could not open this take."; }
+      };
+      item.append(el("span", "finished-film-clip-order", String(row.order)), copy, play, status);
+      return item;
+    }));
   }
   async function refreshFilms() {
     const date = document.querySelector("#studio-date")?.value;
@@ -81,6 +117,13 @@
     if (changed && !Array.from(shelf.querySelectorAll("video")).some(player => !player.paused)) renderDay();
   }
   document.addEventListener("jazz:studio-date-change", refreshFilms);
+  // An open "Clips used" list built while the day was loading names its takes
+  // once the day's recordings arrive.
+  document.addEventListener("jazz:studio-day-loaded", () => shelf.querySelectorAll(".finished-film-clips:not([hidden])").forEach(list => {
+    const film = films.find(item => list.id === `finished-film-clips-${item.id}`);
+    const player = list.closest(".finished-film")?.querySelector("video");
+    if (film && player) renderClips(list, film, player);
+  }));
   document.addEventListener("jazz:magic-films-updated", refreshFilms);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshFilms(); });
   document.addEventListener("jazz:view-change", event => {
