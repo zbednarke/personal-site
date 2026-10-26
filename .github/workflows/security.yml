@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
 jobs:
+  runtime:
+    uses: ./.github/workflows/runtime-security.yml
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15

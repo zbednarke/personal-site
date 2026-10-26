@@ -1,0 +1,59 @@
+name: Container runtime security
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  media-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: jazz-api/go.sum
+      - name: Build the actual production OS and media-package layer
+        run: docker build --pull --target runtime-base -t jazz-runtime:audit jazz-api
+      - name: Compile media compatibility tests
+        working-directory: jazz-api
+        env:
+          CGO_ENABLED: '0'
+        run: go test -c -o "$RUNNER_TEMP/jazz-runtime.test" .
+      - name: Test audio analysis and real Magic Film rendering in the runtime
+        run: |
+          docker run --rm --entrypoint /bin/sh jazz-runtime:audit -c 'command -v ffmpeg && command -v ffprobe && test -r /usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
+          docker run --rm --mount "type=bind,src=$RUNNER_TEMP/jazz-runtime.test,dst=/tests/jazz-runtime.test,readonly" \
+            --entrypoint /tests/jazz-runtime.test jazz-runtime:audit \
+            -test.v -test.run '^Test(MagicFilmRenderWithFFmpeg|LongToneCodec|DecodeLongToneWithFFmpeg)'
+      - name: Report all high/critical OS advisories
+        run: |
+          mkdir container-scan
+          docker run --rm --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock,readonly \
+            --mount "type=bind,src=$PWD/container-scan,dst=/reports" \
+            aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+            image --db-repository ghcr.io/aquasecurity/trivy-db:2 --image-src docker \
+            --scanners vuln --pkg-types os --severity HIGH,CRITICAL --no-progress \
+            --format json --output /reports/runtime.json jazz-runtime:audit
+      - name: Block advisories with available distribution fixes
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('container-scan/runtime.json').read_text())
+          if report.get('Metadata', {}).get('OS', {}).get('Family') != 'debian' or not any(result.get('Class') == 'os-pkgs' for result in report.get('Results', [])):
+              raise SystemExit('Expected a completed Debian OS-package scan; refusing an empty or unsupported report.')
+          findings = [v for result in report.get('Results', []) for v in result.get('Vulnerabilities', [])]
+          fixable = [v for v in findings if v.get('FixedVersion')]
+          print(f'{len(findings)} high/critical package findings; {len(fixable)} have distribution fixes.')
+          if findings:
+              print('::warning::Unfixed distribution advisories remain; inspect the container-runtime-advisories artifact. This is not a clean-bill-of-health gate.')
+          for item in fixable:
+              print(f"::error::{item['VulnerabilityID']}: {item['PkgName']} {item['InstalledVersion']} -> {item['FixedVersion']}")
+          raise SystemExit(1 if fixable else 0)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-runtime-advisories
+          path: container-scan/runtime.json

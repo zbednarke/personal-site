@@ -2,8 +2,10 @@
 
 This is a source/dependency review, not a statement that production is patched.
 The audit session has Git transport access but no configured GCP identity or
-GitHub API access. No live VM, Cloud Run, database or bucket settings were read
-or changed.
+GitHub API access. Direct live infrastructure inspection is unavailable.
+The existing GitHub deployment workflow successfully shipped commit 65fe450
+(Go/dependency fixes) on October 26, run 40269226093; this does not rebuild the
+VM's separate auth or Python services.
 
 ## Changes ready for review
 
@@ -40,10 +42,39 @@ The service primarily uses Pillow to generate graphics. The production VM
 uses a separately installed Python interpreter and packages; its installed
 versions remain unverified and are not updated by the static/API deploy.
 
+## Container OS/media follow-up, October 26
+
+Rebuilding the exact runtime-package recipe on Debian 12.15 and scanning it
+with Trivy 0.76.1 reported 72 distinct high/critical OS advisories (273
+package-level findings), including seven critical advisories. Debian 12
+provided no fixed package versions for those findings. Testing the equivalent
+Debian 13.7 runtime reduced that to 42 distinct advisories (208 package-level
+findings), with one critical advisory remaining. Both API and repair images
+now use Debian trixie. The API runtime's FFmpeg is 7.1.5-0+deb13u1 in the tested
+build. These are locally rebuilt package layers, not scans of production image
+digests; the Go binary is checked separately by govulncheck.
+
+The remaining critical finding is CVE-2026-6653 in libxml2. Sixteen FFmpeg
+advisories and other high-severity distribution findings also remain without
+distribution fixes. This is partial remediation, not a vulnerability-free
+image or proof that every flagged code path is reachable by this application.
+The Debian 13 comparison also introduces two reported advisories absent from
+the Debian 12 report (CVE-2026-66041 and CVE-2026-86139); overall the distinct
+high/critical count falls by 30 and the critical count falls from seven to one.
+Do not hide remaining findings by dropping unfixed advisories from reports.
+
+The reusable runtime check builds the production OS/media layer, exercises
+actual AAC/Opus analysis and both video/audio-only Magic Film renders with
+synthetic fixtures, then publishes all high/critical OS findings as a CI
+artifact. It runs daily and as part of the pre-deploy test workflow. Available
+distribution fixes fail the gate; unfixed findings remain visible as warnings
+and in the artifact. No paid provider calls are made by the render test.
+
 ## Production work still required
 
-1. Merge and deploy the reviewed dependency patch through the normal guarded
-   workflow. Check API health, Google sign-in, private pages and media after it.
+1. Deploy the Python/runtime follow-ups through the normal guarded workflow.
+   The Go dependency patch is already deployed. Check API health, Google
+   sign-in, private pages and media after each release.
 2. Rebuild and install the VM's separate `jazz-auth` binary with the supported
    Go compiler. Updating the Cloud Run image does not replace that binary.
 3. Inventory and patch the site VM's OS, Caddy, Python, Pillow, NumPy and FFmpeg.
