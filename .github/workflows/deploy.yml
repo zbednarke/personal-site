@@ -96,11 +96,21 @@ jobs:
         # Keeps the service's existing environment, secrets and settings. The
         # commit-sha label (on the service and the revision) is what the
         # guard above checks on the next deploy.
-        run: >-
-          gcloud run deploy jazz-api --source jazz-api --quiet
-          --project "$RUN_PROJECT" --region "$RUN_REGION"
-          --update-labels "commit-sha=${{ steps.commit.outputs.sha }}"
-          --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+        env:
+          MAGIC_FILM_PROVIDER: ${{ vars.MAGIC_FILM_PROVIDER }}
+        run: |
+          provider_flags=()
+          if [[ -n "$MAGIC_FILM_PROVIDER" ]]; then
+            case "$MAGIC_FILM_PROVIDER" in api|codex) ;; *) echo "Invalid Magic Film provider" >&2; exit 1 ;; esac
+            provider_flags=(--update-env-vars "MAGIC_FILM_PROVIDER=$MAGIC_FILM_PROVIDER")
+          fi
+          # An unset variable preserves the deployed provider; it never
+          # silently switches subscription jobs back to API billing.
+          gcloud run deploy jazz-api --source jazz-api --quiet \
+            --project "$RUN_PROJECT" --region "$RUN_REGION" \
+            --update-labels "commit-sha=${{ steps.commit.outputs.sha }}" \
+            --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3 \
+            "${provider_flags[@]}"
       - name: Point traffic at the new revision
         run: >-
           gcloud run services update-traffic jazz-api --to-latest --quiet

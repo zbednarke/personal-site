@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -84,7 +86,9 @@ func requestCodexMagicFilmPlan(ctx context.Context, model, effort string, manife
 	if err := os.MkdirAll(outputDir, 0770); err != nil {
 		return plan, err
 	}
-	if err := os.Chmod(outputDir, 0770); err != nil {
+	// Keep the shared evidence group on files created by the separate CLI
+	// identity, so the Go worker can read the final plan without world access.
+	if err := os.Chmod(outputDir, 0770|os.ModeSetgid); err != nil {
 		return plan, err
 	}
 	outputPath := filepath.Join(outputDir, "plan.json")
@@ -126,9 +130,14 @@ func requestCodexMagicFilmPlan(ctx context.Context, model, effort string, manife
 		}
 		return plan, errors.New("Codex could not produce an edit plan; no paid API fallback was used")
 	}
-	data, err := os.ReadFile(outputPath)
+	file, err := os.Open(outputPath)
 	if err != nil {
 		return plan, errors.New("Codex returned no edit plan")
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
+	if err != nil {
+		return plan, errors.New("Codex edit plan could not be read")
 	}
 	if len(data) > 4<<20 {
 		return plan, errors.New("Codex edit plan exceeded the size limit")
@@ -138,7 +147,28 @@ func requestCodexMagicFilmPlan(ctx context.Context, model, effort string, manife
 	if err := decoder.Decode(&plan); err != nil {
 		return plan, errors.New("Codex returned an invalid edit plan")
 	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return plan, errors.New("Codex returned extra data after the edit plan")
+	}
 	return plan, nil
+}
+
+func (app *application) cleanPrivateFilmWorkspaces(ctx context.Context) {
+	root := envOr("MAGIC_FILM_WORKSPACE", "/var/lib/magic-film/jobs")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		id, err := uuid.Parse(entry.Name())
+		if err != nil || !entry.IsDir() {
+			continue
+		}
+		var terminal bool
+		if err := app.db.QueryRow(ctx, `SELECT status IN ('complete','failed','cancelled') FROM magic_film_jobs WHERE id=$1 AND provider='codex'`, id).Scan(&terminal); err == nil && terminal {
+			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		}
+	}
 }
 
 // One DB session lock serializes the credential across the entire deployment,
@@ -188,7 +218,12 @@ func (app *application) runPrivateMagicFilmWorker(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var cleanedAt time.Time
 	for workerCtx.Err() == nil {
+		if time.Since(cleanedAt) >= 5*time.Minute {
+			app.cleanPrivateFilmWorkspaces(workerCtx)
+			cleanedAt = time.Now()
+		}
 		var id string
 		err := app.db.QueryRow(workerCtx, `SELECT id::text FROM magic_film_jobs WHERE provider='codex'
 		 AND status IN ('queued','waiting_usage','sign_in_required') AND NOT cancel_requested

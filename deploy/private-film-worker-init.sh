@@ -11,7 +11,7 @@ usermod -a -G magic-evidence magic-codex
 chmod 0750 /var/lib/magic-film
 chgrp magic-evidence /var/lib/magic-film
 chmod 0700 /var/lib/magic-codex
-install -d -m 2770 -o magic-film -g magic-evidence /var/lib/magic-film/jobs
+install -d -m 2750 -o magic-film -g magic-evidence /var/lib/magic-film/jobs
 install -d -m 0700 -o magic-codex -g magic-codex /var/lib/magic-codex/.codex
 install -d -m 0700 /etc/magic-film
 install -d -m 0755 /usr/local/libexec /opt/magic-film /opt/magic-codex

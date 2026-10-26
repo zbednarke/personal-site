@@ -42,13 +42,17 @@ including the pre-migration Cloud SQL backup. Migration 045 adds provider and
 retry fields and paused statuses. Old jobs remain `provider=api`; no historical
 failed job is automatically resubmitted or switched to another billing mode.
 
+Set the repository Actions variable `MAGIC_FILM_PROVIDER=codex` for the reviewed
+release. The normal Deploy workflow applies it with the release's deployment
+identity and provenance. If the variable is unset, deployments preserve the
+existing service setting; they never default back to API billing. This variable
+is not a credential and gives CI no access to the subscription login.
+
 After the new API/schema is deployed and subscription authentication is tested:
 
 ```sh
 gcloud compute ssh jazz-film-private --project=parabolio-prod --zone=us-central1-a \
   --tunnel-through-iap --command='sudo systemctl enable --now magic-film-worker'
-gcloud run services update jazz-api --project=parabolio-prod --region=us-central1 \
-  --update-env-vars=MAGIC_FILM_PROVIDER=codex
 ```
 
 New requests now remain in the private queue instead of launching the API-backed

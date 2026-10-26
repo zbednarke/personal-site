@@ -141,6 +141,10 @@ func TestPrivateFilmPausePersistenceAndSingleWorker(t *testing.T) {
 	if data, err := os.ReadFile(checkpoint); err != nil || string(data) != "preserved" {
 		t.Fatal("checkpoint lost during pause")
 	}
+	app.cleanPrivateFilmWorkspaces(ctx)
+	if _, err := os.Stat(checkpoint); err != nil {
+		t.Fatal("cleanup removed paused evidence")
+	}
 	_, err = db.Exec(ctx, `INSERT INTO magic_film_jobs(id,user_id,client_id,practice_date,target_seconds,provider,manifest) VALUES($1,$2,$3,'2026-10-26',60,'codex',$4)`, uuid.New(), owner, uuid.New(), manifest)
 	if err == nil {
 		t.Fatal("paused job allowed duplicate active film")
@@ -167,6 +171,10 @@ func TestPrivateFilmPausePersistenceAndSingleWorker(t *testing.T) {
 	var status string
 	if err := db.QueryRow(ctx, `SELECT status FROM magic_film_jobs WHERE id=$1`, id).Scan(&status); err != nil || status != "cancelled" {
 		t.Fatalf("paused cancellation: %s %v", status, err)
+	}
+	app.cleanPrivateFilmWorkspaces(ctx)
+	if _, err := os.Stat(checkpoint); !os.IsNotExist(err) {
+		t.Fatal("cancelled evidence was not cleaned")
 	}
 }
 
