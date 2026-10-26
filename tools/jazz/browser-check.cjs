@@ -229,7 +229,8 @@ const FILMS = [{ id: `${today}-example`, date: today, title: "Example practice f
       await page.locator("#studio-magic-direction").fill("Brighter, focus on the opening.");
       assert.ok(await page.locator("#studio-make-film").isVisible(), "magic film: the make button is reachable on a phone");
       await page.locator("#studio-make-film").tap();
-      await page.waitForFunction(() => document.querySelector("#studio-magic-direction")?.disabled === false && /Fixture stops here/.test(document.querySelector("#studio-magic-status")?.textContent || ""));
+      await page.waitForFunction(() => document.querySelector("#studio-magic-direction")?.disabled === false && /Film could not finish/.test(document.querySelector("#studio-magic-status")?.textContent || ""));
+      assert.doesNotMatch(await page.locator("#studio-magic-status").innerText(), /Fixture stops here/, "legacy raw errors stay out of the UI");
       assert.equal(posts.length, 1, "magic film: one new film was requested");
       assert.equal(posts[0].direction, "Brighter, focus on the opening.", "magic film: the edited direction is sent");
       assert.equal(posts[0].targetSeconds, 180);
