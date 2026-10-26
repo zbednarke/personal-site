@@ -93,6 +93,23 @@
     },
   };
 
+  // Lets a finished film's "Clips used" list name and open its source takes.
+  globalThis.JazzClipStudioSources = {
+    loading() { return state.loadingDay; },
+    describe(recordingID) {
+      if (state.loadingDay) return null;
+      const recording = state.recordings.find((item) => item.id === recordingID);
+      return recording ? { section: titleFor(recording), take: U.takeLabel(recording) } : null;
+    },
+    async play(recordingID, startMS) {
+      const recording = state.loadingDay ? null : state.recordings.find((item) => item.id === recordingID);
+      if (!recording) throw new Error("This take is no longer on this day.");
+      state.resumeAfterLoad = true;
+      $("#studio-preview-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      await browseRecording(recording, startMS);
+    },
+  };
+
   globalThis.JazzClipStudioMagic = {
     restorePrevious() {
       const saved = localStorage.getItem(`${projectStorageKey()}:before-local-draft`);
@@ -221,6 +238,7 @@
       if (request === state.loadRequest) {
         state.loadingDay = false;
         syncAddClipControl();
+        document.dispatchEvent(new CustomEvent("jazz:studio-day-loaded", { detail: { date } }));
       }
     }
   }
