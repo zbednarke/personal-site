@@ -96,11 +96,14 @@ jobs:
         # Keeps the service's existing environment, secrets and settings. The
         # commit-sha label (on the service and the revision) is what the
         # guard above checks on the next deploy.
-        run: >-
-          gcloud run deploy jazz-api --source jazz-api --quiet
-          --project "$RUN_PROJECT" --region "$RUN_REGION"
-          --update-labels "commit-sha=${{ steps.commit.outputs.sha }}"
-          --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3
+        run: |
+          # Film planning uses the owner's private subscription worker.
+          # Switching back to API billing requires an explicit release change.
+          gcloud run deploy jazz-api --source jazz-api --quiet \
+            --project "$RUN_PROJECT" --region "$RUN_REGION" \
+            --update-labels "commit-sha=${{ steps.commit.outputs.sha }}" \
+            --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3 \
+            --update-env-vars MAGIC_FILM_PROVIDER=codex
       - name: Point traffic at the new revision
         run: >-
           gcloud run services update-traffic jazz-api --to-latest --quiet

@@ -77,37 +77,41 @@ func cleanMagicFilmDirection(value string) (string, error) {
 }
 
 type magicFilmJob struct {
-	ID              uuid.UUID       `json:"id"`
-	Date            string          `json:"date"`
-	TargetSeconds   int             `json:"targetSeconds"`
-	Direction       string          `json:"direction"`
-	Status          string          `json:"status"`
-	Message         string          `json:"message"`
-	Model           string          `json:"model"`
-	Effort          string          `json:"effort"`
-	Project         json.RawMessage `json:"project,omitempty"`
-	Summary         string          `json:"summary,omitempty"`
-	Reviews         json.RawMessage `json:"reviews,omitempty"`
-	DurationMS      *int            `json:"durationMs,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	CancelRequested bool            `json:"cancelRequested"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	StartedAt       *time.Time      `json:"startedAt,omitempty"`
-	FinishedAt      *time.Time      `json:"finishedAt,omitempty"`
-	HasVideo        bool            `json:"hasVideo"`
-	HasPoster       bool            `json:"hasPoster"`
+	ID              uuid.UUID         `json:"id"`
+	Date            string            `json:"date"`
+	TargetSeconds   int               `json:"targetSeconds"`
+	Direction       string            `json:"direction"`
+	Status          string            `json:"status"`
+	Message         string            `json:"message"`
+	Model           string            `json:"model"`
+	Effort          string            `json:"effort"`
+	Project         json.RawMessage   `json:"project,omitempty"`
+	Summary         string            `json:"summary,omitempty"`
+	Reviews         json.RawMessage   `json:"reviews,omitempty"`
+	DurationMS      *int              `json:"durationMs,omitempty"`
+	Error           string            `json:"error,omitempty"`
+	Failure         *magicFilmFailure `json:"failure,omitempty"`
+	Provider        string            `json:"provider"`
+	NextAttemptAt   *time.Time        `json:"nextAttemptAt,omitempty"`
+	CancelRequested bool              `json:"cancelRequested"`
+	CreatedAt       time.Time         `json:"createdAt"`
+	StartedAt       *time.Time        `json:"startedAt,omitempty"`
+	FinishedAt      *time.Time        `json:"finishedAt,omitempty"`
+	HasVideo        bool              `json:"hasVideo"`
+	HasPoster       bool              `json:"hasPoster"`
 }
 
-const magicFilmJobColumns = `id,practice_date::text,target_seconds,direction,status,message,model,effort,COALESCE(project,'null'::jsonb),summary,reviews,duration_ms,error,cancel_requested,created_at,started_at,finished_at,output_object IS NOT NULL,poster_object IS NOT NULL`
+const magicFilmJobColumns = `id,practice_date::text,target_seconds,direction,status,message,model,effort,COALESCE(project,'null'::jsonb),summary,reviews,duration_ms,error,cancel_requested,created_at,started_at,finished_at,output_object IS NOT NULL,poster_object IS NOT NULL,provider,next_attempt_at`
 
 func scanMagicFilmJob(row pgx.Row) (magicFilmJob, error) {
 	var job magicFilmJob
 	err := row.Scan(&job.ID, &job.Date, &job.TargetSeconds, &job.Direction, &job.Status, &job.Message, &job.Model, &job.Effort,
 		&job.Project, &job.Summary, &job.Reviews, &job.DurationMS, &job.Error, &job.CancelRequested,
-		&job.CreatedAt, &job.StartedAt, &job.FinishedAt, &job.HasVideo, &job.HasPoster)
+		&job.CreatedAt, &job.StartedAt, &job.FinishedAt, &job.HasVideo, &job.HasPoster, &job.Provider, &job.NextAttemptAt)
 	if string(job.Project) == "null" {
 		job.Project = nil
 	}
+	job.sanitizeFailure()
 	return job, err
 }
 
@@ -182,8 +186,9 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	if app.magicFilmInvoke == nil && (app.cfg.MagicFilmProject == "" || app.cfg.MagicFilmJob == "") {
-		writeError(w, http.StatusServiceUnavailable, "Magic Film cloud worker is not configured")
+	if app.cfg.MagicFilmProvider != "codex" && app.magicFilmInvoke == nil && (app.cfg.MagicFilmProject == "" || app.cfg.MagicFilmJob == "") {
+		failure := &magicFilmFailure{"worker_configuration", "Film worker is not connected", "Magic Film has no configured cloud worker.", "Connect the film worker before trying again.", false}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": failure.Message, "failure": failure})
 		return
 	}
 	userID, err := app.userID(r.Context())
@@ -210,8 +215,13 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 	}
 	jobID := uuid.New()
 	model := envOr("MAGIC_FILM_MODEL", "gpt-6-astra")
-	_, err = app.db.Exec(r.Context(), `INSERT INTO magic_film_jobs(id,user_id,client_id,practice_date,target_seconds,direction,status,message,model,effort,manifest)
-		VALUES($1,$2,$3,$4::date,$5,$6,'queued','Queued for an on-demand cloud worker',$7,'medium',$8)`, jobID, userID, clientID, input.Date, input.TargetSeconds, direction, model, encoded)
+	provider := "api"
+	message := "Queued for an on-demand cloud worker"
+	if app.cfg.MagicFilmProvider == "codex" {
+		provider, model, message = "codex", envOr("MAGIC_FILM_CODEX_MODEL", "codex-default"), "Queued for your private Codex worker"
+	}
+	_, err = app.db.Exec(r.Context(), `INSERT INTO magic_film_jobs(id,user_id,client_id,practice_date,target_seconds,direction,status,message,model,effort,manifest,provider)
+		VALUES($1,$2,$3,$4::date,$5,$6,'queued',$9,$7,'medium',$8,$10)`, jobID, userID, clientID, input.Date, input.TargetSeconds, direction, model, encoded, message, provider)
 	if err != nil {
 		var dbErr *pgconn.PgError
 		if errors.As(err, &dbErr) && dbErr.Code == "23505" {
@@ -221,13 +231,19 @@ func (app *application) createMagicFilm(w http.ResponseWriter, r *http.Request) 
 		app.serverError(w, err)
 		return
 	}
-	ref, err := app.invokeMagicFilm(r.Context(), jobID)
+	ref := "private-codex-worker"
+	if provider == "api" {
+		ref, err = app.invokeMagicFilm(r.Context(), jobID)
+	}
 	if err != nil {
 		_, _ = app.db.Exec(r.Context(), `UPDATE magic_film_jobs SET status='failed',message='Cloud worker could not start',error=$2,finished_at=now(),updated_at=now() WHERE id=$1`, jobID, clean(err.Error(), 4000))
-		writeError(w, http.StatusServiceUnavailable, "Cloud worker could not start; no render charges were incurred")
+		failure := describeMagicFilmFailure("", "Cloud worker could not start")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": failure.Message, "failure": failure})
 		return
 	}
-	_, _ = app.db.Exec(r.Context(), `UPDATE magic_film_jobs SET status='starting',message='Starting an on-demand cloud worker',invocation_ref=$2,updated_at=now() WHERE id=$1 AND status='queued'`, jobID, ref)
+	if provider == "api" {
+		_, _ = app.db.Exec(r.Context(), `UPDATE magic_film_jobs SET status='starting',message='Starting an on-demand cloud worker',invocation_ref=$2,updated_at=now() WHERE id=$1 AND status='queued'`, jobID, ref)
+	}
 	job, err := scanMagicFilmJob(app.db.QueryRow(r.Context(), `SELECT `+magicFilmJobColumns+` FROM magic_film_jobs WHERE id=$1 AND user_id=$2`, jobID, userID))
 	if err != nil {
 		app.serverError(w, err)
@@ -345,10 +361,10 @@ func (app *application) cancelMagicFilm(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tag, err := app.db.Exec(r.Context(), `UPDATE magic_film_jobs SET cancel_requested=true,
-		status=CASE WHEN status IN ('queued','starting') THEN 'cancelled' ELSE status END,
-		message=CASE WHEN status IN ('queued','starting') THEN 'Cancelled before rendering' ELSE 'Cancellation requested' END,
-		finished_at=CASE WHEN status IN ('queued','starting') THEN now() ELSE finished_at END,updated_at=now()
-		WHERE id=$1 AND user_id=$2 AND status IN ('queued','starting','preparing','editing','rendering')`, id, userID)
+		status=CASE WHEN status IN ('queued','starting','waiting_usage','sign_in_required') THEN 'cancelled' ELSE status END,
+		message=CASE WHEN status IN ('queued','starting','waiting_usage','sign_in_required') THEN 'Cancelled before rendering' ELSE 'Cancellation requested' END,
+		finished_at=CASE WHEN status IN ('queued','starting','waiting_usage','sign_in_required') THEN now() ELSE finished_at END,updated_at=now()
+		WHERE id=$1 AND user_id=$2 AND status IN ('queued','starting','preparing','editing','rendering','waiting_usage','sign_in_required')`, id, userID)
 	if err != nil {
 		app.serverError(w, err)
 		return
