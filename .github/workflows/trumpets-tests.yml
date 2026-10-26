@@ -3,12 +3,16 @@ on:
   pull_request:
   push:
     branches: [main]
-    # This read-only maintenance workflow runs its own parser tests and must
-    # not rebuild/redeploy the application just to inspect VM versions.
+    # VM maintenance workflows run their own safety checks and must not
+    # rebuild/redeploy the unrelated Cloud Run application.
     paths-ignore:
       - deploy/inventory-site-runtime.py
       - tools/deploy/test_runtime_inventory.py
       - .github/workflows/site-runtime-inventory.yml
+      - .github/workflows/site-auth-security.yml
+      - deploy/upgrade-jazz-auth.py
+      - deploy/publish-auth-runtime.sh
+      - tools/deploy/test_auth_upgrade.py
   workflow_dispatch:
 permissions:
   contents: read

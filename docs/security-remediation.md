@@ -2,10 +2,13 @@
 
 This is a source/dependency review, not a statement that production is patched.
 The audit session has Git transport access but no configured GCP identity or
-GitHub API access. Direct live infrastructure inspection is unavailable.
+GitHub API access. Direct live inspection is unavailable from the agent session;
+the main-only inventory workflow now uses the existing deploy identity instead.
 The existing GitHub deployment workflow successfully shipped commit 65fe450
 (Go/dependency fixes) on October 26, run 40269226093; this does not rebuild the
 VM's separate auth or Python services.
+The Debian 13 runtime follow-up (9a1bb4f) also deployed successfully in run
+40271452136.
 
 ## Changes ready for review
 
@@ -71,6 +74,23 @@ distribution fixes fail the gate; unfixed findings remain visible as warnings
 and in the artifact. No paid provider calls are made by the render test.
 
 ## Production work still required
+
+The October 26 read-only VM receipt (run 40273694786) found Go 1.24.7 in the
+auth binary, system Pillow 9.4.0 (Debian package 9.4.0-1.1+deb12u1), NumPy
+1.24.2, FFmpeg 5.1.9 and Caddy 2.11.4 on Debian 12. The film service uses the
+system Python interpreter. All three relevant services were active. A reboot
+is pending; it has not been performed. Distro backports must be considered
+before equating distro package versions to PyPI's vulnerability ranges.
+
+The auth binary records source commit 4d7e6d2, outside main's ancestry. It was
+recovered from this repository and its entire `jazz-api/cmd/jazz-auth` tree
+is byte-identical to main. The auth security workflow verifies that comparison,
+tests behavior and reachable advisories, builds with Go 1.27.3, and uses the
+existing byte-verified uploader/deploy identity. Its installer accepts only
+accounted-for clean source builds, validates the unchanged live configuration,
+checks baseline private routes, retains a private old-binary backup, and rolls
+back on restart/readiness/access-check failure. It changes no configuration,
+session keys, Caddy routes, IAM bindings or buckets.
 
 1. Deploy the Python/runtime follow-ups through the normal guarded workflow.
    The Go dependency patch is already deployed. Check API health, Google

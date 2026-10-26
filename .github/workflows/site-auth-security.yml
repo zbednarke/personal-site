@@ -1,0 +1,90 @@
+name: Site VM auth security update
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/site-auth-security.yml
+      - deploy/upgrade-jazz-auth.py
+      - deploy/publish-auth-runtime.sh
+      - tools/deploy/test_auth_upgrade.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: jazz-api/go.sum
+      - name: Test replacement, rollback and provenance guards
+        run: python3 -m unittest discover -s tools/deploy -p test_auth_upgrade.py
+      - name: Test auth behavior and check reachable vulnerabilities
+        working-directory: jazz-api
+        run: |
+          go test ./cmd/jazz-auth
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./cmd/jazz-auth
+      - name: Account for the live binary's pre-import source commit
+        run: |
+          # The inventory found this non-ancestor source revision. Accept it
+          # only after confirming its auth code is byte-identical to main.
+          source=4d7e6d2d89e54952d0deeb5b64298a7384d4c296
+          git fetch origin "$source"
+          git diff --exit-code "$source" HEAD -- jazz-api/cmd/jazz-auth
+          git rev-list HEAD > "$RUNNER_TEMP/accepted-auth-sources.txt"
+          printf '%s\n' "$source" >> "$RUNNER_TEMP/accepted-auth-sources.txt"
+      - name: Build the patched binary and verified upload bundle
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          payload="$RUNNER_TEMP/auth-security"
+          mkdir "$payload"
+          (cd jazz-api && go build -trimpath -ldflags='-s -w' -o "$payload/jazz-auth" ./cmd/jazz-auth)
+          cp deploy/upgrade-jazz-auth.py deploy/inventory-site-runtime.py deploy/verify-jazz-auth.py "$payload/"
+          cp "$RUNNER_TEMP/accepted-auth-sources.txt" "$payload/"
+          tar -czf "$RUNNER_TEMP/auth-security.tar.gz" -C "$payload" jazz-auth upgrade-jazz-auth.py inventory-site-runtime.py verify-jazz-auth.py accepted-auth-sources.txt
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Replace only auth, verify private access, roll back on failure
+        env:
+          PUBLISH_TIMEOUT: '600'
+        run: |
+          sha=$(git rev-parse HEAD)
+          remote=/tmp/auth-security-$sha
+          ssh=(gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
+          bash deploy/upload-static-release.sh upload "$remote" "$RUNNER_TEMP/auth-security.tar.gz" deploy/publish-auth-runtime.sh -- "${ssh[@]}"
+          bash deploy/upload-static-release.sh publish "$remote" "$RUNNER_TEMP/auth-security.tar.gz" deploy/publish-auth-runtime.sh "$sha" -- "${ssh[@]}"
+      - name: Confirm the installed compiler and service status
+        run: |
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'python3 -' < deploy/inventory-site-runtime.py > auth-security-receipt.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          records = [line.split('=', 1)[1] for line in Path('auth-security-receipt.txt').read_text().splitlines() if line.startswith('SITE_RUNTIME_INVENTORY=')]
+          if len(records) != 1:
+              raise SystemExit('No unique live auth receipt')
+          report = json.loads(records[0])
+          if report['jazz_auth'].get('go_version') != 'go1.27.3' or not report['services_active']['jazz-auth']:
+              raise SystemExit('Patched auth compiler/service not verified')
+          message = json.dumps(report, sort_keys=True).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print('::notice title=SITE_AUTH_SECURITY_RECEIPT::' + message)
+          PY
