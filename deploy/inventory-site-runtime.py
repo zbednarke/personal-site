@@ -399,6 +399,8 @@ def host_audit():
         except OSError:
             exe = None
         node_services[name] = {'uses_system_node': exe == '/usr/bin/node'}
+        if name == 'growth-portal' and pid and pid.isdigit() and pid != '0':
+            node_services[name]['go_build'] = auth_build_info(Path('/proc', pid, 'exe'))
     report['node_service_processes'] = node_services
     funnel = output(['tailscale', 'funnel', 'status', '--json'])
     try:
