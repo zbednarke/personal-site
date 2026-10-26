@@ -387,7 +387,7 @@ func requestMagicFilmPlan(ctx context.Context, model, effort string, manifest ma
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return plan, fmt.Errorf("Astra returned %d: %s", response.StatusCode, clean(string(responseBody), 2000))
+		return plan, magicFilmProviderFailure(response.StatusCode, responseBody)
 	}
 	var decoded struct {
 		Output []struct {
