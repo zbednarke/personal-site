@@ -1,0 +1,129 @@
+name: Site VM proxy security update
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/site-caddy-security.yml
+      - deploy/caddy-runtime/**
+      - deploy/upgrade-caddy-runtime.py
+      - deploy/publish-caddy-runtime.sh
+      - deploy/reboot-site-once.py
+      - tools/deploy/test_caddy_upgrade.py
+      - tools/deploy/test_reboot_once.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: site-vm-runtime-maintenance
+  cancel-in-progress: false
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: deploy/caddy-runtime/go.sum
+      - name: Test proxy rollback and one-time reboot safeguards
+        run: |
+          python3 -m unittest discover -s tools/deploy -p test_caddy_upgrade.py
+          python3 -m unittest discover -s tools/deploy -p test_reboot_once.py
+          python3 -m unittest discover -s tools/deploy -p test_post_reboot.py
+      - name: Test actual HTTP and HTTP2 TLS, scan and build the standard proxy
+        working-directory: deploy/caddy-runtime
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go test ./...
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+          go list -deps ./... | python3 -c 'import sys; names=[s.strip() for s in sys.stdin]; assert not any(n == "golang.org/x/crypto/openpgp" or n.startswith("golang.org/x/crypto/openpgp/") for n in names), "Unmaintained OpenPGP must not be linked"'
+          go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/caddy" .
+      - name: Prepare verified upload payload
+        run: |
+          payload="$RUNNER_TEMP/caddy-security"
+          mkdir "$payload"
+          cp "$RUNNER_TEMP/caddy" "$payload/"
+          cp deploy/upgrade-caddy-runtime.py deploy/upgrade-jazz-auth.py deploy/upgrade-highlight-python.py deploy/inventory-site-runtime.py deploy/verify-jazz-auth.py deploy/reboot-site-once.py "$payload/"
+          tar -czf "$RUNNER_TEMP/caddy-security.tar.gz" -C "$payload" caddy upgrade-caddy-runtime.py upgrade-jazz-auth.py upgrade-highlight-python.py inventory-site-runtime.py verify-jazz-auth.py reboot-site-once.py
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Validate the live configuration and modules, patch proxy with rollback
+        env:
+          PUBLISH_TIMEOUT: '900'
+        run: |
+          sha=$(git rev-parse HEAD)
+          remote=/tmp/caddy-security-$sha
+          ssh=(gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
+          bash deploy/upload-static-release.sh upload "$remote" "$RUNNER_TEMP/caddy-security.tar.gz" deploy/publish-caddy-runtime.sh -- "${ssh[@]}"
+          bash deploy/upload-static-release.sh publish "$remote" "$RUNNER_TEMP/caddy-security.tar.gz" deploy/publish-caddy-runtime.sh "$sha" -- "${ssh[@]}"
+      - name: Verify all runtime patches before the approved reboot
+        run: |
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'python3 /usr/local/libexec/site-security/inventory-site-runtime.py' > caddy-security-before.txt
+          python3 - <<'PY' > caddy-security-before.json
+          import json
+          from pathlib import Path
+          records=[s.split('=',1)[1] for s in Path('caddy-security-before.txt').read_text().splitlines() if s.startswith('SITE_RUNTIME_INVENTORY=')]
+          if len(records)!=1: raise SystemExit('No unique pre-reboot inventory')
+          r=json.loads(records[0])
+          assert r['caddy_build']['go_version']=='go1.27.3' and r['jazz_auth']['go_version']=='go1.27.3'
+          assert r['highlights_runtime']['pillow']=='13.0.0' and all(r['services_active'].values())
+          assert r['caddy_integrity']['matches_managed_build'] is True and r.get('boot_id')
+          print(json.dumps(r))
+          PY
+      - name: Request the owner's one-time reboot only after successful patches
+        run: |
+          # An expected SSH disconnect does not establish success. The next
+          # step must observe a changed boot ID and healthy services.
+          status=0
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'sudo python3 /usr/local/libexec/site-security/reboot-site-once.py' > reboot-request.txt || status=$?
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          records=[s.split('=',1)[1] for s in Path('reboot-request.txt').read_text().splitlines() if s.startswith('SITE_REBOOT_RECEIPT=')]
+          if len(records)!=1: raise SystemExit('No reboot authorization receipt; verify host status before retrying')
+          r=json.loads(records[0])
+          assert r['action'] in ('request_reboot','already_completed','not_required')
+          Path('reboot-action.txt').write_text(r['action'])
+          PY
+      - name: Verify the new boot and all patched services
+        run: |
+          verified=false
+          for attempt in $(seq 1 35); do
+            if timeout 30 gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+              --ssh-flag=-oConnectTimeout=5 --ssh-flag=-oConnectionAttempts=1 \
+              --command 'python3 /usr/local/libexec/site-security/inventory-site-runtime.py' > caddy-security-after.txt; then
+              if python3 deploy/check-post-reboot.py caddy-security-before.json caddy-security-after.txt reboot-action.txt > final-runtime-receipt.json; then
+                verified=true
+                break
+              fi
+            fi
+            sleep 10
+          done
+          if [[ $verified != true ]]; then echo '::error::Post-reboot runtime verification did not complete; operator check required.'; exit 1; fi
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'sudo python3 /usr/local/libexec/site-security/verify-jazz-auth.py >/dev/null 2>&1 && echo PRIVATE_ROUTES_VERIFIED'
+          curl --fail --silent --show-error --output /dev/null --retry 3 https://zachbednarke.com/
+          curl --fail --silent --show-error --output /dev/null --retry 3 https://uncleugga.com/
+          # A second invocation records fulfillment and must NOT reboot again.
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'sudo python3 /usr/local/libexec/site-security/reboot-site-once.py'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('final-runtime-receipt.json').read_text())
+          r['reboot_action']=Path('reboot-action.txt').read_text().strip()
+          message=json.dumps(r,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+          print('::notice title=SITE_POST_REBOOT_SECURITY_RECEIPT::'+message)
+          PY

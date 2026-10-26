@@ -16,3 +16,7 @@ updates:
     directory: /tools/highlight
     schedule:
       interval: weekly
+  - package-ecosystem: gomod
+    directory: /deploy/caddy-runtime
+    schedule:
+      interval: weekly

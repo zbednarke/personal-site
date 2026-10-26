@@ -75,6 +75,44 @@ and in the artifact. No paid provider calls are made by the render test.
 
 ## Production work still required
 
+### Verified VM runtime deployments
+
+Auth run 40274817413 verified Go 1.27.3. Python run 40276139279 verified the
+film service's isolated Pillow 13.0.0 interpreter with unchanged NumPy 1.24.2;
+all three services were active and private-route checks passed. Debian's old
+Pillow package is retained but no longer supplies this service's Pillow.
+
+### Proxy and reboot follow-up
+
+The proxy inventory found Caddy 2.11.4 compiled with Go 1.26.3. The official
+2.11.7 archive was verified against its SHA-512 vendor checksum, but its Go
+1.26.8 build still reports standard-library/x/net vulnerabilities. The maintained
+`deploy/caddy-runtime` module wraps upstream's unchanged standard command/modules
+at 2.11.7, compiled with Go 1.27.3 and updated x/net/crypto/text dependencies.
+Its source scan reports zero reachable or imported-package vulnerabilities.
+Binary/module scanning still flags x/crypto/openpgp at module granularity;
+`go list -deps` confirms that package is not linked, and CI rejects its import.
+Actual HTTP and HTTP/2 over certificate-verified TLS tests pass. Test storage
+is explicitly temporary and configuration persistence is disabled.
+
+The proxy installer requires all currently installed module IDs, refuses
+downgrades or concurrent changes, validates the unchanged Caddyfile as the
+service user with its configured environment files, and preserves ownership,
+mode and existing file capabilities. Restart/access failure restores a private
+binary backup. It does not edit routes, systemd service definitions, keys or
+data. This temporarily replaces the vendor-owned binary; dpkg's version can
+therefore differ from `caddy version`. A recorded binary hash and daily live
+inventory detect vendor overwrites for review; normal apt updates are not disabled.
+Go dependency scans and weekly proposals cover the maintained proxy module.
+
+The owner approved a shared-host reboot after the patches finish. The workflow
+first verifies all three patched runtimes, then uses a root-owned one-time
+approval record expiring October 27 UTC. It refuses active film jobs, and a
+changed boot ID consumes the approval so reruns cannot cause a second reboot.
+Post-boot checks require active services, the expected proxy hash and patched
+interpreters, private-route checks and both public homepages. A successful SSH
+reboot command alone does not count as a verified reboot.
+
 The October 26 read-only VM receipt (run 40273694786) found Go 1.24.7 in the
 auth binary, system Pillow 9.4.0 (Debian package 9.4.0-1.1+deb12u1), NumPy
 1.24.2, FFmpeg 5.1.9 and Caddy 2.11.4 on Debian 12. The film service uses the

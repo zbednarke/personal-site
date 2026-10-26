@@ -18,6 +18,15 @@ on:
       - deploy/publish-highlight-python.sh
       - deploy/highlight-runtime-wheels.txt
       - tools/deploy/test_highlight_python_upgrade.py
+      - .github/workflows/site-caddy-security.yml
+      - deploy/caddy-runtime/**
+      - deploy/upgrade-caddy-runtime.py
+      - deploy/publish-caddy-runtime.sh
+      - deploy/reboot-site-once.py
+      - deploy/check-post-reboot.py
+      - tools/deploy/test_caddy_upgrade.py
+      - tools/deploy/test_reboot_once.py
+      - tools/deploy/test_post_reboot.py
   workflow_dispatch:
 permissions:
   contents: read

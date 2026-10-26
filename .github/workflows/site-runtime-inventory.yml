@@ -6,6 +6,8 @@ on:
       - deploy/inventory-site-runtime.py
       - .github/workflows/site-runtime-inventory.yml
   workflow_dispatch:
+  schedule:
+    - cron: '13 7 * * *'
 permissions:
   contents: read
 concurrency:
@@ -54,4 +56,6 @@ jobs:
           report = json.loads(Path('site-runtime-inventory.json').read_text())
           message = json.dumps(report, sort_keys=True).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
           print('::notice title=SITE_RUNTIME_INVENTORY::' + message)
+          if report.get('caddy_integrity') and not report['caddy_integrity']['matches_managed_build']:
+              raise SystemExit('The proxy binary changed outside the verified patch workflow; review vendor updates before trusting the old scan.')
           PY

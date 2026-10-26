@@ -19,12 +19,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.3'
-          cache-dependency-path: jazz-api/go.sum
+          cache-dependency-path: |
+            jazz-api/go.sum
+            deploy/caddy-runtime/go.sum
       - name: Check reachable Go vulnerabilities
         working-directory: jazz-api
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
+      - name: Check maintained proxy dependencies
+        working-directory: deploy/caddy-runtime
+        run: |
+          govulncheck ./...
+          go list -deps ./... | python3 -c 'import sys; assert not any(s.strip().startswith("golang.org/x/crypto/openpgp") for s in sys.stdin), "OpenPGP must not be linked"'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

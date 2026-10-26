@@ -5,6 +5,7 @@ Does not install packages, restart services, enumerate environment variables,
 read application configuration, or print binary contents.
 """
 import json
+import hashlib
 from pathlib import Path
 import platform
 import re
@@ -77,6 +78,12 @@ def inventory():
         if value is not None:
             packages[name] = value
     python_modules = {}
+    proxy_integrity = None
+    try:
+        expected = Path('/var/lib/site-security-maintenance/caddy-installed.sha256').read_text().strip()
+        proxy_integrity = {'managed_record_present': True, 'matches_managed_build': bool(re.fullmatch(r'[0-9a-f]{64}', expected)) and hashlib.sha256(Path('/usr/bin/caddy').read_bytes()).hexdigest() == expected}
+    except OSError:
+        pass
     for name in ('PIL', 'numpy'):
         python_modules[name] = output(['/usr/bin/python3', '-I', '-c',
                                        'import ' + name + '; print(' + name + '.__version__)'])
@@ -89,11 +96,14 @@ def inventory():
             runtime[key] = output([match[1], '-I', '-c', 'import ' + module + '; print(' + module + '.__version__)'])
     return {
         'os': release, 'kernel': platform.release(), 'packages': packages,
+        'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
         'system_python_modules': python_modules,
         'highlights_runtime': runtime,
         'highlights_uses_system_python': bool(start and re.search(r'\bpath=/usr/bin/python3(?:[ ;}])', start)),
         'jazz_auth': auth_build_info(),
         'caddy_build': auth_build_info(Path('/usr/bin/caddy')),
+        'caddy_version': output(['/usr/bin/caddy', 'version']),
+        'caddy_integrity': proxy_integrity,
         'services_active': {name: output(['systemctl', 'is-active', name]) == 'active'
                             for name in ('caddy', 'jazz-auth', 'jazz-highlights')},
         'reboot_required': Path('/var/run/reboot-required').exists(),
