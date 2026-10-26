@@ -72,7 +72,7 @@ def inventory():
         pass
     packages = {}
     for name in ('caddy', 'ffmpeg', 'python3', 'python3-pil', 'python3-numpy',
-                 'libc6', 'libssl3', 'libssl3t64', 'linux-image-amd64', 'linux-image-generic'):
+                 'libc6', 'libssl3', 'libssl3t64', 'linux-image-cloud-amd64', 'linux-image-amd64', 'linux-image-generic'):
         value = output(['dpkg-query', '-W', '-f=${Version}', name])
         if value is not None:
             packages[name] = value
@@ -93,6 +93,7 @@ def inventory():
         'highlights_runtime': runtime,
         'highlights_uses_system_python': bool(start and re.search(r'\bpath=/usr/bin/python3(?:[ ;}])', start)),
         'jazz_auth': auth_build_info(),
+        'caddy_build': auth_build_info(Path('/usr/bin/caddy')),
         'services_active': {name: output(['systemctl', 'is-active', name]) == 'active'
                             for name in ('caddy', 'jazz-auth', 'jazz-highlights')},
         'reboot_required': Path('/var/run/reboot-required').exists(),
