@@ -48,3 +48,10 @@ jobs:
             cat site-runtime-inventory.json
             printf '\n```\n'
           } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('site-runtime-inventory.json').read_text())
+          message = json.dumps(report, sort_keys=True).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print('::notice title=SITE_RUNTIME_INVENTORY::' + message)
+          PY
