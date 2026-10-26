@@ -219,6 +219,8 @@ func (app *application) runPrivateMagicFilmWorker(ctx context.Context) error {
 		return err
 	}
 	var cleanedAt time.Time
+	lastActivity := time.Now()
+	var nextIdleCheck time.Time
 	for workerCtx.Err() == nil {
 		if time.Since(cleanedAt) >= 5*time.Minute {
 			app.cleanPrivateFilmWorkspaces(workerCtx)
@@ -234,8 +236,32 @@ func (app *application) runPrivateMagicFilmWorker(ctx context.Context) error {
 				app.logger.Error("private film job stopped", "job_id", id, "error_code", describeMagicFilmFailure(err.Error(), "").Code)
 			}
 			cancel()
+			var status string
+			if err := app.db.QueryRow(workerCtx, `SELECT status FROM magic_film_jobs WHERE id=$1`, id).Scan(&status); err != nil {
+				return err // Do not power off after an unverified queue read.
+			}
+			if status != "waiting_usage" && status != "sign_in_required" {
+				lastActivity = time.Now()
+			}
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		if app.cfg.FilmPower.Enabled && time.Now().After(nextIdleCheck) {
+			stopping, err := app.stopIdlePrivateFilmVM(workerCtx, lastActivity, time.Now())
+			nextIdleCheck = time.Now().Add(30 * time.Second)
+			if err != nil && workerCtx.Err() == nil {
+				app.logger.Warn("private film idle shutdown deferred", "error_code", "shutdown_unavailable")
+			}
+			if stopping {
+				app.logger.Info("private film VM idle shutdown requested")
+				// Never begin another job after a shutdown request was accepted.
+				select {
+				case <-workerCtx.Done():
+					return nil
+				case <-time.After(2 * time.Minute):
+					return errors.New("accepted idle shutdown did not finish")
+				}
+			}
 		}
 		select {
 		case <-workerCtx.Done():

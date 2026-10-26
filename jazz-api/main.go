@@ -77,6 +77,7 @@ type config struct {
 	MagicFilmRegion     string
 	MagicFilmJob        string
 	MagicFilmProvider   string
+	FilmPower           filmPowerConfig
 	LongToneWorkers     int
 	CaptionWorkers      int
 	ProjectID           string
@@ -95,9 +96,12 @@ type application struct {
 	longToneSigner    longToneURLSigner
 	// objects and inspirationHTTP are nil in production (GCS and the safe
 	// preview client are used); tests inject fakes.
-	objects         objectStore
-	inspirationHTTP *http.Client
-	magicFilmInvoke func(context.Context, uuid.UUID) (string, error)
+	objects           objectStore
+	inspirationHTTP   *http.Client
+	magicFilmInvoke   func(context.Context, uuid.UUID) (string, error)
+	magicFilmVMWake   func(context.Context) error
+	magicFilmWakeAuth func(*http.Request) bool
+	magicFilmShutdown func(context.Context) error
 	// wb is set only in the Workbench service (WORKBENCH_MODE=1) and in tests.
 	wb *workbench
 	// wbOnly serves just the Workbench routes (the separate Cloud Run service).
@@ -446,6 +450,13 @@ func loadConfig() (config, error) {
 	if cfg.MagicFilmProvider != "api" && cfg.MagicFilmProvider != "codex" {
 		return cfg, errors.New("MAGIC_FILM_PROVIDER must be api or codex")
 	}
+	cfg.FilmPower, err = loadFilmPowerConfig(os.Getenv("MAGIC_FILM_PRIVATE_WORKER") == "1")
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.FilmPower.Enabled && cfg.MagicFilmProvider != "codex" {
+		return cfg, errors.New("private film VM power control requires MAGIC_FILM_PROVIDER=codex")
+	}
 	if cfg.GatewayKey == "" && !cfg.AllowInsecureLocal && os.Getenv("MAGIC_FILM_PRIVATE_WORKER") != "1" {
 		return cfg, errors.New("GATEWAY_KEY is required outside local development")
 	}
@@ -506,6 +517,10 @@ func (app *application) routes() http.Handler {
 	if app.wbOnly {
 		return app.recoverPanic(app.logRequests(mux))
 	}
+	mux.HandleFunc("POST /internal/magic-film/reconcile", app.reconcilePrivateFilmVM)
+	mux.HandleFunc("GET /health/film-power", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"capability": "private-film-vm-power-v1", "enabled": app.cfg.FilmPower.Enabled})
+	})
 	app.trumpetRoutes(mux)
 	app.fixListMachineRoutes(mux)
 	app.repertoireRoutes(mux)
