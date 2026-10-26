@@ -23,7 +23,7 @@ both ends). The only intended differences are this README (the VM still has
 an October 3 version) and test fixtures, where real job IDs and personal
 strings were replaced with fictional ones. The VM was not changed.
 
-Run the suite (needs FFmpeg, NumPy, Pillow and DejaVu fonts):
+Run the suite (needs Python 3.11+, FFmpeg, NumPy, Pillow and DejaVu fonts):
 
 ```sh
 python3 -m pip install -r tools/highlight/requirements.txt
@@ -38,7 +38,7 @@ The **Make note-map film** button calls `/jazz/highlight-api/jobs` on the authen
 
 One job runs at a time on the site VM. Source media and render intermediates are removed after each job; the content-addressed analysis cache is capped at 500 MB. The service has CPU and memory limits, a 2 GB disk reserve, and runs without root access. Caddy's existing Jazz authentication verifies and overwrites the user header before forwarding to the loopback-only service. POSTs require the site's Origin; browser-supplied URLs/source lists are rejected. This deployment serves the existing single Jazz owner and denies other identities.
 
-Install `deploy/jazz-highlights.service`, deploy this directory to `/opt/jazz-highlights`, install Python 3 + NumPy + FFmpeg, and run `deploy/install-jazz-highlights.py` as root. Credentials reuse the server-only Caddy environment; the browser never receives the gateway key. Deployment must verify anonymous denial, authenticated status/start/cancel, and a real server render.
+Install `deploy/jazz-highlights.service`, deploy this directory to `/opt/jazz-highlights`, install Python 3.11+ and the dependencies in `requirements.txt` plus FFmpeg, and run `deploy/install-jazz-highlights.py` as root. The interpreter used by the service must have the patched Pillow version; updating this checkout or the Cloud Run image does not update the VM's Python packages. If using a virtual environment, point the service's `ExecStart` at its interpreter and use that same interpreter for installer tests. Credentials reuse the server-only Caddy environment; the browser never receives the gateway key. Deployment must verify anonymous denial, authenticated status/start/cancel, and a real server render.
 
 ## Optional local editor
 
@@ -50,7 +50,7 @@ The legacy local worker runs on this PC. It analyzes every uploaded recording fo
 
 ## Start
 
-Requires Python 3.10+, NumPy (`python -m pip install -r tools/highlight/requirements.txt`) and FFmpeg/ffprobe. The default audio-aware editor is deterministic and does not require a model call. Legacy candidate-only jobs additionally require Node and a signed-in Codex CLI. A dedicated current CLI can be installed without changing your global CLI:
+Requires Python 3.11+, NumPy (`python -m pip install -r tools/highlight/requirements.txt`) and FFmpeg/ffprobe. The default audio-aware editor is deterministic and does not require a model call. Legacy candidate-only jobs additionally require Node and a signed-in Codex CLI. A dedicated current CLI can be installed without changing your global CLI:
 
 ```powershell
 npm install --prefix .local/highlight-tools @openai/codex@latest

@@ -24,6 +24,22 @@ The official Go advisory data was obtained from `golang/vulndb`'s OSV files on
 GitHub because this environment cannot reach vuln.go.dev. Verification uses
 the same govulncheck analyzer with that local database.
 
+## Python media dependency follow-up, October 26
+
+The previous `Pillow>=9.4,<13` requirement resolved to Pillow 12.3.0. The
+current PyPI advisory service reports 37 vulnerabilities in that version, all
+fixed in 13.0.0, including CVE-2026-112398 and CVE-2026-114501. The requirement
+now pins Pillow 13.0.0, which requires Python 3.11 or newer. NumPy's existing
+range does not need to change for this remediation. Daily scans and the
+pre-deployment test workflow now audit the Python requirements with pip-audit;
+Dependabot also covers this requirements file.
+
+This is a vulnerable-dependency finding, not evidence that all affected image
+formats or operations are reachable through this application's endpoints.
+The service primarily uses Pillow to generate graphics. The production VM
+uses a separately installed Python interpreter and packages; its installed
+versions remain unverified and are not updated by the static/API deploy.
+
 ## Production work still required
 
 1. Merge and deploy the reviewed dependency patch through the normal guarded

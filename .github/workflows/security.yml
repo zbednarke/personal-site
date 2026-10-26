@@ -29,3 +29,10 @@ jobs:
       - name: Audit browser test dependencies
         working-directory: assets/jazz
         run: npm audit --package-lock-only --audit-level=moderate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Audit film-service Python dependencies
+        run: |
+          python -m pip install pip-audit==2.10.1
+          python -m pip_audit --requirement tools/highlight/requirements.txt --vulnerability-service pypi
