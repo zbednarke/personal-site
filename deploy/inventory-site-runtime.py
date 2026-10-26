@@ -333,7 +333,7 @@ def host_audit():
     except OSError:
         report['apt_cache_mtime_utc'] = None
     hosts = set()
-    files = [Path('/etc/caddy/Caddyfile'), *Path('/etc/caddy/Caddyfile.d').glob('*.caddy')]
+    files = [Path('/etc/caddy/Caddyfile'), *Path('/etc/caddy').rglob('*.caddy')]
     for file in files[:50]:
         try:
             # Hostnames only from known route files; never print config,
@@ -345,6 +345,15 @@ def host_audit():
     report['caddy_hosts'] = sorted(hosts)
     provenance = output(['docker', 'inspect', '--type=container', '--format', '{{json .Config.Image}} {{json .Image}}', 'actual-server'])
     report['actual_container_provenance'] = provenance if provenance and re.fullmatch(r'"[a-zA-Z0-9@/:_.-]+" "sha256:[a-f0-9]{64}"', provenance) else None
+    node_services = {}
+    for name in ('actual-bot', 'growth-portal'):
+        pid = output(['systemctl', 'show', name, '--property=MainPID', '--value'])
+        try:
+            exe = str(Path('/proc', pid or '', 'exe').resolve(strict=True)) if pid and pid.isdigit() and pid != '0' else None
+        except OSError:
+            exe = None
+        node_services[name] = {'uses_system_node': exe == '/usr/bin/node'}
+    report['node_service_processes'] = node_services
     return report
 
 
