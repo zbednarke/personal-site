@@ -1,0 +1,50 @@
+name: Site VM runtime inventory
+on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/inventory-site-runtime.py
+      - .github/workflows/site-runtime-inventory.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+jobs:
+  inventory:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the read-only inventory parser
+        run: python3 -m unittest discover -s tools/deploy -p test_runtime_inventory.py
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Read known site runtime versions without configuration or secrets
+        run: |
+          set -o pipefail
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a \
+            --tunnel-through-iap --quiet --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4 \
+            --command 'python3 -' < deploy/inventory-site-runtime.py > site-runtime-transport.txt
+          python3 - <<'PY' > site-runtime-inventory.json
+          import json
+          from pathlib import Path
+          records = [line.split('=', 1)[1] for line in Path('site-runtime-transport.txt').read_text().splitlines() if line.startswith('SITE_RUNTIME_INVENTORY=')]
+          if len(records) != 1:
+              raise SystemExit('The VM did not return exactly one inventory; no versions verified.')
+          print(json.dumps(json.loads(records[0]), indent=2, sort_keys=True))
+          PY
+          cat site-runtime-inventory.json
+          {
+            printf '### Read-only site VM runtime inventory\n\n```json\n'
+            cat site-runtime-inventory.json
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
