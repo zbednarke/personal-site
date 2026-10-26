@@ -29,7 +29,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Read known site runtime versions without configuration or secrets
         run: |
           set -o pipefail
@@ -141,7 +141,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Read cloud configuration with existing permissions; never grant missing access
         env:
           CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
@@ -215,7 +215,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Configure short-lived registry authentication on this runner only
         run: gcloud auth configure-docker us-central1-docker.pkg.dev,us-west1-docker.pkg.dev --quiet
       - name: Scan immutable deployed image without executing application code

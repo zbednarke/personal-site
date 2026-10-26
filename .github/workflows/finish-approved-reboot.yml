@@ -27,7 +27,7 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Confirm patches and inspect approval before any retry
         run: |
           gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --command 'sudo python3 -' > reboot-preflight.txt <<'PY'
