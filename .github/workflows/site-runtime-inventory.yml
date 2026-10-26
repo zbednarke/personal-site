@@ -154,13 +154,31 @@ jobs:
           Path('cloud-security-inventory.json').write_text(json.dumps(report,indent=2))
           gaps=[]
           for project,sections in report['projects'].items():
-              # GitHub caps notices per step. One bounded record per project
-              # preserves all sections rather than silently dropping the rest.
-              msg=json.dumps(sections,sort_keys=True).replace('%','%25').replace('\r','%0D').replace('\n','%0A')
-              print('::notice title=CLOUD_AUDIT_PROJECT_'+project+'::'+msg)
               for section,value in sections.items():
                   if value['status']!='observed': gaps.append(project+'/'+section+': '+value['status'])
           summary={'observed_sections':sum(v['status']=='observed' for p in report['projects'].values() for v in p.values()),'coverage_gaps':gaps}
           print('::notice title=CLOUD_AUDIT_COVERAGE::'+json.dumps(summary).replace('%','%25'))
           if gaps: print('::warning::Cloud audit has explicit coverage gaps; a green collection job is not an all-clear.')
           PY
+      - name: Publish complete redacted site-project metadata receipt
+        env:
+          AUDIT_PROJECT: actual-budget-zb
+        run: &publish-receipt |
+          python3 - <<'PY'
+          import importlib.util,json,os
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location('audit','deploy/inventory-site-runtime.py')
+          audit=importlib.util.module_from_spec(spec);spec.loader.exec_module(audit)
+          project=os.environ['AUDIT_PROJECT']
+          value=json.loads(Path('cloud-security-inventory.json').read_text())['projects'][project]
+          for part in audit.receipt_chunks(value):
+              print('::notice title=CLOUD_AUDIT_RECEIPT_'+project+'_'+str(part['part'])+'::'+json.dumps(part))
+          PY
+      - name: Publish complete redacted API-project metadata receipt
+        env:
+          AUDIT_PROJECT: parabolio-prod
+        run: *publish-receipt
+      - name: Publish complete redacted game-project metadata receipt
+        env:
+          AUDIT_PROJECT: voicecontrol-games
+        run: *publish-receipt

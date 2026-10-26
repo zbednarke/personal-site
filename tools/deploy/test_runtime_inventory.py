@@ -1,6 +1,10 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import base64
+import hashlib
+import json
+import zlib
 import unittest
 from unittest.mock import patch
 
@@ -71,6 +75,21 @@ class RuntimeInventoryTests(unittest.TestCase):
             state, data = inventory.command_json(['compute', 'instances', 'list'], 'name')
         self.assertEqual(state['status'], 'observed')
         self.assertEqual(data, [])
+
+    def test_success_exit_with_permission_warning_stays_a_coverage_gap(self):
+        with patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '[]', 'WARNING: Some requests did not succeed: Required compute.instances.list permission')):
+            state, data = inventory.command_json(['compute', 'instances', 'list'], 'name')
+        self.assertEqual(state['status'], 'partial')
+        self.assertEqual(data, [])
+
+    def test_large_receipt_survives_annotation_limit_and_hash_round_trip(self):
+        value = {'items': [{'name': str(i), 'digest': hashlib.sha256(str(i).encode()).hexdigest()} for i in range(400)]}
+        parts = inventory.receipt_chunks(value)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(len(json.dumps(part).encode()) < 4096 for part in parts))
+        raw = zlib.decompress(base64.b64decode(''.join(part['payload'] for part in parts)))
+        self.assertEqual(json.loads(raw), value)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), parts[0]['sha256'])
 
     def test_iam_public_grants_survive_but_identity_details_do_not(self):
         result = inventory.iam_summary({'bindings': [{'role': 'roles/run.invoker', 'members': ['allUsers', 'user:private@example.org'], 'condition': {'expression': 'secret-expression'}}]})

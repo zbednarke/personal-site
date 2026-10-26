@@ -13,6 +13,8 @@ import subprocess
 import sys
 import datetime
 import ipaddress
+import base64
+import zlib
 
 
 def output(args):
@@ -150,7 +152,11 @@ def command_json(parts, fields):
             status = 'api_disabled'
         return {'status': status}, None
     try:
-        return {'status': 'observed'}, json.loads(result.stdout)
+        data = json.loads(result.stdout)
+        # Aggregated compute lists may exit zero with incomplete zone results.
+        warning = result.stderr.lower()
+        partial = any(s in warning for s in ('permission', 'forbidden', '403', 'some requests did not succeed', 'partial results'))
+        return {'status': 'partial' if partial else 'observed'}, data
     except ValueError:
         return {'status': 'invalid_response'}, None
 
@@ -273,6 +279,7 @@ def run_summary(service):
     return {'name': meta.get('name') if meta.get('name') in ('jazz-api', 'workbench', 'ugga-allocator', 'ugga-telemetry-admin', 'ugga-telemetry-ingest') else alias(meta.get('name')),
             'ingress': annotations.get('run.googleapis.com/ingress'),
             'invoker_iam_disabled': annotations.get('run.googleapis.com/invoker-iam-disabled'),
+            'url': status.get('url'),
             'latest_ready_revision': status.get('latestReadyRevisionName'),
             'traffic': [{'revision': t.get('revisionName'), 'percent': t.get('percent')} for t in status.get('traffic', [])],
             'account': alias(spec.get('serviceAccountName')),
@@ -325,14 +332,31 @@ def host_audit():
         report['apt_cache_mtime_utc'] = datetime.datetime.fromtimestamp(Path('/var/lib/apt/lists').stat().st_mtime, datetime.timezone.utc).isoformat()
     except OSError:
         report['apt_cache_mtime_utc'] = None
-    report['caddy_hosts'] = []
-    try:
-        # Hostnames only; never adapt/log the config or read service env files.
-        config = Path('/etc/caddy/Caddyfile').read_text()
-        report['caddy_hosts'] = sorted(set(re.findall(r'(?m)^([A-Za-z0-9][A-Za-z0-9., -]*\.[A-Za-z][A-Za-z0-9., -]*)\s*\{\s*$', config)))
-    except OSError:
-        report['caddy_hosts'] = None
+    hosts = set()
+    files = [Path('/etc/caddy/Caddyfile'), *Path('/etc/caddy/Caddyfile.d').glob('*.caddy')]
+    for file in files[:50]:
+        try:
+            # Hostnames only from known route files; never print config,
+            # adapt it with secrets or read service environment files.
+            for match in re.findall(r'(?m)^([A-Za-z0-9][A-Za-z0-9., -]*\.[A-Za-z][A-Za-z0-9., -]*)\s*\{\s*$', file.read_text()):
+                hosts.update(h.strip() for h in re.split('[, ]+', match) if '.' in h)
+        except OSError:
+            continue
+    report['caddy_hosts'] = sorted(hosts)
+    provenance = output(['docker', 'inspect', '--type=container', '--format', '{{json .Config.Image}} {{json .Image}}', 'actual-server'])
+    report['actual_container_provenance'] = provenance if provenance and re.fullmatch(r'"[a-zA-Z0-9@/:_.-]+" "sha256:[a-f0-9]{64}"', provenance) else None
     return report
+
+
+def receipt_chunks(value):
+    """GitHub annotation messages truncate at 4096 bytes; preserve integrity."""
+    raw = json.dumps(value, sort_keys=True).encode()
+    encoded = base64.b64encode(zlib.compress(raw)).decode('ascii')
+    chunks = [encoded[i:i + 2800] for i in range(0, len(encoded), 2800)]
+    if len(chunks) > 10:
+        raise ValueError('Receipt exceeds the per-step annotation budget')
+    return [{'encoding': 'zlib-base64', 'part': i, 'parts': len(chunks),
+             'sha256': hashlib.sha256(raw).hexdigest(), 'payload': chunk} for i, chunk in enumerate(chunks)]
 
 
 if __name__ == '__main__':
