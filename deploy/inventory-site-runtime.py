@@ -15,6 +15,8 @@ import datetime
 import ipaddress
 import base64
 import zlib
+import socket
+import ssl
 
 
 def output(args):
@@ -317,6 +319,43 @@ def listener_summary(text):
     return result
 
 
+def origin_tls_checks(sockets, hosts):
+    """Inspect the authorized VM's own Caddy listener, never proxy requests."""
+    address = None
+    for line in (sockets or '').splitlines():
+        parts = line.split()
+        if len(parts) < 6 or parts[0] != 'tcp' or '"caddy"' not in line:
+            continue
+        host, _, port = parts[4].rpartition(':')
+        if port != '443':
+            continue
+        try:
+            ip = ipaddress.ip_address(host.strip('[]').split('%')[0])
+            address = '127.0.0.1' if ip.is_unspecified and ip.version == 4 else '::1' if ip.is_unspecified else str(ip)
+        except ValueError:
+            continue
+        break
+    if address is None:
+        return {'status': 'listener_unavailable'}
+    checks = []
+    for host in sorted(set(hosts) & {'zachbednarke.com', 'uncleugga.com', 'portal.zachbednarke.com'}):
+        for version in (ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
+            record = {'host': host, 'requested_protocol': version.name}
+            try:
+                context = ssl.create_default_context()
+                context.minimum_version = context.maximum_version = version
+                with socket.create_connection((address, 443), timeout=5) as conn:
+                    with context.wrap_socket(conn, server_hostname=host) as peer:
+                        cert = peer.getpeercert()
+                        record.update(status='verified', negotiated_protocol=peer.version(),
+                                      expires=cert.get('notAfter'),
+                                      issuer=[v for rdn in cert.get('issuer', ()) for k, v in rdn if k in ('organizationName', 'commonName')])
+            except (OSError, ssl.SSLError) as e:
+                record.update(status='unverified', error_type=type(e).__name__, reason=getattr(e, 'reason', None))
+            checks.append(record)
+    return {'status': 'observed', 'tested_from': 'local_Caddy_listener', 'checks': checks}
+
+
 def host_audit():
     report = {'collected_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'runtime': inventory()}
     sockets = output(['ss', '-H', '-lntup'])
@@ -349,6 +388,7 @@ def host_audit():
         except OSError:
             continue
     report['caddy_hosts'] = sorted(hosts)
+    report['origin_tls'] = origin_tls_checks(sockets, hosts)
     provenance = output(['docker', 'inspect', '--type=container', '--format', '{{json .Config.Image}} {{json .Image}}', 'actual-server'])
     report['actual_container_provenance'] = provenance if provenance and re.fullmatch(r'"[a-zA-Z0-9@/:_.-]+" "sha256:[a-f0-9]{64}"', provenance) else None
     node_services = {}

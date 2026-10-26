@@ -6,6 +6,11 @@ on:
       - deploy/inventory-site-runtime.py
       - .github/workflows/site-runtime-inventory.yml
   workflow_dispatch:
+    inputs:
+      scan_images:
+        description: Scan deployed image digests as well as metadata and the host
+        type: boolean
+        default: false
   schedule:
     - cron: '13 7 * * *'
 permissions:
@@ -198,7 +203,7 @@ jobs:
           PY
   production-images:
     needs: cloud-audit
-    if: needs.cloud-audit.outputs.images != '[]'
+    if: needs.cloud-audit.outputs.images != '[]' && (inputs.scan_images == true || contains(github.event.head_commit.message, '[scan-images]'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
