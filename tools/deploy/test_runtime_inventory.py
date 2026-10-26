@@ -121,6 +121,23 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.assertFalse(result['internet_wide'])
         self.assertTrue(result['public_source'])
 
+    def test_deployed_images_deduplicate_and_reject_other_registries(self):
+        image = 'us-central1-docker.pkg.dev/parabolio-prod/repo/api@sha256:' + 'a' * 64
+        report = {'projects': {'parabolio-prod': {'run_us-central1': {'result': [{'images': [image, 'attacker.example/private/image:tag']}]}, 'jobs_us-central1': {'result': [{'template': {'images': [image]}}]}}}}
+        self.assertEqual(inventory.deployed_images(report), [image])
+
+    def test_image_summary_excludes_environment_history_and_arbitrary_metadata(self):
+        raw = {'Metadata': {'OS': {'Family': 'debian'}, 'ImageConfig': {'Env': ['API_KEY=must-not-appear']}, 'History': 'must-not-appear'},
+               'Results': [{'Class': 'os-pkgs', 'Vulnerabilities': [{'VulnerabilityID': 'CVE-test', 'PkgName': 'test', 'Severity': 'CRITICAL', 'InstalledVersion': '1', 'FixedVersion': '2', 'Description': 'must-not-appear'}]}]}
+        result = inventory.image_report(raw, 'requested', 'digest')
+        self.assertNotIn('must-not-appear', str(result))
+        self.assertEqual(result['critical_advisories'], ['CVE-test'])
+        self.assertEqual(result['fixable_package_findings'], 1)
+
+    def test_unsupported_image_scan_cannot_claim_clean(self):
+        with self.assertRaises(ValueError):
+            inventory.image_report({'Results': []}, 'image', 'digest')
+
 
 if __name__ == '__main__':
     unittest.main()

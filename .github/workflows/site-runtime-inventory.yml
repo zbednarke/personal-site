@@ -128,6 +128,8 @@ jobs:
     if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      images: ${{ steps.images.outputs.images }}
     permissions:
       contents: read
       id-token: write
@@ -182,3 +184,45 @@ jobs:
         env:
           AUDIT_PROJECT: voicecontrol-games
         run: *publish-receipt
+      - name: Select unique deployed images for exact-digest vulnerability scans
+        id: images
+        run: |
+          python3 - <<'PY'
+          import importlib.util,json,os
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location('audit','deploy/inventory-site-runtime.py')
+          audit=importlib.util.module_from_spec(spec);spec.loader.exec_module(audit)
+          images=audit.deployed_images(json.loads(Path('cloud-security-inventory.json').read_text()))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('images='+json.dumps(images)+'\n')
+          print('Selected '+str(len(images))+' unique deployed image references; application containers will not be executed.')
+          PY
+  production-images:
+    needs: cloud-audit
+    if: needs.cloud-audit.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        image: ${{ fromJSON(needs.cloud-audit.outputs.images) }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure short-lived registry authentication on this runner only
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev,us-west1-docker.pkg.dev --quiet
+      - name: Scan immutable deployed image without executing application code
+        env:
+          AUDIT_IMAGE: ${{ matrix.image }}
+        run: python3 deploy/inventory-site-runtime.py --scan-image "$AUDIT_IMAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-image-${{ strategy.job-index }}
+          path: production-image-scan/sanitized.json

@@ -368,6 +368,70 @@ def receipt_chunks(value):
              'sha256': hashlib.sha256(raw).hexdigest(), 'payload': chunk} for i, chunk in enumerate(chunks)]
 
 
+def deployed_images(report):
+    found = set()
+    for section, record in report.get('projects', {}).get('parabolio-prod', {}).items():
+        rows = record.get('result')
+        if not section.startswith(('run_', 'jobs_')) or not isinstance(rows, list):
+            continue
+        for row in rows:
+            for image in row.get('images', row.get('template', {}).get('images', [])):
+                if re.fullmatch(r'us-(?:central1|west1)-docker\.pkg\.dev/parabolio-prod/[A-Za-z0-9_./:@-]+', image):
+                    found.add(image)
+    if len(found) > 8:
+        raise ValueError('More than eight deployed images; expand the explicit audit budget')
+    return sorted(found)
+
+
+def image_report(raw, requested, digest):
+    """Drop image environment/history, descriptions and all secret-like metadata."""
+    results = raw.get('Results', [])
+    if not results or not any(r.get('Class') in ('os-pkgs', 'lang-pkgs') for r in results):
+        raise ValueError('No supported package analysis in image scan')
+    findings = []
+    for result in results:
+        for item in result.get('Vulnerabilities', []):
+            findings.append({k: item.get(k) for k in ('VulnerabilityID', 'PkgName', 'InstalledVersion', 'FixedVersion', 'Severity')})
+    return {'requested_image': requested, 'scanned_digest': digest, 'status': 'scanned',
+            'os': raw.get('Metadata', {}).get('OS'), 'package_classes': sorted(set(r.get('Class', '') for r in results)),
+            'high_critical_package_findings': len(findings),
+            'unique_advisories': len(set(v['VulnerabilityID'] for v in findings)),
+            'fixable_package_findings': sum(bool(v.get('FixedVersion')) for v in findings),
+            'critical_advisories': sorted(set(v['VulnerabilityID'] for v in findings if v['Severity'] == 'CRITICAL')),
+            'findings': findings}
+
+
+def scan_image(image):
+    if not re.fullmatch(r'us-(?:central1|west1)-docker\.pkg\.dev/parabolio-prod/[A-Za-z0-9_./:@-]+', image):
+        raise ValueError('Image is outside this audit project')
+    def run(args, timeout=300):
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        if result.returncode:
+            raise ValueError('Image audit tool failed; no clean result asserted')
+        return result.stdout
+    run(['docker', 'pull', image])
+    digests = json.loads(run(['docker', 'image', 'inspect', '--format', '{{json .RepoDigests}}', image]))
+    digest = next((v for v in digests if re.fullmatch(r'us-(?:central1|west1)-docker\.pkg\.dev/parabolio-prod/[A-Za-z0-9_./-]+@sha256:[0-9a-f]{64}', v)), None)
+    if not digest:
+        raise ValueError('No immutable image digest resolved')
+    folder = Path('production-image-scan').resolve()
+    folder.mkdir(exist_ok=True)
+    trivy = 'aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c'
+    run(['docker', 'run', '--rm', '--mount', 'type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock,readonly',
+         '--mount', 'type=bind,src=' + str(folder) + ',dst=/reports', trivy,
+         'image', '--db-repository', 'ghcr.io/aquasecurity/trivy-db:2', '--image-src', 'docker',
+         '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL', '--no-progress',
+         '--format', 'json', '--output', '/reports/raw.json', digest], timeout=900)
+    report = image_report(json.loads((folder / 'raw.json').read_text()), image, digest)
+    # Raw image metadata may contain baked-in env/history. Never upload it.
+    (folder / 'sanitized.json').write_text(json.dumps(report, indent=2))
+    for chunk in receipt_chunks(report):
+        print('::notice title=PRODUCTION_IMAGE_AUDIT_' + alias(image) + '_' + str(chunk['part']) + '::' + json.dumps(chunk))
+    if report['findings']:
+        print('::warning::Deployed image has high/critical package findings; see the sanitized audit receipt.')
+    return report
+
+
 if __name__ == '__main__':
     # A fresh gcloud SSH session can print key-generation banners to stdout.
     mode = sys.argv[1:]
@@ -375,6 +439,8 @@ if __name__ == '__main__':
         print('CLOUD_SECURITY_INVENTORY=' + json.dumps(cloud_audit(), sort_keys=True))
     elif mode == ['--host-audit']:
         print('HOST_SECURITY_INVENTORY=' + json.dumps(host_audit(), sort_keys=True))
+    elif len(mode) == 2 and mode[0] == '--scan-image':
+        scan_image(mode[1])
     elif not mode:
         print('SITE_RUNTIME_INVENTORY=' + json.dumps(inventory(), sort_keys=True))
     else:
