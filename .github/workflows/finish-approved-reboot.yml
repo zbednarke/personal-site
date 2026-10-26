@@ -1,0 +1,114 @@
+name: Finish approved one-time site reboot
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/finish-approved-reboot.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: site-vm-runtime-maintenance
+  cancel-in-progress: false
+jobs:
+  finish:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test one-time authorization and boot verification
+        run: |
+          python3 -m unittest discover -s tools/deploy -p test_reboot_once.py
+          python3 -m unittest discover -s tools/deploy -p test_post_reboot.py
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Confirm patches and inspect approval before any retry
+        run: |
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --command 'sudo python3 -' > reboot-preflight.txt <<'PY'
+          import datetime,importlib.util,json
+          from pathlib import Path
+          def load(name,file):
+              s=importlib.util.spec_from_file_location(name,Path('/usr/local/libexec/site-security')/file);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
+          inv=load('inventory','inventory-site-runtime.py').inventory()
+          rb=load('reboot','reboot-site-once.py')
+          previous=json.loads(rb.STATE.read_text()) if rb.STATE.exists() else None
+          decision=rb.decision(previous,inv['boot_id'],inv['reboot_required'],datetime.datetime.now(datetime.timezone.utc))
+          idle=load('film','upgrade-highlight-python.py').idle()
+          assert inv['caddy_build']['go_version']=='go1.27.3' and inv['jazz_auth']['go_version']=='go1.27.3'
+          assert inv['caddy_integrity']['matches_managed_build'] is True and inv['highlights_runtime']['pillow']=='13.0.0'
+          assert all(inv['services_active'].values()) and idle and decision!='approval_expired'
+          print('REBOOT_PREFLIGHT='+json.dumps({'inventory':inv,'decision':decision,'previous':previous}))
+          PY
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[s.split('=',1)[1] for s in Path('reboot-preflight.txt').read_text().splitlines() if s.startswith('REBOOT_PREFLIGHT=')]
+          if len(rows)!=1: raise SystemExit('No approved healthy preflight')
+          d=json.loads(rows[0]);Path('reboot-before.json').write_text(json.dumps(d))
+          print('::notice title=APPROVED_REBOOT_PREFLIGHT::'+json.dumps(d).replace('%','%25'))
+          PY
+      - name: Request once with sanitized failure diagnostics
+        run: |
+          status=0
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --command 'sudo python3 -' > reboot-request.txt <<'PY' || status=$?
+          import importlib.util,json,sys
+          from pathlib import Path
+          s=importlib.util.spec_from_file_location('reboot',Path('/usr/local/libexec/site-security/reboot-site-once.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+          try:
+              m.request()
+          except Exception as e:
+              d={'error_type':type(e).__name__}
+              cmd=getattr(e,'cmd',None)
+              if isinstance(cmd,list) and cmd and cmd[0]=='systemctl' and all(isinstance(x,str) for x in cmd):
+                  d['systemctl_command']=cmd;d['returncode']=getattr(e,'returncode',None)
+              message=str(e)
+              if message.startswith(('A film job','Cannot verify the local film service','Invalid job status','One-time reboot approval')):
+                  d['reason']=message
+              print('::error title=Approved reboot refused::'+json.dumps(d),flush=True)
+              sys.exit(1)
+          PY
+          cat reboot-request.txt
+          if grep -q '^::error ' reboot-request.txt; then exit 1; fi
+          if [[ $status != 0 && $status != 255 ]]; then echo '::error::SSH request failed before a verified handoff.'; exit 1; fi
+          # Missing stdout after an SSH disconnect is NOT proof of failure or
+          # success. Observe the actual boot and never issue another request.
+      - name: Observe the boot, services, integrity and private access
+        run: |
+          ok=false
+          for attempt in $(seq 1 25); do
+            if timeout 20 gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --ssh-flag=-oConnectTimeout=5 --ssh-flag=-oConnectionAttempts=1 --command 'python3 /usr/local/libexec/site-security/inventory-site-runtime.py' > reboot-after.txt; then
+              if python3 - <<'PY' > reboot-verified.json
+          import importlib.util,json
+          from pathlib import Path
+          d=json.loads(Path('reboot-before.json').read_text())
+          rows=[s.split('=',1)[1] for s in Path('reboot-after.txt').read_text().splitlines() if s.startswith('SITE_RUNTIME_INVENTORY=')]
+          if len(rows)!=1: raise SystemExit(1)
+          report=json.loads(rows[0])
+          before=d['inventory']
+          if d['decision']=='already_completed' and d.get('previous'): before={'boot_id':d['previous']['boot_id']}
+          action='request_reboot' if d['decision'] in ('request_reboot','already_completed') else 'not_required'
+          s=importlib.util.spec_from_file_location('check','deploy/check-post-reboot.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+          try: r=m.validate(before,report,action)
+          except ValueError: raise SystemExit(1)
+          r['reboot_action']=d['decision'];print(json.dumps(r))
+          PY
+              then ok=true; break; fi
+            fi
+            sleep 10
+          done
+          if [[ $ok != true ]]; then echo '::error::No verified healthy boot observed; no further reboot requested.'; exit 1; fi
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --command 'sudo python3 /usr/local/libexec/site-security/verify-jazz-auth.py >/dev/null 2>&1 && echo PRIVATE_ROUTES_VERIFIED'
+          curl --fail --silent --show-error --output /dev/null --retry 3 https://zachbednarke.com/
+          curl --fail --silent --show-error --output /dev/null --retry 3 https://uncleugga.com/
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('reboot-verified.json').read_text())
+          print('::notice title=SITE_POST_REBOOT_SECURITY_RECEIPT::'+json.dumps(r,sort_keys=True).replace('%','%25'))
+          PY

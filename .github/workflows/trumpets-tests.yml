@@ -19,6 +19,7 @@ on:
       - deploy/highlight-runtime-wheels.txt
       - tools/deploy/test_highlight_python_upgrade.py
       - .github/workflows/site-caddy-security.yml
+      - .github/workflows/finish-approved-reboot.yml
       - deploy/caddy-runtime/**
       - deploy/upgrade-caddy-runtime.py
       - deploy/publish-caddy-runtime.sh
