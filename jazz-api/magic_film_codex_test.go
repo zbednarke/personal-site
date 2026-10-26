@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -213,4 +216,48 @@ func TestPrivateFilmSavedPlanSkipsCodexAfterRestart(t *testing.T) {
 	if err := db.QueryRow(ctx, `SELECT plan FROM magic_film_jobs WHERE id=$1`, id).Scan(&retained); err != nil || len(retained) == 0 {
 		t.Fatal("saved plan was discarded")
 	}
+}
+
+// Explicitly opt in on the private VM as magic-film. CI never receives a
+// subscription session. This uses synthetic metadata and one generated image.
+func TestPrivateCodexLiveSmoke(t *testing.T) {
+	if os.Getenv("MAGIC_FILM_LIVE_CODEX_SMOKE") != "1" {
+		t.Skip("private worker sign-in required; synthetic opt-in smoke test")
+	}
+	workspace, err := os.MkdirTemp(envOr("MAGIC_FILM_WORKSPACE", "/var/lib/magic-film/jobs"), "smoke-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(workspace)
+	if err := os.Chmod(workspace, 0750|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	frame := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			frame.Set(x, y, color.RGBA{uint8(x * 4), uint8(y * 4), 80, 255})
+		}
+	}
+	file, err := os.OpenFile(filepath.Join(workspace, "frame-000.png"), os.O_CREATE|os.O_WRONLY, 0640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = png.Encode(file, frame)
+	file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := testMagicManifest()
+	manifest.Candidates[0].Title = "Synthetic subscription smoke test, not a real recording"
+	manifest.Candidates[0].Frames = []string{"frame-000.png"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	plan, err := requestCodexMagicFilmPlan(ctx, "codex-default", "medium", manifest, "", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMagicFilmPlan(plan, manifest); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Subscription-authenticated image/JSON plan passed existing validation (%d clips)", len(plan.Clips))
 }
