@@ -173,4 +173,23 @@ func TestMagicFilmDirectionIsStoredAndRemakeKeepsTheOldFilm(t *testing.T) {
 	if err := db.QueryRow(ctx, `SELECT direction FROM magic_film_jobs WHERE id=$1`, first.ID).Scan(&stored); err != nil || stored != "quiet and reflective" {
 		t.Fatalf("the earlier film's direction changed: %q %v", stored, err)
 	}
+	t.Run("subscription provider queues without invoking the API worker", func(t *testing.T) {
+		if _, err := db.Exec(ctx, `UPDATE magic_film_jobs SET status='complete',finished_at=now() WHERE id=$1`, remade.ID); err != nil {
+			t.Fatal(err)
+		}
+		app.cfg.MagicFilmProvider = "codex"
+		before := invoked
+		client := uuid.NewString()
+		request := map[string]any{"clientId": client, "date": "2026-10-01", "targetSeconds": 60, "direction": "quiet"}
+		code, job, raw := create(request)
+		if code != http.StatusAccepted || job.Provider != "codex" || job.Status != "queued" || job.Model != "codex-default" {
+			t.Fatalf("subscription queue: %d %s", code, raw)
+		}
+		if code, again, _ := create(request); code != http.StatusOK || again.ID != job.ID {
+			t.Fatal("subscription submit is not idempotent")
+		}
+		if invoked != before {
+			t.Fatal("subscription job invoked the API-backed Cloud Run worker")
+		}
+	})
 }
