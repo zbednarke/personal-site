@@ -13,6 +13,11 @@ on:
       - deploy/upgrade-jazz-auth.py
       - deploy/publish-auth-runtime.sh
       - tools/deploy/test_auth_upgrade.py
+      - .github/workflows/site-python-security.yml
+      - deploy/upgrade-highlight-python.py
+      - deploy/publish-highlight-python.sh
+      - deploy/highlight-runtime-wheels.txt
+      - tools/deploy/test_highlight_python_upgrade.py
   workflow_dispatch:
 permissions:
   contents: read

@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: deploy-production
+  group: site-runtime-inventory
   cancel-in-progress: false
 jobs:
   inventory:

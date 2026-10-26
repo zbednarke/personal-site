@@ -1,0 +1,71 @@
+name: Site VM Python security update
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/site-python-security.yml
+      - deploy/upgrade-highlight-python.py
+      - deploy/publish-highlight-python.sh
+      - deploy/highlight-runtime-wheels.txt
+      - tools/deploy/test_highlight_python_upgrade.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: site-vm-runtime-maintenance
+  cancel-in-progress: false
+jobs:
+  update:
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test checksums, idle guards, compatibility guards and rollback
+        run: python -m unittest discover -s tools/deploy -p test_highlight_python_upgrade.py
+      - name: Prepare checksum-pinned offline bundle
+        run: |
+          payload="$RUNNER_TEMP/python-security"
+          mkdir -p "$payload/wheels" "$payload/tools"
+          python -m pip download --require-hashes --only-binary=:all: --no-deps \
+            --platform manylinux_2_27_x86_64 --python-version 311 --implementation cp --abi cp311 \
+            --dest "$payload/wheels" -r deploy/highlight-runtime-wheels.txt
+          cp deploy/upgrade-highlight-python.py deploy/verify-jazz-auth.py deploy/highlight-runtime-wheels.txt "$payload/"
+          cp -R tools/highlight "$payload/tools/"
+          tar -czf "$RUNNER_TEMP/python-security.tar.gz" -C "$payload" upgrade-highlight-python.py verify-jazz-auth.py highlight-runtime-wheels.txt wheels tools
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Stage isolated Pillow, test it and restart only if idle
+        env:
+          PUBLISH_TIMEOUT: '900'
+        run: |
+          sha=$(git rev-parse HEAD)
+          remote=/tmp/python-security-$sha
+          ssh=(gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
+          bash deploy/upload-static-release.sh upload "$remote" "$RUNNER_TEMP/python-security.tar.gz" deploy/publish-highlight-python.sh -- "${ssh[@]}"
+          bash deploy/upload-static-release.sh publish "$remote" "$RUNNER_TEMP/python-security.tar.gz" deploy/publish-highlight-python.sh "$sha" -- "${ssh[@]}"
+      - name: Confirm the live service uses patched Pillow
+        run: |
+          gcloud compute ssh actual-server --project actual-budget-zb --zone us-west1-a --tunnel-through-iap --quiet \
+            --command 'python3 -' < deploy/inventory-site-runtime.py > python-security-receipt.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          records = [line.split('=', 1)[1] for line in Path('python-security-receipt.txt').read_text().splitlines() if line.startswith('SITE_RUNTIME_INVENTORY=')]
+          if len(records) != 1:
+              raise SystemExit('No unique live Python receipt')
+          report = json.loads(records[0])
+          if (report.get('highlights_runtime') or {}).get('pillow') != '13.0.0' or not report['services_active']['jazz-highlights']:
+              raise SystemExit('Patched live service not verified')
+          message = json.dumps(report, sort_keys=True).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print('::notice title=SITE_PYTHON_SECURITY_RECEIPT::' + message)
+          PY

@@ -91,12 +91,31 @@ accounted-for clean source builds, validates the unchanged live configuration,
 checks baseline private routes, retains a private old-binary backup, and rolls
 back on restart/readiness/access-check failure. It changes no configuration,
 session keys, Caddy routes, IAM bindings or buckets.
+Run 40274817413 subsequently completed successfully: the installed auth binary
+reports Go 1.27.3 and clean source bf35510, with all three services active.
 
-1. Deploy the Python/runtime follow-ups through the normal guarded workflow.
-   The Go dependency patch is already deployed. Check API health, Google
-   sign-in, private pages and media after each release.
-2. Rebuild and install the VM's separate `jazz-auth` binary with the supported
-   Go compiler. Updating the Cloud Run image does not replace that binary.
+The Python follow-up stages a root-owned venv using checksum-pinned Pillow
+13.0.0 and pip wheels, entirely offline on the VM. It preserves system NumPy
+1.24.2 and does not install or replace Debian packages or application code.
+The exact Python 3.11 / NumPy 1.24.2 / Pillow 13.0.0 combination passed all 48
+film tests in a Debian 12 container. Thirteen installer tests cover checksums,
+idle guards, compatibility failures and rollback. The installer checks for
+active jobs both before staging and before restart, runs compatibility and
+private-route checks first, then applies only a service-specific interpreter
+override. A runtime version precheck and post-restart access checks protect the
+switch; failure restores the previous override and verifies the old service.
+The read-only receipt distinguishes system Pillow from the service's actual
+interpreter, so retaining Debian's old package does not hide which one is used.
+
+Read-only inventory and mutating VM maintenance use separate concurrency
+groups from application deployment. Auth and Python changes share a maintenance
+group so they do not overlap. Inventory-only changes do not redeploy the API.
+
+1. Complete and verify the Python service rollout. The Go/API dependencies,
+   Debian 13 API runtime and separate VM auth binary are already patched.
+   Check API health, Google sign-in, private pages and media after each release.
+2. Plan a maintenance window for the pending host reboot; do not interrupt
+   recordings, renders or unrelated services on this shared VM.
 3. Inventory and patch the site VM's OS, Caddy, Python, Pillow, NumPy and FFmpeg.
    The current repository includes a hosted film service on that VM; Cloud Run
    image updates do not patch its dependencies. Verify services after updates;

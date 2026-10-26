@@ -11,7 +11,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: deploy-production
+  group: site-vm-runtime-maintenance
   cancel-in-progress: false
 jobs:
   update:

@@ -81,9 +81,16 @@ def inventory():
         python_modules[name] = output(['/usr/bin/python3', '-I', '-c',
                                        'import ' + name + '; print(' + name + '.__version__)'])
     start = output(['systemctl', 'show', 'jazz-highlights', '--property=ExecStart', '--value'])
+    runtime = None
+    match = re.search(r'\bpath=([^ ;}]+)', start or '')
+    if match and (match[1] == '/usr/bin/python3' or re.fullmatch(r'/opt/jazz-highlights-venvs/security-[0-9a-f]{40}-[A-Za-z0-9_]+/bin/python', match[1])):
+        runtime = {'interpreter': match[1], 'pillow': None, 'numpy': None}
+        for key, module in [('pillow', 'PIL'), ('numpy', 'numpy')]:
+            runtime[key] = output([match[1], '-I', '-c', 'import ' + module + '; print(' + module + '.__version__)'])
     return {
         'os': release, 'kernel': platform.release(), 'packages': packages,
         'system_python_modules': python_modules,
+        'highlights_runtime': runtime,
         'highlights_uses_system_python': bool(start and re.search(r'\bpath=/usr/bin/python3(?:[ ;}])', start)),
         'jazz_auth': auth_build_info(),
         'services_active': {name: output(['systemctl', 'is-active', name]) == 'active'

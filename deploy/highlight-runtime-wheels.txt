@@ -1,0 +1,3 @@
+# Official PyPI wheel hashes; the live interpreter is CPython 3.11 on Linux amd64.
+Pillow==13.0.0 --hash=sha256:a625df9a2a5597fa5e5266e01aefc82604bb85d291e3547981e863560d75da6c
+pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
