@@ -16,6 +16,7 @@
     playbackURLs: new Map(), players: new Map(), playerLoads: new Map(), playerUse: 0, warmToken: 0,
     project: Model.createProject(U.dateKey(new Date())), draggedOutputIndex: -1, addMode: false, addModeBusy: false, loadingDay: false,
     captions: new Map(), captionPoll: 0,
+    currentOutputClipId: null, cropEditor: null, renderBusy: false,
   };
 
   async function api(path, options = {}) {
@@ -182,6 +183,26 @@
       persistProject();
     });
     $("#studio-render").onclick = renderOutputMovie;
+    const dock = $(".studio-output-dock");
+    new ResizeObserver(() => {
+      $("#studio").style.paddingBottom = getComputedStyle(dock).position === "fixed" ? `${dock.getBoundingClientRect().height + 40}px` : "";
+    }).observe(dock);
+    $("#studio-vertical").onclick = () => {
+      state.project = { ...state.project, includeVertical: !state.project.includeVertical };
+      persistProject(); renderOutputTimeline();
+      if (state.project.includeVertical && state.currentMode !== "output" && state.project.clips.length) previewOutputClip(state.project.clips[0]);
+    };
+    $("#studio-crop-reset").onclick = () => updateCrop(Model.normalizeCrop());
+    $("#studio-crop-size").oninput = event => {
+      const clip = selectedOutputClip();
+      if (clip) updateCrop({ ...Model.normalizeCrop(clip.verticalCrop), scale: Number(event.target.value) });
+    };
+    $("#studio-crop-apply").onclick = () => {
+      const clip = selectedOutputClip();
+      if (!clip) return;
+      state.project = Model.setClipCrop(state.project, clip.id, clip.verticalCrop, true);
+      persistProject(); setRenderStatus("Applied this frame to output clips from the same take.", "success");
+    };
     loadDay(state.date);
   }
 
@@ -528,6 +549,7 @@
     state.current = null;
     state.currentRecording = recording;
     state.currentMode = "output";
+    state.currentOutputClipId = clip.id;
     renderCandidates();
     updateRegionSelection();
     $("#studio-playback-mode").textContent = "Output clip preview";
@@ -536,7 +558,43 @@
     const notice = $("#studio-raw-notice");
     notice.textContent = "Output clip preview · this is the copied cut currently in the render timeline.";
     notice.hidden = false;
+    renderOutputTimeline();
     await loadPlayer(recording, clip.startMs);
+  }
+
+  function selectedOutputClip() {
+    return state.currentMode === "output" ? state.project.clips.find(clip => clip.id === state.currentOutputClipId) : null;
+  }
+
+  function cropControls(crop) {
+    $("#studio-crop-size").value = crop.scale;
+    $("#studio-crop-size-value").textContent = `${Math.round(crop.scale * 100)}%`;
+  }
+
+  function updateCrop(value) {
+    const clip = selectedOutputClip();
+    if (!clip) return;
+    const geometry = Model.cropGeometry(value, state.media?.videoWidth, state.media?.videoHeight);
+    const crop = geometry ? { centerX: geometry.centerX, centerY: geometry.centerY, scale: geometry.scale } : Model.normalizeCrop(value);
+    state.project = Model.setClipCrop(state.project, clip.id, crop);
+    persistProject(); cropControls(crop); state.cropEditor?.update(crop);
+  }
+
+  function syncFramingEditor() {
+    state.cropEditor?.dispose(); state.cropEditor = null;
+    const enabled = state.project.includeVertical;
+    $("#studio-vertical").setAttribute("aria-pressed", String(enabled));
+    $("#studio-framing").hidden = !enabled;
+    const clip = selectedOutputClip();
+    const editable = enabled && clip && state.media?.tagName === "VIDEO" && state.media.dataset.recordingId === clip.recordingId;
+    $("#studio-framing-controls").disabled = !editable;
+    $("#studio-framing-label").textContent = editable ? `Vertical frame · ${clip.title} · clip ${state.project.clips.indexOf(clip) + 1}` : "Add a video clip to Output, then select it to frame it.";
+    if (!editable || !globalThis.JazzClipStudioCrop) return;
+    cropControls(Model.normalizeCrop(clip.verticalCrop));
+    state.cropEditor = globalThis.JazzClipStudioCrop.mount(state.media, clip.verticalCrop, crop => {
+      state.project = Model.setClipCrop(state.project, clip.id, crop);
+      cropControls(crop);
+    }, persistProject);
   }
 
   function playbackKey(recording) {
@@ -669,6 +727,7 @@
   }
 
   async function loadPlayer(recording, startMS) {
+    state.cropEditor?.dispose(); state.cropEditor = null;
     const request = ++state.playbackRequest;
     const key = playbackKey(recording);
     const warm = state.players.get(key);
@@ -686,6 +745,7 @@
       state.media = entry.media;
       const playerShell = globalThis.JazzMediaPlayback?.createSavedPlayer(entry.media, { recordingId: recording.id, asset: recording.mediaKind === "video" ? "video" : "audio", expectedDurationMS: recording.durationMs }) || entry.media;
       $("#studio-media").replaceChildren(playerShell);
+      syncFramingEditor();
       loadCaptions(recording);
       const playbackContinued = await seekMedia(entry.media, startMS, resumePlayback, () => request === state.playbackRequest && state.currentRecording?.id === recording.id);
       if (request !== state.playbackRequest || state.currentRecording?.id !== recording.id) return;
@@ -955,6 +1015,7 @@
       persistProject();
       renderOutputTimeline();
       setRenderStatus(`Added ${clip.title} · ${U.takeLabel(recording)} using the current boundaries.`, "success");
+      if (state.project.includeVertical) previewOutputClip(clip);
     } catch (error) {
       setRenderStatus(error.message, "error");
     }
@@ -963,7 +1024,8 @@
   function renderOutputTimeline() {
     const host = $("#studio-output-clips");
     $("#studio-output-duration").textContent = formatClock(Model.totalDurationMS(state.project));
-    $("#studio-render").disabled = !state.project.clips.length;
+    $("#studio-render").disabled = state.renderBusy || !state.project.clips.length;
+    syncFramingEditor();
     if (!state.project.clips.length) {
       host.innerHTML = "<p>Use Add to Output to begin an edit.</p>";
       return;
@@ -978,6 +1040,7 @@
       const clip = state.project.clips.find((item) => item.id === button.dataset.outputOpen);
       if (clip) previewOutputClip(clip);
     }));
+    host.querySelectorAll("[data-output-id]").forEach(element => element.classList.toggle("selected", state.currentMode === "output" && element.dataset.outputId === state.currentOutputClipId));
     host.querySelectorAll("[data-output-remove]").forEach((button) => button.addEventListener("click", () => {
       state.project = Model.removeClip(state.project, button.dataset.outputRemove);
       persistProject();
@@ -1065,6 +1128,7 @@
   }
 
   async function renderOutputMovie() {
+    if (state.renderBusy) return;
     state.project = { ...state.project, title: $("#studio-output-title").value.slice(0, 120) };
     persistProject();
     let payload;
@@ -1075,22 +1139,26 @@
       return;
     }
     const button = $("#studio-render");
+    state.renderBusy = true;
     button.disabled = true;
     const finishEstimate = startRenderEstimate(button);
-    setRenderStatus("Rendering 1080p video with universal AAC playback audio and a lossless ALAC master. Keep this page open.");
+    setRenderStatus(payload.includeVertical ? "Rendering Full + Vertical versions with AAC playback and a lossless ALAC master. Keep this page open." : "Rendering 1080p video with universal AAC playback audio and a lossless ALAC master. Keep this page open.");
     try {
       const result = await api("/studio/renders", { method: "POST", body: JSON.stringify(payload) });
+      if (payload.includeVertical && result.outputs?.length !== 2) throw new Error("The server did not return both output versions.");
       finishEstimate(true);
-      const link = document.createElement("a");
-      link.href = result.url;
-      link.download = result.filename || "jazz-practice.mp4";
-      link.rel = "noreferrer";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const outputs = result.outputs || [{ label: "Full", filename: result.filename, url: result.url }];
+      const host = $("#studio-render-outputs");
+      host.replaceChildren(...outputs.map(output => {
+        const link = document.createElement("a");
+        link.href = output.url; link.download = output.filename || "jazz-practice.mp4"; link.rel = "noreferrer";
+        link.textContent = `↓ ${output.label} · ${output.filename}`;
+        return link;
+      }));
+      if (!payload.includeVertical) host.querySelector("a").click();
       const audioQuality = result.quality?.audio || "audio quality not reported";
       if (result.quality?.audioLossless === true) {
-        setRenderStatus(`Downloaded ${result.filename} · ${audioQuality}.`, "success");
+        setRenderStatus(`${payload.includeVertical ? "Both versions are ready to download" : "Downloaded " + result.filename} · ${audioQuality}. Links expire in one hour.`, "success");
       } else {
         setRenderStatus(`QUALITY NOTICE · Downloaded ${result.filename} with ${audioQuality}; this output is not confirmed lossless.`, "error");
       }
@@ -1098,12 +1166,14 @@
       finishEstimate(false);
       setRenderStatus(`Render failed · ${error.message}`, "error");
     } finally {
+      state.renderBusy = false;
       button.disabled = !state.project.clips.length;
       button.textContent = "Render Output";
     }
   }
 
   function closePreview() {
+    state.cropEditor?.dispose(); state.cropEditor = null; state.currentOutputClipId = null;
     state.media?.pause();
     state.media = null;
     state.resumeAfterLoad = false;
@@ -1112,6 +1182,7 @@
     $("#studio-preview-title").textContent = "Choose a suggestion";
     $("#studio-media").innerHTML = '<p class="clip-studio-empty">Choose a suggested region, or click anywhere in a waveform to browse a complete take.</p>';
     $("#studio-editor").hidden = true;
+    syncFramingEditor();
     $("#studio-raw-notice").hidden = true;
     setBufferStatus("");
     updatePlayhead();

@@ -109,6 +109,10 @@ jobs:
         env:
           JAZZ_SCREENSHOT_DIR: docs/jazz/screenshots/smoke
         run: node tools/jazz/browser-check.cjs
+      - name: Clip Studio vertical framing (playable fixture, pointer/touch, dual export)
+        env:
+          JAZZ_CROP_SCREENSHOT_DIR: docs/jazz/screenshots/vertical-crop
+        run: node tools/jazz/vertical-crop-check.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -129,3 +133,8 @@ jobs:
         with:
           name: jazz-smoke-verification
           path: docs/jazz/screenshots/smoke/*.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jazz-vertical-crop-verification
+          path: docs/jazz/screenshots/vertical-crop/*.png

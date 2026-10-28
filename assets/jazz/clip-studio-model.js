@@ -9,6 +9,32 @@
   const RENDER_FIXED_ESTIMATE_MS = 20 * 1000;
   const RENDER_REALTIME_FACTOR = 3;
 
+  function normalizeCrop(value) {
+    return {
+      centerX: Number.isFinite(value?.centerX) ? Math.max(0, Math.min(1, value.centerX)) : .5,
+      centerY: Number.isFinite(value?.centerY) ? Math.max(0, Math.min(1, value.centerY)) : .5,
+      scale: Number.isFinite(value?.scale) ? Math.max(.1, Math.min(1, value.scale)) : 1,
+    };
+  }
+
+  // Coordinates refer to the upright video image, never its CSS letterbox.
+  function cropGeometry(value, sourceWidth, sourceHeight) {
+    if (!(sourceWidth > 0 && sourceHeight > 0)) return null;
+    const crop = normalizeCrop(value), aspect = sourceWidth / sourceHeight;
+    const width = Math.min(1, (9 / 16) / aspect) * crop.scale;
+    const height = Math.min(1, aspect / (9 / 16)) * crop.scale;
+    const centerX = Math.max(width / 2, Math.min(1 - width / 2, crop.centerX));
+    const centerY = Math.max(height / 2, Math.min(1 - height / 2, crop.centerY));
+    return { x: centerX - width / 2, y: centerY - height / 2, width, height, centerX, centerY, scale: crop.scale };
+  }
+
+  function setClipCrop(project, id, value, sameTake = false) {
+    const selected = project.clips.find(clip => clip.id === id);
+    if (!selected) return project;
+    return { ...project, clips: project.clips.map(clip => clip.id === id || (sameTake && clip.recordingId === selected.recordingId)
+      ? { ...clip, verticalCrop: normalizeCrop(value) } : clip) };
+  }
+
   function defaultTitle(dateKey) {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ""));
     const date = match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : new Date();
@@ -16,19 +42,20 @@
   }
 
   function createProject(dateKey) {
-    return { version: 1, title: defaultTitle(dateKey), clips: [] };
+    return { version: 1, title: defaultTitle(dateKey), includeVertical: false, clips: [] };
   }
 
   function normalizeProject(value, dateKey) {
     const fallback = createProject(dateKey);
     if (!value || value.version !== 1 || !Array.isArray(value.clips)) return fallback;
     const clips = value.clips.filter((clip) => clip && typeof clip.id === "string" && typeof clip.recordingId === "string" && Number.isFinite(clip.startMs) && Number.isFinite(clip.endMs) && clip.endMs > clip.startMs).slice(0, MAX_CLIPS);
-    return { version: 1, title: String(value.title || fallback.title).slice(0, 120), clips };
+    return { version: 1, title: String(value.title || fallback.title).slice(0, 120), includeVertical: value.includeVertical === true,
+      clips: clips.map(clip => ({ ...clip, ...(clip.verticalCrop ? { verticalCrop: normalizeCrop(clip.verticalCrop) } : {}) })) };
   }
 
   function addClip(project, clip) {
     if (project.clips.length >= MAX_CLIPS) throw new Error("The output timeline is limited to 24 clips.");
-    const next = { ...project, clips: [...project.clips, { ...clip }] };
+    const next = { ...project, clips: [...project.clips, { ...clip, ...(clip.verticalCrop ? { verticalCrop: normalizeCrop(clip.verticalCrop) } : {}) }] };
     if (totalDurationMS(next) > MAX_DURATION_MS) throw new Error("The output timeline is limited to ten minutes.");
     return next;
   }
@@ -58,7 +85,7 @@
   }
 
   function estimatedRenderMS(project) {
-    return Math.max(MIN_RENDER_ESTIMATE_MS, Math.round(RENDER_FIXED_ESTIMATE_MS + totalDurationMS(project) * RENDER_REALTIME_FACTOR));
+    return Math.max(MIN_RENDER_ESTIMATE_MS, Math.round(RENDER_FIXED_ESTIMATE_MS + totalDurationMS(project) * RENDER_REALTIME_FACTOR * (project.includeVertical ? 2 : 1)));
   }
 
   function placeDefaultSourceClip(clickMS, durationMS, clips, targetLengthMS = DEFAULT_SOURCE_CLIP_MS) {
@@ -118,11 +145,13 @@
     if (!String(project.title || "").trim()) throw new Error("Give the output a project title.");
     return {
       title: String(project.title).trim(),
-      clips: project.clips.map((clip) => ({ recordingId: clip.recordingId, startMs: clip.startMs, endMs: clip.endMs })),
+      ...(project.includeVertical ? { includeVertical: true } : {}),
+      clips: project.clips.map((clip) => ({ recordingId: clip.recordingId, startMs: clip.startMs, endMs: clip.endMs,
+        ...(project.includeVertical ? { verticalCrop: normalizeCrop(clip.verticalCrop) } : {}) })),
     };
   }
 
-  const api = { discoveredClipAvailable, clipDownloadPayload, DEFAULT_SOURCE_CLIP_MS, MIN_SOURCE_CLIP_MS, MAX_CLIPS, MAX_DURATION_MS, addClip, candidateIsLiked, createProject, defaultTitle, estimatedRenderMS, moveClip, nextLikeStatus, normalizeProject, placeDefaultSourceClip, removeClip, renderPayload, totalDurationMS };
+  const api = { cropGeometry, normalizeCrop, setClipCrop, discoveredClipAvailable, clipDownloadPayload, DEFAULT_SOURCE_CLIP_MS, MIN_SOURCE_CLIP_MS, MAX_CLIPS, MAX_DURATION_MS, addClip, candidateIsLiked, createProject, defaultTitle, estimatedRenderMS, moveClip, nextLikeStatus, normalizeProject, placeDefaultSourceClip, removeClip, renderPayload, totalDurationMS };
   globalThis.JazzClipStudioModel = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

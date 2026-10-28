@@ -20,12 +20,12 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go test -c -o "$RUNNER_TEMP/jazz-runtime.test" .
-      - name: Test audio analysis and real Magic Film rendering in the runtime
+      - name: Test audio analysis, Magic Film and Clip Studio rendering in the runtime
         run: |
           docker run --rm --entrypoint /bin/sh jazz-runtime:audit -c 'command -v ffmpeg && command -v ffprobe && test -r /usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
           docker run --rm --mount "type=bind,src=$RUNNER_TEMP/jazz-runtime.test,dst=/tests/jazz-runtime.test,readonly" \
             --entrypoint /tests/jazz-runtime.test jazz-runtime:audit \
-            -test.v -test.run '^Test(MagicFilmRenderWithFFmpeg|LongToneCodec|DecodeLongToneWithFFmpeg)'
+            -test.v -test.run '^Test(MagicFilmRenderWithFFmpeg|VerticalRenderWithFFmpeg|DualRenderAtMaximumClipCount|LongToneCodec|DecodeLongToneWithFFmpeg)'
       - name: Report all high/critical OS advisories
         run: |
           mkdir container-scan

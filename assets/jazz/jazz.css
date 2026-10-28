@@ -1508,7 +1508,34 @@ footer p[data-tone="offline"] { color: var(--red); }
 .studio-output-open span{color:var(--brass-light);font:7px var(--mono)}
 .studio-output-remove{align-self:start;width:23px;height:23px;border:0;background:transparent;color:var(--faint);cursor:pointer;font-size:16px}
 .studio-output-remove:hover{color:#d49a9a}
-.studio-render-controls{display:grid;grid-template-columns:minmax(130px,1fr) auto;grid-template-areas:"title render" "quality status" "progress progress" "length length" "direction direction" "magic cancel" "open restore" "magic-status magic-status" "server-length server-length" "server-film server-cancel" "server-results server-results" "server-status server-status";gap:7px 10px}
+.studio-render-controls{display:grid;grid-template-columns:minmax(130px,1fr) auto;grid-template-areas:"title render" "vertical vertical" "quality status" "progress progress" "outputs outputs" "length length" "direction direction" "magic cancel" "open restore" "magic-status magic-status" "server-length server-length" "server-film server-cancel" "server-results server-results" "server-status server-status";gap:7px 10px}
+.studio-output-dock{max-height:45vh;overflow-y:auto}
+#studio-vertical{grid-area:vertical;min-height:36px;border:1px solid var(--line);padding:7px 10px;background:transparent;color:var(--muted);cursor:pointer;font:10px var(--mono);text-align:left}
+#studio-vertical[aria-pressed=true]{border-color:#e07c7c;color:#ffb3b3;background:rgba(224,124,124,.08)}
+#studio-vertical[aria-pressed=true]::before{content:"✓ "}
+.studio-render-outputs{grid-area:outputs;display:grid;gap:7px;min-width:0}
+.studio-render-outputs:empty{display:none}
+.studio-render-outputs a{color:var(--green);font:10px/1.5 var(--mono);overflow-wrap:anywhere}
+.studio-output-clip.selected{outline:2px solid var(--brass-light);outline-offset:-2px}
+.studio-framing{padding:14px 20px;border-bottom:1px solid var(--line);color:var(--muted);font:11px/1.6 var(--sans)}
+.studio-framing[hidden]{display:none}
+.studio-framing strong{color:#ffb3b3;font:11px var(--mono)}
+.studio-framing p{margin:8px 0}
+.studio-framing fieldset{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;border:0;min-width:0}
+.studio-framing label{display:flex;align-items:center;gap:8px;flex:1 1 100%;min-width:0}
+.studio-framing input{flex:1;min-width:50px;accent-color:#e07c7c}
+.studio-framing button{min-height:44px;border:1px solid var(--line);padding:6px 10px;background:transparent;color:var(--ink);cursor:pointer;font:10px var(--mono)}
+.studio-framing fieldset:disabled{opacity:.45}
+.studio-crop-layer{position:absolute;z-index:2;overflow:hidden;pointer-events:none}
+.studio-crop-layer[hidden]{display:none}
+.studio-crop-frame{box-sizing:border-box;position:absolute;border:2px dashed #ff6565;box-shadow:0 0 0 9999px rgba(0,0,0,.5);pointer-events:auto;touch-action:none;cursor:move}
+.studio-crop-frame:focus-visible{outline:2px solid white;outline-offset:2px}
+.studio-crop-handle{position:absolute;width:44px;height:44px;min-width:44px;min-height:44px;padding:0;border:0;background:transparent;touch-action:none}
+.studio-crop-handle::after{content:"";position:absolute;inset:16px;border:1px solid white;background:#ff6565}
+.studio-crop-handle.nw{left:-22px;top:-22px;cursor:nwse-resize}.studio-crop-handle.ne{right:-22px;top:-22px;cursor:nesw-resize}
+.studio-crop-handle.sw{left:-22px;bottom:-22px;cursor:nesw-resize}.studio-crop-handle.se{right:-22px;bottom:-22px;cursor:nwse-resize}
+.studio-crop-handle.n{left:calc(50% - 22px);top:-22px;cursor:ns-resize}.studio-crop-handle.s{left:calc(50% - 22px);bottom:-22px;cursor:ns-resize}
+.studio-crop-handle.w{left:-22px;top:calc(50% - 22px);cursor:ew-resize}.studio-crop-handle.e{right:-22px;top:calc(50% - 22px);cursor:ew-resize}
 .studio-render-controls>label{grid-area:title;display:grid;gap:4px}
 .studio-render-controls input{min-width:0;width:100%;height:32px;padding:0 9px;border:1px solid var(--line);background:#131314;color:#f3f3f2;font:9px var(--mono)}
 .studio-quality{grid-area:quality;position:relative;align-self:center;color:var(--green);font:7px var(--mono);text-transform:uppercase}
@@ -1517,7 +1544,7 @@ footer p[data-tone="offline"] { color: var(--red); }
 .studio-quality p b{color:#f3f3f2}
 #studio-render{grid-area:render;min-width:120px;border:1px solid #b5935b;background:#b5935b;color:#131314;cursor:pointer;font:700 8px var(--mono);letter-spacing:.08em;text-transform:uppercase}
 #studio-render:disabled{opacity:.42;cursor:not-allowed}
-#studio-render-status{grid-area:status;align-self:center;overflow:hidden;color:var(--faint);font:7px var(--mono);text-align:right;text-overflow:ellipsis;white-space:nowrap}
+#studio-render-status{grid-area:status;align-self:center;overflow:hidden;color:var(--faint);font:7px/1.5 var(--mono);white-space:normal;overflow-wrap:anywhere;text-align:left}
 #studio-make-film{grid-area:magic}
 #studio-cancel-film{grid-area:cancel}
 #studio-open-film-draft{grid-area:open}
@@ -1545,6 +1572,15 @@ footer p[data-tone="offline"] { color: var(--red); }
 @media(max-width:900px){.clip-studio-right-column{grid-template-columns:1fr}.studio-output-dock{grid-template-columns:auto minmax(190px,1fr) minmax(250px,330px)}.studio-output-heading{display:none}}
 @media(max-width:760px){.clip-studio-screen{padding-bottom:48px}.clip-studio-header-tools{margin-top:20px}.studio-scan-menu{order:2}.clip-studio-summary{grid-template-columns:repeat(2,1fr)}.clip-studio-summary-status{grid-column:1/-1;border-top:1px solid var(--line)}.clip-studio-summary-status strong{text-align:left}.studio-output-dock{display:none}.studio-clip-actions{grid-template-columns:1fr}.studio-add-output{display:none}.clip-studio-waveform{height:70px}.studio-clip-boundary{width:15px;min-width:15px!important}.studio-clip-boundary.left{left:-7px}.studio-clip-boundary.right{right:-7px}}
 
+@media(max-width:760px){
+ .studio-output-dock{position:static;display:grid;grid-template-columns:minmax(0,1fr);margin-top:20px;padding:14px;box-shadow:none;max-height:none;overflow-y:visible}
+ .studio-output-heading{display:flex;justify-content:space-between;border:0;padding:0}
+ .studio-output-clips{min-height:65px;max-width:100%}
+ .studio-add-output{display:block;min-height:44px}
+ .studio-render-controls{min-width:0}
+ #studio-render-status{text-align:left;white-space:normal;overflow-wrap:anywhere}
+ .studio-render-progress{grid-template-columns:1fr}.studio-render-progress span{white-space:normal}
+}
 /* Yamaha Silent Brass live-effects tool */
 .virtuoso-effects {
   --bg: #131314;

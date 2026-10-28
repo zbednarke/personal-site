@@ -22,6 +22,39 @@ test("candidate likes map to the persistent kept review state", () => {
   assert.equal(model.nextLikeStatus({ reviewStatus: "suggested" }), "kept");
 });
 
+test("vertical framing follows the upright source aspect and stays within its image", () => {
+  for (const [width, height] of [[1920,1080], [1080,1920], [600,600], [720,1600]]) {
+    for (const center of [0,.5,1]) {
+      const box = model.cropGeometry({centerX:center,centerY:center,scale:.7}, width,height);
+      assert.ok(Math.abs(box.width*width/(box.height*height)-9/16)<1e-10);
+      assert.ok(box.x>=0 && box.y>=0 && box.x+box.width<=1+1e-10 && box.y+box.height<=1+1e-10);
+    }
+  }
+  const centered=model.cropGeometry(undefined,1920,1080);
+  assert.equal(centered.height,1);
+  assert.equal(centered.width,.31640625);
+  assert.equal(model.cropGeometry(null,0,0),null);
+});
+
+test("old drafts stay single-output; vertical drafts retain independent framing and frozen payloads", () => {
+  const old={version:1,title:'Old',clips:[clip('one')]};
+  assert.equal(model.normalizeProject(old,'2026-08-22').includeVertical,false);
+  let project=model.addClip({...model.createProject('2026-08-22'),includeVertical:true}, {...clip('one'),verticalCrop:{centerX:.4,centerY:.5,scale:.8}});
+  project=model.addClip(project,{...clip('two'),recordingId:'recording-one'});
+  project=model.addClip(project,clip('other'));
+  project=model.setClipCrop(project,'one',{centerX:.6,centerY:.5,scale:.5},true);
+  assert.deepEqual(project.clips[0].verticalCrop,project.clips[1].verticalCrop);
+  assert.notEqual(project.clips[0].verticalCrop,project.clips[1].verticalCrop);
+  assert.equal(project.clips[2].verticalCrop,undefined);
+  const payload=model.renderPayload(project);
+  project.clips[0].verticalCrop.scale=.9;
+  assert.equal(payload.clips[0].verticalCrop.scale,.5);
+  assert.equal(payload.includeVertical,true);
+  const restored=model.normalizeProject(JSON.parse(JSON.stringify(project)),'2026-08-22');
+  assert.deepEqual(restored,project);
+  assert.deepEqual(model.moveClip(restored,0,1).clips[1].verticalCrop,project.clips[0].verticalCrop);
+});
+
 test("output clips can be reordered and removed", () => {
   let project = model.createProject("2026-08-22");
   project = model.addClip(project, clip("one"));
