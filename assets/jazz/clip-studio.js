@@ -560,6 +560,7 @@
     notice.hidden = false;
     renderOutputTimeline();
     await loadPlayer(recording, clip.startMs);
+    if (state.project.includeVertical && selectedOutputClip()?.id === clip.id) $("#studio-preview").scrollIntoView({ block: "start" });
   }
 
   function selectedOutputClip() {
