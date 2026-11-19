@@ -7,7 +7,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/jazz-ap
 
 FROM debian:trixie-slim AS runtime-base
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg fonts-dejavu-core zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 65532 --no-create-home app
 USER 65532:65532
