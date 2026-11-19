@@ -36,7 +36,7 @@ AUTH_ROUTE = """    route /auth/* {
 """
 CHECK_ROUTE = re.compile(r'(?m)^([ \t]*)route @jazz_private \{\s*\n\s*reverse_proxy 127\.0\.0\.1:8768 \{')
 MATCHER = re.compile(r'(?ms)^([ \t]*@jazz_private \{\s*\n[ \t]*path )([^\n]*)$')
-RESERVED = ['/commonplace', '/commonplace/*', '/assets/commonplace/*']
+RESERVED = ['/commonplace', '/commonplace/*', '/assets/commonplace/*', '/686', '/686/*', '/assets/686/*']
 
 
 def fail(message):

@@ -57,10 +57,14 @@ NAVIGATE = {'Accept': 'text/html,application/xhtml+xml', 'Sec-Fetch-Mode': 'navi
 API = {'Accept': 'application/json', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty'}
 valid = token(int(time.time()) + days * 86400 - 10)
 
+VERIFY_686 = os.environ.get('JAZZ_VERIFY_SKIP_686') != '1'
 PAGES = ['/jazz/', '/trumpets/', '/commonplace/']
 PRIVATE = ['/jazz/', '/assets/jazz/clip-studio.js', '/jazz/films/index.json', '/jazz/api/v1/state',
            '/trumpets/', '/assets/trumpets/app.js', '/trumpets/api/v1/trumpets/listings', '/trumpets/api/v1/trumpets/profile',
            '/commonplace/', '/assets/commonplace/app.js', '/commonplace/api/v1/commonplace/moments', '/commonplace/api/v1/commonplace/space']
+if VERIFY_686:
+    PAGES.append('/686/')
+    PRIVATE += ['/686/', '/assets/686/app.js', '/686/api/v1/686/respond']
 
 
 def workbench_installed():
@@ -109,7 +113,12 @@ print('PASS: /auth/login is public and the Google flow starts with PKCE')
 
 for path in PRIVATE:
     status, headers, _ = request(path, valid, headers=NAVIGATE if path in PAGES else API)
-    assert status == 200, (path, status)
+    if path == '/686/api/v1/686/respond':
+        assert status == 405 and headers.get('Allow') == 'POST', (path, status)
+    else:
+        assert status == 200, (path, status)
+    if path == '/686/':
+        assert 'microphone=()' not in headers.get('Permissions-Policy', ''), '686 microphone is blocked'
     cookie = headers.get('Set-Cookie', '')
     assert 'HttpOnly' in cookie and 'Secure' in cookie and 'SameSite=Lax' in cookie and 'Max-Age=' in cookie, (path, 'cookie policy')
     print('PASS: signed-in access', path)
@@ -121,6 +130,8 @@ assert request('/jazz/api/v1/sync', valid, 'POST', 'https://attacker.example')[0
 assert request('/trumpets/api/v1/trumpets/seed', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/commonplace/api/v1/commonplace/moments', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/commonplace/api/v1/commonplace/import/bundle', valid, 'POST', 'https://attacker.example')[0] == 403
+if VERIFY_686:
+    assert request('/686/api/v1/686/respond', valid, 'POST', 'https://attacker.example')[0] == 403
 if WORKBENCH:
     assert request('/workbench/api/v1/workbench/threads', valid, 'POST', 'https://attacker.example')[0] == 403
 assert request('/auth/logout', valid, 'POST', 'https://attacker.example')[0] == 403

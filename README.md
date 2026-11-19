@@ -78,15 +78,28 @@ the one-time Google setup and the installer; `deploy/Caddyfile.jazz.example`
 documents the routes and privacy headers. Client secrets, password hashes,
 signing keys and gateway credentials do not belong in this repository.
 
+`/686/` is the private 686 Culpable Ember voice demo. It renders the monitor as
+a detailed animated WebGL model, captures the device's default microphone in the
+browser, and sends each turn through authenticated server-side transcription,
+Gemini dialogue, and the cloned ElevenLabs voice. Provider credentials never
+reach browser JavaScript. Its page, assets, and `/686/api/*` proxy inherit the
+same Google sign-in gate as Jazz.
+
 ## Local Jazz development
 
 Run `./dev.ps1` from PowerShell, then open
-`http://localhost:4173/jazz/`. Localhost deliberately has no login prompt. The
+`http://localhost:4173/jazz/` or `http://localhost:4173/686/`. Localhost deliberately has no login prompt. The
 development server reads the Jazz gateway credential from Google Secret Manager
 at startup and proxies API calls to the production Jazz service as user `zach`.
 This means local edits use the same PostgreSQL records and private GCS recording
 bucket as the live page without exposing a database URL, cloud credential, or
 gateway secret to browser JavaScript or saving one in the repository.
+
+For a provider-backed 686-only test without Postgres or other GCP services,
+start the API with `EMBER_DEV_ONLY=1 PORT=8086 go run .` from `jazz-api/`, then
+run `jazz-dev` with `JAZZ_DEV_API_URL=http://127.0.0.1:8086` and
+`JAZZ_DEV_ALLOW_HTTP_UPSTREAM=1`. The API binds to loopback only; the dev proxy
+will not allow plain HTTP to a non-loopback host.
 
 ## Private trumpet research
 

@@ -10,9 +10,12 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    applies the replay-safe migrations. Existing environment, secrets and settings
    are kept. The revision is labelled `commit-sha=<commit>`. The API's
    `/health` must answer before the site is published.
+   The 686 voice endpoints read `ELEVENLABS_API_KEY` and `GEMINI_API_KEY` from
+   the `ember-elevenlabs-api-key` and `ember-gemini-api-key` Secret Manager
+   secrets; provider credentials are never shipped with the static site.
 3. A new static release on `actual-server` (`actual-budget-zb`, `us-west1-a`, over
    IAP) made by `deploy/publish-static-release.sh`: it copies the live release,
-   overlays `index.html`, `.nojekyll`, `assets/`, `jazz/`, `trumpets/`, `commonplace/` and `privacy/` from the
+   overlays `index.html`, `.nojekyll`, `assets/`, `jazz/`, `trumpets/`, `commonplace/`, `686/` and `privacy/` from the
    commit, then switches `/srv/zachbednarke.com/current` atomically. Only the
    files whose bytes differ from the live release are uploaded
    (`deploy/package-static-release.py` compares SHA-256 hashes read from the VM;

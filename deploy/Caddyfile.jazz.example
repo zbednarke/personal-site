@@ -11,7 +11,7 @@
 # X-Frame-Options policy must be SAMEORIGIN rather than DENY.
 # Hold-to-talk (Workbench) also runs on /trumpets and /commonplace.
 @not_jazz {
-    not path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /commonplace /commonplace/*
+    not path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /commonplace /commonplace/* /686 /686/* /assets/686/*
 }
 
 header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
@@ -22,7 +22,7 @@ header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 # (the sheet's code, also in the public repository) stays public so service
 # workers can import it.
 @jazz_private {
-    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/* /commonplace /commonplace/* /assets/commonplace/* /workbench /workbench/*
+    path /jazz /jazz/* /assets/jazz/* /trumpets /trumpets/* /assets/trumpets/* /commonplace /commonplace/* /assets/commonplace/* /686 /686/* /assets/686/* /workbench /workbench/*
     not path /jazz/share/*
 }
 
@@ -90,6 +90,16 @@ route {
     # forwards the verified user and adds the gateway secret.
     # deploy/install-commonplace-route.py adds this block to a live Caddyfile.
     handle_path /commonplace/api/* {
+        reverse_proxy {$JAZZ_API_URL} {
+            header_up Host {upstream_hostport}
+            header_up X-Jazz-User {http.request.header.X-Jazz-User}
+            header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+        }
+    }
+
+    # 686 Culpable Ember keeps provider credentials in the private API. The
+    # browser supplies only microphone audio, conversation turns, and playback.
+    handle_path /686/api/* {
         reverse_proxy {$JAZZ_API_URL} {
             header_up Host {upstream_hostport}
             header_up X-Jazz-User {http.request.header.X-Jazz-User}

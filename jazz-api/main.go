@@ -233,6 +233,13 @@ type recordingRow struct {
 }
 
 func main() {
+	if os.Getenv("EMBER_DEV_ONLY") == "1" {
+		if err := runEmberDevOnly(); err != nil {
+			slog.Error("686 development server stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		slog.Error("configuration error", "error", err)
@@ -511,6 +518,7 @@ func (app *application) routes() http.Handler {
 	app.repertoireRoutes(mux)
 	app.magicFilmRoutes(mux)
 	app.commonplaceRoutes(mux)
+	app.emberRoutes(mux)
 	mux.HandleFunc("GET /v1/public/recordings/{token}", app.publicRecordingShare)
 	mux.Handle("GET /v1/state", app.authenticate(http.HandlerFunc(app.getState)))
 	mux.Handle("POST /v1/sync", app.authenticate(http.HandlerFunc(app.syncState)))

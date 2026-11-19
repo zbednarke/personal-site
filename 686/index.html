@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#03090d">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>686 Culpable Ember</title>
+  <link rel="stylesheet" href="../assets/686/686.css">
+</head>
+<body>
+  <main class="experience">
+    <section class="visual" aria-label="686 Culpable Ember visualizer">
+      <canvas id="ember-canvas"></canvas>
+      <div class="scanlines" aria-hidden="true"></div>
+      <div class="identity">
+        <span class="identity-index">MONITOR // 686</span>
+        <h1>Culpable Ember</h1>
+        <p>Conversational construct online</p>
+      </div>
+      <div class="telemetry" aria-hidden="true">
+        <span>INST 04</span><i></i><span>LINK SECURE</span><i></i><span id="latency">IDLE</span>
+      </div>
+    </section>
+
+    <section class="console" aria-label="Conversation console">
+      <header class="console-head">
+        <div>
+          <span class="eyebrow">Private interface</span>
+          <h2>Speak, Reclaimer.</h2>
+        </div>
+        <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+      </header>
+
+      <div class="conversation" id="conversation" aria-live="polite" aria-relevant="additions">
+        <article class="message ember-message">
+          <span>686</span>
+          <p>Ah. A live communications channel. This promises to be considerably more interesting than silence.</p>
+        </article>
+      </div>
+
+      <div class="state" id="state" role="status">Initialize the device microphone to begin.</div>
+
+      <div class="controls">
+        <button class="talk" id="talk" type="button" aria-label="Initialize microphone">
+          <span class="talk-rings" aria-hidden="true"></span>
+          <span class="talk-icon" aria-hidden="true"></span>
+          <strong id="talk-label">Enable microphone</strong>
+          <small id="talk-hint">uses this device’s default input</small>
+        </button>
+
+        <form class="typed" id="typed-form">
+          <label for="typed-input">Or transmit text</label>
+          <div>
+            <input id="typed-input" maxlength="800" autocomplete="off" placeholder="Ask 686 Culpable Ember…">
+            <button type="submit" aria-label="Send message">↗</button>
+          </div>
+        </form>
+      </div>
+
+      <footer>
+        <span>Hold to talk</span>
+        <span>Release to transmit</span>
+        <span>Hold V or Space on desktop</span>
+      </footer>
+    </section>
+  </main>
+
+  <script src="../assets/jazz/signin-guard.js"></script>
+  <script type="module" src="../assets/686/app.js"></script>
+</body>
+</html>

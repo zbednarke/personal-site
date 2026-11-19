@@ -66,7 +66,7 @@ jobs:
         # purpose: Run workflow with allow_overwrite_out_of_band.
         run: |
           sha=${{ steps.commit.outputs.sha }}
-          paths=(index.html .nojekyll assets jazz trumpets commonplace privacy)
+          paths=(index.html .nojekyll assets jazz trumpets commonplace 686 privacy)
           flags=(--project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet)
           ssh=(gcloud compute ssh "$SITE_VM" "${flags[@]}" --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
           status=0
@@ -103,7 +103,8 @@ jobs:
             --project "$RUN_PROJECT" --region "$RUN_REGION" \
             --update-labels "commit-sha=${{ steps.commit.outputs.sha }}" \
             --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3 \
-            --update-env-vars MAGIC_FILM_PROVIDER=codex
+            --update-env-vars MAGIC_FILM_PROVIDER=codex \
+            --update-secrets ELEVENLABS_API_KEY=ember-elevenlabs-api-key:latest,GEMINI_API_KEY=ember-gemini-api-key:latest
       - name: Point traffic at the new revision
         run: >-
           gcloud run services update-traffic jazz-api --to-latest --quiet
@@ -155,7 +156,7 @@ jobs:
         # Each part's time is printed.
         run: |
           sha=${{ steps.commit.outputs.sha }}
-          paths=(index.html .nojekyll assets jazz trumpets commonplace privacy)
+          paths=(index.html .nojekyll assets jazz trumpets commonplace 686 privacy)
           flags=(--project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet)
           ssh=(gcloud compute ssh "$SITE_VM" "${flags[@]}" --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
           remote=/tmp/site-release-$sha

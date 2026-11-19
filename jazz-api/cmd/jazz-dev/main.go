@@ -38,7 +38,7 @@ func main() {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("Private development apps ready at http://%s/jazz/, http://%s/trumpets/ and http://%s/commonplace/", cfg.addr, cfg.addr, cfg.addr)
+	log.Printf("Private development apps ready at http://%s/jazz/, http://%s/trumpets/, http://%s/commonplace/ and http://%s/686/", cfg.addr, cfg.addr, cfg.addr, cfg.addr)
 	log.Printf("Local login is disabled; data and recordings use the private production account for %q.", cfg.user)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -76,7 +76,11 @@ func loadDevConfig() (devConfig, error) {
 
 func newDevHandler(cfg devConfig) (http.Handler, error) {
 	upstream, err := url.Parse(cfg.apiURL)
-	if err != nil || (upstream.Scheme != "https" && !(allowHTTPUpstreamForTests && upstream.Scheme == "http")) || upstream.Host == "" {
+	if err != nil || upstream.Host == "" {
+		return nil, errors.New("JAZZ_DEV_API_URL must be a valid HTTPS URL")
+	}
+	allowLocalHTTP := upstream.Scheme == "http" && (allowHTTPUpstreamForTests || (os.Getenv("JAZZ_DEV_ALLOW_HTTP_UPSTREAM") == "1" && isLoopbackHost(upstream.Hostname())))
+	if upstream.Scheme != "https" && !allowLocalHTTP {
 		return nil, errors.New("JAZZ_DEV_API_URL must be a valid HTTPS URL")
 	}
 
@@ -88,6 +92,8 @@ func newDevHandler(cfg devConfig) (http.Handler, error) {
 			request.URL.Path = strings.TrimPrefix(request.URL.Path, "/trumpets/api")
 		} else if strings.HasPrefix(request.URL.Path, "/commonplace/api/") {
 			request.URL.Path = strings.TrimPrefix(request.URL.Path, "/commonplace/api")
+		} else if strings.HasPrefix(request.URL.Path, "/686/api/") {
+			request.URL.Path = strings.TrimPrefix(request.URL.Path, "/686/api")
 		} else {
 			request.URL.Path = strings.TrimPrefix(request.URL.Path, "/jazz/api")
 		}
@@ -111,10 +117,14 @@ func newDevHandler(cfg devConfig) (http.Handler, error) {
 		response.Header().Set("Cache-Control", "no-store")
 		response.Header().Set("Referrer-Policy", "no-referrer")
 		response.Header().Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
-		if strings.HasPrefix(request.URL.Path, "/jazz/api/") || strings.HasPrefix(request.URL.Path, "/trumpets/api/") || strings.HasPrefix(request.URL.Path, "/commonplace/api/") {
+		if strings.HasPrefix(request.URL.Path, "/jazz/api/") || strings.HasPrefix(request.URL.Path, "/trumpets/api/") || strings.HasPrefix(request.URL.Path, "/commonplace/api/") || strings.HasPrefix(request.URL.Path, "/686/api/") {
 			proxy.ServeHTTP(response, request)
 			return
 		}
 		files.ServeHTTP(response, request)
 	}), nil
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }

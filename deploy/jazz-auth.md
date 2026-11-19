@@ -1,9 +1,8 @@
 # Private-path sign-in (jazz-auth)
 
 `jazz-auth` is a small loopback service on `127.0.0.1:8768` that guards the
-private paths of zachbednarke.com: `/jazz`, `/assets/jazz`, `/trumpets`,
-`/assets/trumpets`, their `/…/api/*` proxies, `/jazz/films`, and (reserved)
-`/commonplace` and `/assets/commonplace`. People sign in with Google. There is
+private paths of zachbednarke.com: `/jazz`, `/trumpets`, `/commonplace`, `/686`,
+their private assets and `/…/api/*` proxies, plus `/jazz/films`. People sign in with Google. There is
 no Basic Auth dialog any more.
 
 ## How it works
@@ -159,6 +158,11 @@ Add its page and asset paths to the `@jazz_private` matcher (see
 `X-Jazz-User {http.request.header.X-Jazz-User}`. Nothing in `jazz-auth` changes.
 Load `/assets/jazz/signin-guard.js` before the app's scripts for the signed-out
 banner, and add the paths to `PRIVATE` in `verify-jazz-auth.py`.
+
+For Culpable Ember, `deploy/install-686-route.py` performs this change
+idempotently, validates Caddy before reloading it, and rolls back on a failed
+verification. Run it before the static deployment so `/686` is never briefly
+public.
 
 ## Rollback and recovery
 
