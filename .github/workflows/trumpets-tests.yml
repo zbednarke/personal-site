@@ -37,7 +37,7 @@ jobs:
   test:
     # Pinned: Playwright 1.58.2 cannot install Chromium on Ubuntu 26.04 (ubuntu-latest).
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     services:
       postgres:
         # Google's Docker Hub mirror avoids Docker Hub's anonymous pull rate limit.
@@ -64,7 +64,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install FFmpeg and DejaVu fonts (media tests, film-service rendering)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+        run: |
+          # Avoid the runner's regional mirror, which can stall package downloads.
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - name: All Go and database tests
         working-directory: jazz-api
         run: go test ./...
