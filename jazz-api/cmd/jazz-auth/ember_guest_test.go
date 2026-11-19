@@ -35,6 +35,11 @@ func TestEmberGuestSessionScope(t *testing.T) {
 	if w := do(s, foreign); w.Code != http.StatusForbidden {
 		t.Fatalf("cross-site guest login: %d", w.Code)
 	}
+	foreign.headers = map[string]string{"Origin": "null", "Sec-Fetch-Site": "cross-site"}
+	if w := do(s, foreign); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-site opaque origin: %d", w.Code)
+	}
+	login.headers = map[string]string{"Origin": "null", "Sec-Fetch-Site": "same-origin"}
 	w := do(s, login)
 	guest := cookieNamed(w, emberGuestCookie)
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/686/" ||

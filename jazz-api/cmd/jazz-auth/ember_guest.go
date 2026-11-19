@@ -56,7 +56,11 @@ func (s *server) emberGuestLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.sameOrigin(r) {
+	origin, site := r.Header.Get("Origin"), r.Header.Get("Sec-Fetch-Site")
+	// A privacy-preserving form navigation can send Origin: null.
+	// Fetch Metadata still identifies an exact same-origin submission.
+	if site == "cross-site" || (origin != s.cfg.PublicOrigin &&
+		!((origin == "" || origin == "null") && site == "same-origin")) {
 		http.Error(w, "Cross-site request denied", http.StatusForbidden)
 		return
 	}
