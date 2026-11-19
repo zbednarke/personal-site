@@ -9,7 +9,7 @@ require (
 	cloud.google.com/go/iam v1.5.3
 	cloud.google.com/go/storage v1.56.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
-	github.com/anthropics/anthropic-sdk-go v1.80.0
+	github.com/anthropics/anthropic-sdk-go v1.84.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/crypto v0.58.0
