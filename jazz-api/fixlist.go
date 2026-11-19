@@ -1196,7 +1196,7 @@ func (app *application) machineFixListStart(w http.ResponseWriter, r *http.Reque
 		app.serverError(w, err)
 		return
 	}
-	_, _ = app.db.Exec(r.Context(), `DELETE FROM fix_list_run_starts WHERE started_at < now() - interval '35 days'`)
+	_, _ = app.db.Exec(r.Context(), `DELETE FROM fix_list_run_starts WHERE started_at < $1`, now.AddDate(0, 0, -35))
 	writeJSON(w, 200, map[string]any{"recorded": true})
 }
 
