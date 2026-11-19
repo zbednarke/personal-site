@@ -86,8 +86,32 @@ jobs:
             bash deploy/check-cloud-run-commit.sh workbench "$sha" "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" -- "${run[@]}" || status=1
           fi
           exit $status
-      - name: Back up the database before migrations
+      - name: Check whether the database needs a pre-deploy backup
+        id: database
         if: vars.JAZZ_CLOUD_SQL_INSTANCE != ''
+        env:
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          flags=(--project "$RUN_PROJECT" --region "$RUN_REGION")
+          backup=true
+          # A single serving revision gives us a baseline for applied migrations.
+          # Unknown provenance or split traffic keeps the backup enabled.
+          if service=$(gcloud run services describe jazz-api "${flags[@]}" --format=json) &&
+             revision=$(jq -er '
+               [.status.traffic[]? | select((.percent // 0) > 0)] as $traffic
+               | if ($traffic | length) == 1 and $traffic[0].percent == 100
+                 then $traffic[0].revisionName else empty end
+             ' <<<"$service") &&
+             live_sha=$(gcloud run revisions describe "$revision" "${flags[@]}" --format='value(metadata.labels.commit-sha)') &&
+             [[ "$ALLOW_OVERWRITE" != true && "$live_sha" =~ ^[0-9a-f]{40}$ ]] &&
+             git merge-base --is-ancestor "$live_sha" "$TARGET_SHA" &&
+             git diff --quiet "$live_sha" "$TARGET_SHA" -- jazz-api/migrations; then
+            backup=false
+            echo "No migration changes since the serving API revision."
+          fi
+          echo "backup=$backup" >> "$GITHUB_OUTPUT"
+      - name: Back up the database before migrations
+        if: vars.JAZZ_CLOUD_SQL_INSTANCE != '' && steps.database.outputs.backup == 'true'
         run: >-
           gcloud sql backups create --project "$RUN_PROJECT"
           --instance "${{ vars.JAZZ_CLOUD_SQL_INSTANCE }}"
