@@ -5,7 +5,10 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
 
 0. A guard that stops the deploy before anything changes if production holds
    something this commit does not (see [Out-of-band deploys](#out-of-band-deploys)).
-1. Optional Cloud SQL backup (set the repository variable `JAZZ_CLOUD_SQL_INSTANCE`).
+1. If `JAZZ_CLOUD_SQL_INSTANCE` is set, take a pre-deploy backup when migrations
+   changed since the serving API revision. Also take the backup if the workflow
+   cannot establish a single serving revision and verify its commit, or if the
+   out-of-band overwrite option is enabled.
 2. `gcloud run deploy jazz-api --source jazz-api` in `parabolio-prod`. Startup
    applies the replay-safe migrations. Existing environment, secrets and settings
    are kept. The revision is labelled `commit-sha=<commit>`. The API's
