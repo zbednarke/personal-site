@@ -153,6 +153,18 @@ the public home page is unchanged.
 
 ## Adding a private app
 
+### Culpable Ember guest sign-in
+
+The sign-in page for `/686/` offers Guest login when the host's auth
+configuration has `EmberGuestHash`. Guest sessions expire after 12 hours.
+They allow the demo, its own assets and its three voice endpoints. They do
+not grant access to Jazz or any other private app.
+
+After deploying the updated auth binary and static site, run
+`deploy/set-686-guest.py` as root on the site VM. Pass the bcrypt hash via
+stdin. Use `--disable` to remove guest sign-in and invalidate guest sessions.
+Changing the hash also invalidates existing guest sessions.
+
 Add its page and asset paths to the `@jazz_private` matcher (see
 `deploy/Caddyfile.jazz.example`) and its API proxy, forwarding
 `X-Jazz-User {http.request.header.X-Jazz-User}`. Nothing in `jazz-auth` changes.

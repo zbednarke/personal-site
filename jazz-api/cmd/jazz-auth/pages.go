@@ -81,6 +81,15 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 {{- if .Google}}
 <div class="actions"><a class="google" href="{{.GoogleHref}}">` + googleLogo + `<span>Sign in with Google</span></a></div>
 {{- end}}
+{{- if .EmberGuest}}
+<details{{if .EmberGuestOpen}} open{{end}}>
+<summary>Guest login</summary>
+<form class="password" method="post" action="/auth/686/guest">
+<label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+<button type="submit">Sign in as guest</button>
+</form>
+</details>
+{{- end}}
 {{- if .Password}}
 <details{{if .PasswordOpen}} open{{end}}>
 <summary>Use password</summary>
@@ -109,6 +118,7 @@ type pageData struct {
 	Error, Back, Logout, SignedIn bool
 	Google, Password              bool
 	PasswordOpen                  bool
+	EmberGuest, EmberGuestOpen    bool
 	GoogleHref, SwitchHref        string
 }
 
@@ -132,6 +142,7 @@ var loginMessages = map[string]string{
 	"not_allowed": "That Google account doesn't have access.",
 	"failed":      "Google sign-in didn't complete. Please try again.",
 	"password":    "That username and password didn't match.",
+	"guest":       "That guest password didn't match.",
 }
 
 func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +158,8 @@ func (s *server) loginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := pageData{Title: "Sign in", Next: next, Google: s.google != nil, Password: s.cfg.AllowPassword}
+	data.EmberGuest = s.cfg.EmberGuestHash != "" && emberGuestPage(next)
+	data.EmberGuestOpen = q.Get("error") == "guest"
 	start := "/auth/google/start?next=" + url.QueryEscape(next)
 	data.GoogleHref = start
 	if code := q.Get("error"); loginMessages[code] != "" {

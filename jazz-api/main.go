@@ -580,6 +580,10 @@ func (app *application) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing authenticated user")
 			return
 		}
+		if subject == "ember-guest" && !isEmberVoiceRequest(r) {
+			writeError(w, http.StatusForbidden, "guest access is limited to 686")
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userSubjectKey, subject)))
 	})
 }

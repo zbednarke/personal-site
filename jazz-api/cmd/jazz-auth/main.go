@@ -46,6 +46,7 @@ type config struct {
 	PublicOrigin       string   `json:",omitempty"`
 	SessionDays        int      `json:",omitempty"`
 	AllowPassword      bool
+	EmberGuestHash     string `json:",omitempty"`
 }
 
 func (c config) googleEnabled() bool { return c.GoogleClientID != "" }
@@ -102,6 +103,11 @@ func (c *config) normalize() error {
 	if c.AllowPassword {
 		if _, err := bcrypt.Cost([]byte(c.Hash)); err != nil {
 			return errors.New("AllowPassword requires a valid bcrypt Hash")
+		}
+	}
+	if c.EmberGuestHash != "" {
+		if _, err := bcrypt.Cost([]byte(c.EmberGuestHash)); err != nil {
+			return errors.New("EmberGuestHash must be a valid bcrypt hash")
 		}
 	}
 	if !c.googleEnabled() && !c.AllowPassword {

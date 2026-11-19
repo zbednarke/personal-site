@@ -56,6 +56,9 @@ func (s *server) binding(method string) string {
 	if method == methodPassword {
 		return s.cfg.Hash
 	}
+	if method == methodEmberGuest {
+		return s.cfg.EmberGuestHash
+	}
 	return s.cfg.GoogleClientID
 }
 
@@ -66,7 +69,11 @@ func (s *server) token(method, tag string, exp time.Time) string {
 }
 
 func (s *server) session(r *http.Request) (time.Time, bool) {
-	c, err := r.Cookie(sessionCookie)
+	return s.sessionFor(r, sessionCookie)
+}
+
+func (s *server) sessionFor(r *http.Request, cookieName string) (time.Time, bool) {
+	c, err := r.Cookie(cookieName)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -75,6 +82,9 @@ func (s *server) session(r *http.Request) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	method, tag := parts[2], parts[3]
+	if (method == methodEmberGuest) != (cookieName == emberGuestCookie) {
+		return time.Time{}, false
+	}
 	value := strings.Join(parts[:5], ".")
 	sig, err := b64.DecodeString(parts[5])
 	if err != nil || !hmac.Equal(sig, s.mac("jazz-session-v2", method, s.binding(method), value)) {
@@ -87,6 +97,10 @@ func (s *server) session(r *http.Request) (time.Time, bool) {
 		}
 	case methodPassword:
 		if !s.cfg.AllowPassword || tag != "-" {
+			return time.Time{}, false
+		}
+	case methodEmberGuest:
+		if s.cfg.EmberGuestHash == "" || tag != "-" {
 			return time.Time{}, false
 		}
 	default:
@@ -177,6 +191,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.googleCallback(w, r)
 	case "/auth/password":
 		s.password(w, r)
+	case "/auth/686/guest":
+		s.emberGuestLogin(w, r)
 	case "/auth/logout":
 		s.logout(w, r)
 	default:
@@ -215,6 +231,13 @@ func (s *server) check(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Jazz-User", s.cfg.User)
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+	if emberGuestAccess(method, r.Header.Get("X-Forwarded-Uri")) {
+		if _, ok := s.sessionFor(r, emberGuestCookie); ok {
+			w.Header().Set("X-Jazz-User", "ember-guest")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 	}
 	// Never send WWW-Authenticate: browsers must not show the Basic dialog.
 	if navigation(r, method) {
@@ -271,6 +294,9 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		_, signedIn := s.session(r)
+		if _, ok := s.sessionFor(r, emberGuestCookie); ok {
+			signedIn = true
+		}
 		s.render(w, http.StatusOK, pageData{Title: "Sign out", Logout: true, SignedIn: signedIn, Next: safeNext(r.URL.Query().Get("next"))})
 	case http.MethodPost:
 		if !s.sameOrigin(r) {
@@ -278,6 +304,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		clearCookie(w, sessionCookie)
+		clearCookie(w, emberGuestCookie)
 		clearCookie(w, oauthCookie)
 		http.Redirect(w, r, "/auth/login?signed_out=1", http.StatusSeeOther)
 	default:

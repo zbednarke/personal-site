@@ -50,7 +50,14 @@ async function api(path, options) {
   let detail = "The private communications relay failed.";
   try {
     const body = await response.json();
-    if (body.error) detail = body.error;
+    if (response.status === 401 && body.error === "signin_required") {
+      const login = new URL("/auth/login", location.origin);
+      login.searchParams.set("next", location.pathname + location.search);
+      location.assign(login);
+      detail = "Your session expired. Sign in again to reconnect.";
+    } else if (body.error) {
+      detail = body.error;
+    }
   } catch (_) {}
   throw new Error(detail);
 }

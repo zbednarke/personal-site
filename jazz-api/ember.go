@@ -42,6 +42,18 @@ func (app *application) emberRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/686/speak", app.authenticate(http.HandlerFunc(app.emberSpeak)))
 }
 
+func isEmberVoiceRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	switch r.URL.Path {
+	case "/v1/686/transcribe", "/v1/686/respond", "/v1/686/speak":
+		return true
+	default:
+		return false
+	}
+}
+
 func runEmberDevOnly() error {
 	port := envOr("PORT", "8086")
 	app := &application{
