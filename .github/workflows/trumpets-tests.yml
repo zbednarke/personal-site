@@ -78,7 +78,7 @@ jobs:
         with:
           go-version: "1.27.4"
           cache-dependency-path: jazz-api/go.sum
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -150,7 +150,7 @@ jobs:
       JAZZ_SCREENSHOT_DIR: docs/jazz/screenshots/smoke
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
