@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -210,7 +211,15 @@ func (app *application) emberRespond(w http.ResponseWriter, r *http.Request) {
 	encoded, _ := json.Marshal(body)
 	model := envOr("EMBER_GEMINI_MODEL", "gemini-3.6-flash")
 	base := strings.TrimRight(envOr("EMBER_GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"), "/")
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", base, url.PathEscape(model), url.QueryEscape(key))
+	method := "generateContent"
+	streaming := r.URL.Query().Get("stream") == "1"
+	if streaming {
+		method = "streamGenerateContent"
+	}
+	endpoint := fmt.Sprintf("%s/models/%s:%s?alt=sse&key=%s", base, url.PathEscape(model), method, url.QueryEscape(key))
+	if !streaming {
+		endpoint = strings.Replace(endpoint, "alt=sse&", "", 1)
+	}
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(encoded))
 	if err != nil {
 		app.serverError(w, err)
@@ -223,6 +232,14 @@ func (app *application) emberRespond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	if streaming {
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			writeError(w, http.StatusBadGateway, "conversation generation failed")
+			return
+		}
+		streamEmberResponse(w, response.Body)
+		return
+	}
 	providerBody, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
 	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
 		writeError(w, http.StatusBadGateway, "conversation generation failed")
@@ -320,7 +337,11 @@ func (app *application) emberSpeak(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	base := strings.TrimRight(envOr("EMBER_ELEVENLABS_API_BASE", "https://api.elevenlabs.io/v1"), "/")
-	endpoint := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=mp3_44100_128", base, url.PathEscape(voiceID))
+	format, contentType := "mp3_44100_128", "audio/mpeg"
+	if r.URL.Query().Get("format") == "pcm" {
+		format, contentType = "pcm_24000", "application/octet-stream"
+	}
+	endpoint := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", base, url.PathEscape(voiceID), format)
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		app.serverError(w, err)
@@ -334,14 +355,120 @@ func (app *application) emberSpeak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
-	audio, err := io.ReadAll(io.LimitReader(response.Body, emberMaxSpeechBytes+1))
-	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 || len(audio) == 0 || len(audio) > emberMaxSpeechBytes {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		writeError(w, http.StatusBadGateway, "speech synthesis failed")
 		return
 	}
-	w.Header().Set("Content-Type", "audio/mpeg")
+	// Read only the first chunk before committing headers, then flush each chunk.
+	reader := io.LimitReader(response.Body, emberMaxSpeechBytes+1)
+	buffer := make([]byte, 8192)
+	total := 0
+	for {
+		n, readErr := reader.Read(buffer)
+		total += n
+		if total > emberMaxSpeechBytes || (readErr != nil && readErr != io.EOF) {
+			if total == n {
+				writeError(w, http.StatusBadGateway, "speech synthesis failed")
+				return
+			}
+			panic(http.ErrAbortHandler) // Never append JSON to an audio stream.
+		}
+		if n > 0 {
+			if total == n {
+				w.Header().Set("Content-Type", contentType)
+				w.Header().Set("Cache-Control", "private, no-store")
+				w.Header().Set("X-Accel-Buffering", "no")
+			}
+			if _, err := w.Write(buffer[:n]); err != nil {
+				return
+			}
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				return
+			}
+		}
+		if readErr == io.EOF {
+			if total == 0 {
+				writeError(w, http.StatusBadGateway, "speech synthesis returned no audio")
+			}
+			return
+		}
+	}
+}
+
+// Translate provider SSE to a small, bounded NDJSON protocol. A terminal event
+// lets clients distinguish a complete answer from a dropped connection.
+func streamEmberResponse(w http.ResponseWriter, body io.Reader) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("Content-Length", fmt.Sprint(len(audio)))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(audio)
+	w.Header().Set("X-Accel-Buffering", "no")
+	send := func(event map[string]any) bool {
+		if json.NewEncoder(w).Encode(event) != nil {
+			return false
+		}
+		return http.NewResponseController(w).Flush() == nil
+	}
+	scanner := bufio.NewScanner(io.LimitReader(body, 2<<20))
+	scanner.Buffer(make([]byte, 4096), 256<<10)
+	var data []string
+	finished, hasText, invalid := false, false, false
+	consume := func() bool {
+		if len(data) == 0 {
+			return true
+		}
+		payload := strings.Join(data, "\n")
+		data = nil
+		var event struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text    string
+						Thought bool
+					}
+				}
+				FinishReason string
+			}
+		}
+		if json.Unmarshal([]byte(payload), &event) != nil {
+			invalid = true
+			return false
+		}
+		if len(event.Candidates) == 0 {
+			return true
+		}
+		candidate := event.Candidates[0]
+		for _, part := range candidate.Content.Parts {
+			if !part.Thought && part.Text != "" {
+				hasText = true
+				if !send(map[string]any{"text": part.Text}) {
+					return false
+				}
+			}
+		}
+		if candidate.FinishReason != "" {
+			finished = candidate.FinishReason == "STOP" || candidate.FinishReason == "MAX_TOKENS"
+			if !finished {
+				invalid = true
+				return false
+			}
+		}
+		return true
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if !consume() {
+				break
+			}
+		} else if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+	}
+	if !invalid && len(data) > 0 {
+		consume()
+	}
+	if scanner.Err() != nil || invalid || !finished || !hasText {
+		send(map[string]any{"error": "conversation stream interrupted"})
+		return
+	}
+	send(map[string]any{"done": true})
 }

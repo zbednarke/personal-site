@@ -15,6 +15,7 @@ CANDIDATE = Path('/etc/caddy/Caddyfile.686')
 ROUTE = """# 686 Culpable Ember keeps provider credentials in the private API.
 handle_path /686/api/* {
     reverse_proxy {$JAZZ_API_URL} {
+        flush_interval -1
         header_up Host {upstream_hostport}
         header_up X-Jazz-User {http.request.header.X-Jazz-User}
         header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
@@ -54,8 +55,22 @@ def updated_caddyfile(text):
         raise InstallError('The @jazz_private matcher was not found; install Google sign-in first')
     # A site-wide microphone=() header must not match the 686 page.
     text, _ = add_paths(text, NOT_PRIVATE, RESERVED)
-    if INSTALLED.search(text):
-        return text
+    installed = INSTALLED.search(text)
+    if installed:
+        # Upgrade the existing route as well as fresh installs. Only inspect
+        # this reverse_proxy block, never another application's flush setting.
+        tail = text[installed.end():]
+        proxy = re.match(r'\s*\n([ \t]*)reverse_proxy \{\$JAZZ_API_URL\} \{\n(.*?)(^[ \t]*\})', tail, re.M | re.S)
+        if not proxy:
+            raise InstallError('The existing 686 proxy is not in the expected block form')
+        body = proxy.group(2)
+        if re.search(r'(?m)^[ \t]*flush_interval[ \t]+-1[ \t]*$', body):
+            return text
+        body = re.sub(r'(?m)^[ \t]*flush_interval[^\n]*\n', '', body)
+        body = proxy.group(1) + '    flush_interval -1\n' + body
+        start = installed.end() + proxy.start(2)
+        end = installed.end() + proxy.end(2)
+        return text[:start] + body + text[end:]
     for anchor in ANCHORS:
         match = anchor.search(text)
         if not match:

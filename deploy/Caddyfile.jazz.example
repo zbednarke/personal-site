@@ -101,6 +101,7 @@ route {
     # browser supplies only microphone audio, conversation turns, and playback.
     handle_path /686/api/* {
         reverse_proxy {$JAZZ_API_URL} {
+            flush_interval -1
             header_up Host {upstream_hostport}
             header_up X-Jazz-User {http.request.header.X-Jazz-User}
             header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}

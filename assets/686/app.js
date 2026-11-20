@@ -1,4 +1,5 @@
 import { createEmberModel } from "./model.js";
+import { PCMPlayer, readEvents, sentenceBuffer } from "./speech.mjs";
 
 const canvas = document.querySelector("#ember-canvas");
 const talk = document.querySelector("#talk");
@@ -18,11 +19,10 @@ let recorder = null;
 let chunks = [];
 let recordingStartedAt = 0;
 let busy = false;
-let activeAudio = null;
+let activeSpeech = null;
 let audioContext = null;
 let micAnalyser = null;
 let micFrame = 0;
-let outputFrame = 0;
 
 function setState(kind, message) {
   model.setState(kind);
@@ -42,6 +42,7 @@ function message(role, text) {
   article.append(label, copy);
   conversation.append(article);
   conversation.scrollTop = conversation.scrollHeight;
+  return copy;
 }
 
 async function api(path, options) {
@@ -120,6 +121,7 @@ async function startRecording(event) {
       await enableMicrophone();
       return;
     }
+    await ensureAudioContext();
     chunks = [];
     recorder.start(250);
     recordingStartedAt = performance.now();
@@ -166,75 +168,84 @@ async function transmitRecording() {
 async function converse(text, started = performance.now()) {
   const utterance = String(text || "").trim();
   if (!utterance) return;
+  stopSpeech();
+  const context = await ensureAudioContext();
+  const controller = new AbortController();
+  const { signal } = controller;
+  const player = new PCMPlayer(context, {
+    onStart() {
+      latency.textContent = `${Math.round(performance.now() - started)} MS`;
+      setState("speaking", "686 Culpable Ember is speaking.");
+    },
+    onEnd() {
+      if (activeSpeech?.controller === controller) {
+        activeSpeech = null;
+        setState("idle", "Channel open. Hold to speak again.");
+      }
+    },
+    onLevel: (level) => model.setAudioLevel(level),
+  });
+  activeSpeech = { controller, player };
+  latency.textContent = "—";
   message("user", utterance);
   history.push({ role: "user", content: utterance });
   while (history.length > 15) history.shift();
   setState("thinking", "Consulting containment protocols…");
-
-  const response = await api("respond", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages: history }),
+  let line = "";
+  let copy;
+  let queue = Promise.resolve();
+  let speechError;
+  const sentences = sentenceBuffer((sentence) => {
+    queue = queue.then(async () => {
+      signal.throwIfAborted();
+      const audio = await api("speak?format=pcm", {
+        method: "POST", signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: sentence }),
+      });
+      await player.append(audio, signal);
+    }).catch((error) => {
+      speechError ||= error;
+      controller.abort();
+      player.stop();
+    });
   });
-  const body = await response.json();
-  const line = String(body.response || "").trim();
-  if (!line) throw new Error("The construct returned an empty response.");
-  history.push({ role: "assistant", content: line });
-  while (history.length > 15) history.shift();
-  message("assistant", line);
-  latency.textContent = `${Math.round(performance.now() - started)} MS`;
-  await speak(line);
-}
-
-async function speak(text) {
-  setState("thinking", "Synthesizing vocal matrix…");
-  const response = await api("speak", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
-  activeAudio = audio;
-  audio.addEventListener("playing", () => setState("speaking", "686 Culpable Ember is speaking."));
-  audio.addEventListener("ended", () => {
-    URL.revokeObjectURL(url);
-    if (activeAudio === audio) activeAudio = null;
-    model.setAudioLevel(0);
-    setState("idle", "Channel open. Hold to speak again.");
-  }, { once: true });
-  audio.addEventListener("error", () => {
-    URL.revokeObjectURL(url);
-    fail(new Error("The browser could not play the synthesized voice."));
-  }, { once: true });
-
-  const context = await ensureAudioContext();
-  const source = context.createMediaElementSource(audio);
-  const analyser = context.createAnalyser();
-  analyser.fftSize = 256;
-  source.connect(analyser);
-  analyser.connect(context.destination);
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  const meter = () => {
-    if (audio.paused || audio.ended) return;
-    analyser.getByteFrequencyData(data);
-    const average = data.reduce((sum, value) => sum + value, 0) / data.length / 255;
-    model.setAudioLevel(Math.min(1, average * 2.8));
-    outputFrame = requestAnimationFrame(meter);
-  };
-  cancelAnimationFrame(outputFrame);
-  await audio.play();
-  meter();
+  try {
+    const response = await api("respond?stream=1", {
+      method: "POST", signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: history }),
+    });
+    await readEvents(response, (text) => {
+      line += text;
+      if (new TextEncoder().encode(line).length > 2000) throw new Error("The construct's response was too long.");
+      copy ||= message("assistant", "");
+      copy.textContent = line;
+      conversation.scrollTop = conversation.scrollHeight;
+      sentences(text);
+    });
+    if (!line.trim()) throw new Error("The construct returned an empty response.");
+    sentences("", true);
+    await queue;
+    if (speechError) throw speechError;
+    signal.throwIfAborted();
+    history.push({ role: "assistant", content: line.trim() });
+    while (history.length > 15) history.shift();
+    player.finish();
+  } catch (error) {
+    controller.abort();
+    player.stop();
+    await queue;
+    if (activeSpeech?.controller === controller) activeSpeech = null;
+    throw speechError || error;
+  }
 }
 
 function stopSpeech() {
-  if (!activeAudio) return;
-  activeAudio.pause();
-  activeAudio.currentTime = 0;
-  activeAudio = null;
-  cancelAnimationFrame(outputFrame);
-  model.setAudioLevel(0);
+  if (!activeSpeech) return;
+  activeSpeech.controller.abort();
+  activeSpeech.player.stop();
+  activeSpeech = null;
 }
 
 function fail(error) {
