@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache-dependency-path: deploy/caddy-runtime/go.sum
       - name: Test proxy rollback and one-time reboot safeguards
         run: |
@@ -76,7 +76,7 @@ jobs:
           records=[s.split('=',1)[1] for s in Path('caddy-security-before.txt').read_text().splitlines() if s.startswith('SITE_RUNTIME_INVENTORY=')]
           if len(records)!=1: raise SystemExit('No unique pre-reboot inventory')
           r=json.loads(records[0])
-          assert r['caddy_build']['go_version']=='go1.27.3' and r['jazz_auth']['go_version']=='go1.27.3'
+          assert r['caddy_build']['go_version']=='go1.27.4' and r['jazz_auth']['go_version']=='go1.27.3'
           assert r['highlights_runtime']['pillow']=='13.0.0' and all(r['services_active'].values())
           assert r['caddy_integrity']['matches_managed_build'] is True and r.get('boot_id')
           print(json.dumps(r))
