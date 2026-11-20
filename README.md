@@ -84,6 +84,20 @@ browser, and sends each turn through authenticated server-side transcription,
 Gemini dialogue, and the cloned ElevenLabs voice. Provider credentials never
 reach browser JavaScript. Its page, assets, and `/686/api/*` proxy inherit the
 same Google sign-in gate as Jazz.
+Gemini text streams to the page as it is generated; completed sentences feed
+ElevenLabs, whose 24 kHz PCM audio plays incrementally through Web Audio. The
+latency readout measures from submission (microphone release for voice) to the
+first audio playback, including transcription, dialogue, and synthesis. The
+existing MP3 and non-streaming response API modes remain available. The deployment workflow
+applies and verifies immediate proxy flushing for the 686 route.
+
+The repeatable browser check in `tools/686/e2e.py` runs the full WebGL page,
+MediaRecorder, and Go API against delayed provider fixtures. It checks incremental
+playback, microphone transcription, and recovery after a failed turn. Build the
+API with `go build -C jazz-api -o /tmp/ember-api .`, then run
+`python3 tools/686/e2e.py --api-binary /tmp/ember-api` (requires Python Playwright
+and Chromium). Add `--live-elevenlabs` and/or `--live-gemini` with the matching
+provider keys to test live services; those modes incur provider usage.
 
 ## Local Jazz development
 

@@ -163,6 +163,14 @@ jobs:
           image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
           gcloud run jobs update jazz-magic-film --image "$image" --quiet "${flags[@]}" \
             --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 45m --cpu 2 --memory 4Gi
+      - name: Apply and verify the 686 streaming proxy configuration
+        run: |
+          sha=${{ steps.commit.outputs.sha }}
+          remote=/tmp/686-config-$sha
+          tar -czf "$RUNNER_TEMP/686-config.tar.gz" -C deploy install-686-route.py verify-jazz-auth.py
+          ssh=(gcloud compute ssh "$SITE_VM" --project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
+          bash deploy/upload-static-release.sh upload "$remote" "$RUNNER_TEMP/686-config.tar.gz" deploy/publish-686-config.sh -- "${ssh[@]}"
+          bash deploy/upload-static-release.sh publish "$remote" "$RUNNER_TEMP/686-config.tar.gz" deploy/publish-686-config.sh "$sha" -- "${ssh[@]}"
       - name: Publish the static release
         # The upload goes through the IAP tunnel, so only files whose bytes
         # differ from the live release are packaged; publish-static-release.sh

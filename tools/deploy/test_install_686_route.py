@@ -37,6 +37,12 @@ class Install686RouteTest(unittest.TestCase):
         example = (ROOT / 'deploy' / 'Caddyfile.jazz.example').read_text()
         self.assertEqual(installer.updated_caddyfile(example), example)
 
+    def test_upgrades_existing_proxy(self):
+        old = installer.updated_caddyfile(LIVE_LIKE).replace('            flush_interval -1\n', '')
+        upgraded = installer.updated_caddyfile(old)
+        self.assertIn('flush_interval -1', upgraded)
+        self.assertEqual(installer.updated_caddyfile(upgraded), upgraded)
+
     def test_requires_private_matcher(self):
         with self.assertRaises(installer.InstallError):
             installer.updated_caddyfile('zachbednarke.com {\n file_server\n}\n')

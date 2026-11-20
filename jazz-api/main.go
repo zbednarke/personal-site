@@ -1908,6 +1908,9 @@ func (app *application) recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered) // Let net/http terminate an already-started stream.
+				}
 				app.logger.Error("panic", "value", recovered)
 				writeError(w, http.StatusInternalServerError, "internal server error")
 			}

@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEmberTranscribeForwardsPrivateAudio(t *testing.T) {
@@ -129,5 +130,127 @@ func TestValidateEmberMessagesRejectsUntrustedRolesAndOversizeHistory(t *testing
 	}
 	if _, err := validateEmberMessages([]emberMessage{{Role: "user", Content: strings.Repeat("x", 2001)}}); err == nil {
 		t.Fatal("oversize message accepted")
+	}
+}
+
+func TestEmberSpeakStreamsBeforeProviderFinishes(t *testing.T) {
+	release := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("output_format") != "pcm_24000" {
+			t.Errorf("format = %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte{1, 2, 3, 4})
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte{5, 6})
+	}))
+	defer provider.Close()
+	t.Setenv("ELEVENLABS_API_KEY", "test")
+	t.Setenv("EMBER_ELEVENLABS_API_BASE", provider.URL)
+	server := httptest.NewServer(http.HandlerFunc((&application{}).emberSpeak))
+	defer server.Close()
+	defer close(release)
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Post(server.URL+"?format=pcm", "application/json", strings.NewReader(`{"text":"Hello."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	chunk := make([]byte, 4)
+	if _, err := io.ReadFull(response.Body, chunk); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(chunk, []byte{1, 2, 3, 4}) || response.ContentLength != -1 {
+		t.Fatalf("not streamed: %v length %d", chunk, response.ContentLength)
+	}
+}
+
+func TestEmberRespondStreamsBeforeProviderFinishes(t *testing.T) {
+	release := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, ":streamGenerateContent") || r.URL.Query().Get("alt") != "sse" {
+			t.Errorf("stream URL = %s", r.URL)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello. \"}]}}]}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+	}))
+	defer provider.Close()
+	t.Setenv("GEMINI_API_KEY", "test")
+	t.Setenv("EMBER_GEMINI_API_BASE", provider.URL)
+	server := httptest.NewServer(http.HandlerFunc((&application{}).emberRespond))
+	defer server.Close()
+	defer close(release)
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Post(server.URL+"?stream=1", "application/json", strings.NewReader(`{"messages":[{"role":"user","content":"Hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var event map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&event); err != nil {
+		t.Fatal(err)
+	}
+	if event["text"] != "Hello. " {
+		t.Fatalf("event = %v", event)
+	}
+}
+
+func TestEmberResponseStreamCompletionAndFailures(t *testing.T) {
+	for _, test := range []struct {
+		name, input string
+		success     bool
+	}{
+		{"complete", "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"secret\",\"thought\":true},{\"text\":\"Hello \"},{\"text\":\"there.\"}]},\"finishReason\":\"STOP\"}]}\n\n", true},
+		{"truncated", "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n", false},
+		{"invalid", "data: broken\n\n", false},
+		{"blocked", "data: {\"candidates\":[{\"finishReason\":\"SAFETY\"}]}\n\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			streamEmberResponse(w, strings.NewReader(test.input))
+			body := w.Body.String()
+			if strings.Contains(body, `"done":true`) != test.success || strings.Contains(body, `"error"`) == test.success || strings.Contains(body, "secret") {
+				t.Fatalf("unexpected stream %s", body)
+			}
+			if test.success && !strings.Contains(body, `"text":"Hello "`) {
+				t.Fatal("lost whitespace")
+			}
+		})
+	}
+}
+
+func TestEmberSpeakAbortsTruncatedAudioWithoutAppendingJSON(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.Write([]byte{1, 2, 3, 4})
+		w.(http.Flusher).Flush()
+	}))
+	defer provider.Close()
+	t.Setenv("ELEVENLABS_API_KEY", "test")
+	t.Setenv("EMBER_ELEVENLABS_API_BASE", provider.URL)
+	app := &application{}
+	server := httptest.NewServer(app.recoverPanic(http.HandlerFunc(app.emberSpeak)))
+	defer server.Close()
+	response, err := server.Client().Post(server.URL+"?format=pcm", "application/json", strings.NewReader(`{"text":"Hello."}`))
+	if err != nil {
+		return
+	} // The connection may abort before the first chunk reaches the client.
+	defer response.Body.Close()
+	audio, err := io.ReadAll(response.Body)
+	if err == nil {
+		t.Fatal("truncated provider stream was reported as complete")
+	}
+	if bytes.Contains(audio, []byte("error")) {
+		t.Fatalf("JSON appended to audio: %q", audio)
 	}
 }
