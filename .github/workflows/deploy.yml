@@ -11,6 +11,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      force_api_rebuild:
+        description: Rebuild the API even when the serving backend inputs already match
+        type: boolean
+        default: false
       allow_overwrite_out_of_band:
         description: >-
           Deploy even though production has commits or files that are not in
@@ -29,6 +33,7 @@ env:
   SITE_PROJECT: actual-budget-zb
   SITE_ZONE: us-west1-a
   SITE_VM: actual-server
+  RELEASE_SNAPSHOT_DIR: ${{ github.workspace }}/.release-baselines
   ALLOW_OVERWRITE: ${{ inputs.allow_overwrite_out_of_band && 'true' || 'false' }}
 jobs:
   deploy:
@@ -86,9 +91,21 @@ jobs:
             bash deploy/check-cloud-run-commit.sh workbench "$sha" "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" -- "${run[@]}" || status=1
           fi
           exit $status
+      - name: Plan backend deployment from verified serving revisions
+        id: plan
+        env:
+          FORCE_API_REBUILD: ${{ inputs.force_api_rebuild && 'true' || 'false' }}
+          WORKBENCH_ENABLED: ${{ vars.WORKBENCH_ENABLED }}
+        run: |
+          flags=()
+          if [[ "$FORCE_API_REBUILD" == true || "$ALLOW_OVERWRITE" == true ]]; then flags+=(--force); fi
+          if [[ "$WORKBENCH_ENABLED" == true ]]; then flags+=(--workbench); fi
+          python3 deploy/plan-release.py --snapshots "$RELEASE_SNAPSHOT_DIR" \
+            --target '${{ steps.commit.outputs.sha }}' --output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY" "${flags[@]}"
       - name: Check whether the database needs a pre-deploy backup
         id: database
-        if: vars.JAZZ_CLOUD_SQL_INSTANCE != ''
+        if: steps.plan.outputs.api == 'true' && vars.JAZZ_CLOUD_SQL_INSTANCE != ''
         env:
           TARGET_SHA: ${{ steps.commit.outputs.sha }}
         run: |
@@ -111,12 +128,13 @@ jobs:
           fi
           echo "backup=$backup" >> "$GITHUB_OUTPUT"
       - name: Back up the database before migrations
-        if: vars.JAZZ_CLOUD_SQL_INSTANCE != '' && steps.database.outputs.backup == 'true'
+        if: steps.plan.outputs.api == 'true' && vars.JAZZ_CLOUD_SQL_INSTANCE != '' && steps.database.outputs.backup == 'true'
         run: >-
           gcloud sql backups create --project "$RUN_PROJECT"
           --instance "${{ vars.JAZZ_CLOUD_SQL_INSTANCE }}"
           --description "Before deploy ${{ steps.commit.outputs.sha }}"
       - name: Deploy the API
+        if: steps.plan.outputs.api == 'true'
         # Keeps the service's existing environment, secrets and settings. The
         # commit-sha label (on the service and the revision) is what the
         # guard above checks on the next deploy.
@@ -130,6 +148,7 @@ jobs:
             --update-env-vars MAGIC_FILM_PROVIDER=codex \
             --update-secrets ELEVENLABS_API_KEY=ember-elevenlabs-api-key:latest,GEMINI_API_KEY=ember-gemini-api-key:latest
       - name: Point traffic at the new revision
+        if: steps.plan.outputs.api == 'true'
         run: >-
           gcloud run services update-traffic jazz-api --to-latest --quiet
           --project "$RUN_PROJECT" --region "$RUN_REGION"
@@ -137,16 +156,30 @@ jobs:
         run: |
           url=$(gcloud run services describe jazz-api --project "$RUN_PROJECT" --region "$RUN_REGION" --format 'value(status.url)')
           curl --fail --silent --show-error --retry 5 --retry-all-errors "$url/health"
+      - name: Resolve the verified API image
+        id: image
+        env:
+          DEPLOYED_API: ${{ steps.plan.outputs.api }}
+          SERVING_REVISION: ${{ steps.plan.outputs.api_revision }}
+        run: |
+          flags=(--project "$RUN_PROJECT" --region "$RUN_REGION")
+          revision="$SERVING_REVISION"
+          if [[ "$DEPLOYED_API" == true ]]; then
+            revision=$(gcloud run services describe jazz-api "${flags[@]}" --format 'value(status.latestReadyRevisionName)')
+          fi
+          [[ -n "$revision" ]] || { echo 'No verified API revision'; exit 1; }
+          image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
+          [[ -n "$image" ]] || { echo 'No verified API image'; exit 1; }
+          echo "digest=$image" >> "$GITHUB_OUTPUT"
       - name: Deploy Workbench (the API's image, its own service)
         # Created once by hand with its environment and secrets
         # (docs/workbench/README.md#deploy); this keeps them and ships the
         # new image. Concurrency and always-on CPU are why it is separate:
         # event streams stay open and the agent loop outlives its request.
-        if: vars.WORKBENCH_ENABLED == 'true'
+        if: vars.WORKBENCH_ENABLED == 'true' && steps.plan.outputs.workbench == 'true'
         run: |
           flags=(--project "$RUN_PROJECT" --region "$RUN_REGION")
-          revision=$(gcloud run services describe jazz-api "${flags[@]}" --format 'value(status.latestReadyRevisionName)')
-          image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
+          image='${{ steps.image.outputs.digest }}'
           gcloud run deploy workbench --image "$image" --quiet "${flags[@]}" \
             --update-labels "commit-sha=${{ steps.commit.outputs.sha }}" \
             --timeout 3600 --concurrency 40 --cpu 1 --memory 512Mi --no-cpu-throttling --min-instances 0 --max-instances 2
@@ -159,8 +192,7 @@ jobs:
         if: vars.MAGIC_FILM_ENABLED == 'true'
         run: |
           flags=(--project "$RUN_PROJECT" --region "$RUN_REGION")
-          revision=$(gcloud run services describe jazz-api "${flags[@]}" --format 'value(status.latestReadyRevisionName)')
-          image=$(gcloud run revisions describe "$revision" "${flags[@]}" --format 'value(status.imageDigest)')
+          image='${{ steps.image.outputs.digest }}'
           gcloud run jobs update jazz-magic-film --image "$image" --quiet "${flags[@]}" \
             --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 45m --cpu 2 --memory 4Gi
       - name: Apply and verify the 686 streaming proxy configuration

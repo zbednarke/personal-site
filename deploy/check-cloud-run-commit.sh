@@ -30,6 +30,14 @@ if ! svc=$(gcloud run services describe "$service" "${flags[@]}" --format json);
   [[ $allow == true ]] && exit 0
   exit 1
 fi
+# Optional local snapshots let the release planner use the exact baselines
+# checked here. They are not logged or uploaded (revision metadata can be private).
+if [[ -n ${RELEASE_SNAPSHOT_DIR:-} ]]; then
+  mkdir -p "$RELEASE_SNAPSHOT_DIR"
+  printf '%s\n' "$svc" > "$RELEASE_SNAPSHOT_DIR/$service-service.json"
+  : > "$RELEASE_SNAPSHOT_DIR/$service-revisions.jsonl"
+fi
+
 mapfile -t revisions < <(jq -r '[.status.traffic[]? | select((.percent // 0) > 0) | .revisionName // empty] | unique | .[]' <<<"$svc")
 if [[ ${#revisions[@]} -eq 0 ]]; then
   echo "::warning::$service: no revision is serving traffic; nothing to check."
@@ -39,6 +47,9 @@ fi
 status=0
 for revision in "${revisions[@]}"; do
   rev=$(gcloud run revisions describe "$revision" "${flags[@]}" --format json)
+  if [[ -n ${RELEASE_SNAPSHOT_DIR:-} ]]; then
+    jq -c . <<<"$rev" >> "$RELEASE_SNAPSHOT_DIR/$service-revisions.jsonl"
+  fi
   sha=$(jq -r '.metadata.labels["commit-sha"] // ""' <<<"$rev")
   creator=$(jq -r '.metadata.annotations["serving.knative.dev/creator"] // ""' <<<"$rev")
   echo "$service: serving $revision (commit-sha=${sha:-none}, created by ${creator:-unknown})"

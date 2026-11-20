@@ -1,0 +1,7 @@
+{
+  "name": "personal-site-browser-checks",
+  "private": true,
+  "devDependencies": {
+    "playwright": "1.58.2"
+  }
+}

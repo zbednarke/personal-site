@@ -31,13 +31,34 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
+concurrency:
+  group: verification-${{ github.event.pull_request.number || github.ref }}
+  # Superseded PR revisions need no more runner time. Main releases stay ordered.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      reused: ${{ steps.proof.outputs.reused }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for recent verification of this exact source tree
+        id: proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/reuse_verification.py
   runtime:
+    needs: preflight
+    if: needs.preflight.outputs.reused != 'true'
     uses: ./.github/workflows/runtime-security.yml
-  test:
+  unit:
+    needs: preflight
+    if: needs.preflight.outputs.reused != 'true'
     # Pinned: Playwright 1.58.2 cannot install Chromium on Ubuntu 26.04 (ubuntu-latest).
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 20
     services:
       postgres:
         # Google's Docker Hub mirror avoids Docker Hub's anonymous pull rate limit.
@@ -46,7 +67,7 @@ jobs:
           POSTGRES_PASSWORD: test-only
           POSTGRES_DB: test
         ports: ["5432:5432"]
-        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+        options: --health-cmd "pg_isready -U postgres -d test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TRUMPETS_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
       JAZZ_LAYOUT_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
@@ -60,9 +81,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: assets/jazz/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/highlight/requirements.txt
       - name: Install FFmpeg and DejaVu fonts (media tests, film-service rendering)
         run: |
           # Avoid the runner's regional mirror, which can stall package downloads.
@@ -83,6 +108,8 @@ jobs:
         run: npm audit --prefix assets/jazz --audit-level=moderate
       - name: Jazz, trumpet, Commonplace and Workbench JavaScript tests
         run: node --test assets/686/*.test.mjs assets/jazz/*.test.js assets/trumpets/*.test.js assets/commonplace/*.test.js assets/workbench/*.test.js
+      - name: CI reuse and fail-closed verification gates
+        run: python -m unittest discover -s tools/ci -p 'test_*.py'
       - name: Search/recheck adapters
         run: python -m unittest discover -s tools/trumpets -p 'test_*.py'
       - name: Commonplace route installer
@@ -99,42 +126,91 @@ jobs:
         run: |
           python -m pip install pip-audit==2.10.1
           python -m pip_audit --requirement tools/highlight/requirements.txt --vulnerability-service pypi
-      - name: Install browser test dependency
-        run: npm install --no-save --package-lock=false playwright@1.58.2
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
-      - name: Browser integration and screenshots
-        run: node tools/trumpets/browser-check.cjs
-      - name: 686 voice end-to-end check (Go API, real renderer, simulated providers)
-        run: |
-          python -m pip install playwright==1.58.0
-          go build -C jazz-api -o /tmp/ember-api .
-          python tools/686/e2e.py --api-binary /tmp/ember-api --chromium "$(node -p 'require("playwright").chromium.executablePath()')"
-      - name: Commonplace browser check (fictional data, 390 and 1440 px)
-        run: node tools/commonplace/browser-check.cjs
-      - name: Workbench browser check (fake model, 390/768/1440 px, two devices on one thread)
-        run: node tools/workbench/browser-check.cjs
-      - name: Jazz smoke check (every view at 390 and 1440 px, restored Library, Training, note-map films)
+  browser:
+    needs: preflight
+    if: needs.preflight.outputs.reused != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [trumpets, '686', commonplace, workbench, jazz]
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:16
         env:
-          JAZZ_SCREENSHOT_DIR: docs/jazz/screenshots/smoke
-        run: node tools/jazz/browser-check.cjs
-      - uses: actions/upload-artifact@v4
-        if: always()
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: test
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres -d test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TRUMPETS_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
+      JAZZ_LAYOUT_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
+      JAZZ_LONG_TONE_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
+      JAZZ_SCREENSHOT_DIR: docs/jazz/screenshots/smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          name: trumpet-visual-verification
-          path: docs/trumpets/screenshots/*.png
-      - uses: actions/upload-artifact@v4
-        if: always()
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked browser dependency and audit it
+        run: |
+          npm ci
+          npm audit --audit-level=moderate
+      - uses: actions/setup-python@v5
+        if: matrix.suite == '686'
         with:
-          name: commonplace-visual-verification
-          path: docs/commonplace/screenshots/*.png
-      - uses: actions/upload-artifact@v4
-        if: always()
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/686/requirements.txt
+      - name: Install the published Python Playwright version before building
+        if: matrix.suite == '686'
+        run: python -m pip install -r tools/686/requirements.txt
+      - uses: actions/setup-go@v5
         with:
-          name: workbench-visual-verification
-          path: docs/workbench/screenshots/*.png
-      - uses: actions/upload-artifact@v4
-        if: always()
+          go-version: '1.27.4'
+          cache-dependency-path: jazz-api/go.sum
+      - uses: actions/cache@v4
         with:
-          name: jazz-smoke-verification
-          path: docs/jazz/screenshots/smoke/*.png
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Chromium and media dependencies
+        run: |
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - name: Browser verification
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          if [[ "$SUITE" == 686 ]]; then
+            go build -C jazz-api -o /tmp/ember-api .
+            python tools/686/e2e.py --api-binary /tmp/ember-api --chromium "$(node -p 'require("playwright").chromium.executablePath()')"
+          else
+            node "tools/$SUITE/browser-check.cjs"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.suite != '686'
+        with:
+          name: ${{ matrix.suite }}-visual-verification
+          path: docs/${{ matrix.suite }}/screenshots/**/*.png
+  # Keep the existing required check name, but make it a fail-closed aggregate.
+  test:
+    if: always()
+    needs: [preflight, unit, browser, runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every check or verified exact-tree reuse
+        env:
+          VERIFICATION_NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/record_verification.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-verification-${{ github.run_attempt }}
+          path: release-verification.json
+          retention-days: 2
+          if-no-files-found: error
