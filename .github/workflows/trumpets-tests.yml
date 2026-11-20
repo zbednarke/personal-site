@@ -74,7 +74,7 @@ jobs:
       JAZZ_LONG_TONE_TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27.4"
           cache-dependency-path: jazz-api/go.sum
@@ -168,7 +168,7 @@ jobs:
       - name: Install the published Python Playwright version before building
         if: matrix.suite == '686'
         run: python -m pip install -r tools/686/requirements.txt
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27.4'
           cache-dependency-path: jazz-api/go.sum
