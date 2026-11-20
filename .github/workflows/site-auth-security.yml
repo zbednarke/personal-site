@@ -100,7 +100,7 @@ jobs:
       id-token: write
     env:
       ROTATION_ID: fbd773c9ba77410a9c96a83c57257059
-      ROTATION_ENVELOPE: ''
+      ROTATION_ENVELOPE: 'fr3huicqDfiJLbY0/TLz6xc1o7RRKgHVYc90Jt09F9UQpiNlMxokT/tpI0MmrfgZt7BnAnsL7wb+SK8M9+13QfKUMZ3WzV0KBvGZu8CwGG7p3Eon77jaPcPHjyI9k0lfyU1DFvhWf8/1D1JNqAu81Ajb4teovu4Wr1R8EKUnrHRHSbIAHcZE07ia5/bDH/iQwvSgWjAqkOFfvyLFA7fyFcoYjKMNE741q0tIp0bF3mTKzZQATodVKzuYiFQBIpKgqTS/XCqDkHsVacWhBc/qA2dSQ1sgSMwu7q5cjk1HmXnl9iZCH65Fhe45Ij+vmrRyNgOUm6F8SLPRYHfRPD6bv8EbOn7tGIohAb2VfLHuKCpdwGQPbMKHMs9gccWdlzRhytQXDqrMvxK5dt1FJY5zEaZ2o+rMArzPeDD5mFwq2GnMWI7r/g9RkPa2Saj9Pmpx1JWXE08UKeB39ZZHDRNwcE4I+w5RtK9mytjNlwSpAbblisYS3vFtXv6TDDWzBgVNJ0NbDC6nzKb0d+LC0d/LMs8GMBpfeU1zIyknL6B0Ao0t5Fk3qDuuZ63jz82Z6TG/4AniZUPaOD32klMpde2duKT0T3bruw1O9zM3sjadKMnuUPIWlWhguZKJMy9AULz4MMjetxBhEoOnj3tAeHi2R1dVYctq+3ZucK2c0zKi8SI='
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
