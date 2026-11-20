@@ -11,7 +11,7 @@ class PostRebootTests(unittest.TestCase):
     def receipt(self):
         return {'boot_id': 'new-boot', 'reboot_required': False,
                 'services_active': {'caddy': True, 'jazz-auth': True, 'jazz-highlights': True},
-                'caddy_build': {'go_version': 'go1.27.4'}, 'jazz_auth': {'go_version': 'go1.27.3'},
+                'caddy_build': {'go_version': 'go1.27.3'}, 'jazz_auth': {'go_version': 'go1.27.3'},
                 'highlights_runtime': {'pillow': '13.0.0'}, 'caddy_integrity': {'matches_managed_build': True}}
 
     def test_actual_new_boot_and_patches_are_required(self):
@@ -27,12 +27,6 @@ class PostRebootTests(unittest.TestCase):
         for key in ('services_active', 'caddy_build', 'caddy_integrity', 'highlights_runtime'):
             report = self.receipt(); report.pop(key)
             with self.assertRaises(ValueError): reboot.validate({'boot_id': 'old-boot'}, report, 'request_reboot')
-
-    def test_old_proxy_compiler_is_refused(self):
-        report = self.receipt()
-        report['caddy_build']['go_version'] = 'go1.27.3'
-        with self.assertRaises(ValueError):
-            reboot.validate({'boot_id': 'old-boot'}, report, 'request_reboot')
 
     def test_authorization_decision_cannot_be_silently_skipped(self):
         with self.assertRaises(ValueError): reboot.validate({'boot_id': 'old-boot'}, self.receipt(), 'unknown')

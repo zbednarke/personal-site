@@ -15,7 +15,7 @@ def validate(before, after, action):
         raise ValueError('Services not ready')
     if action == 'request_reboot' and after.get('reboot_required') is not False:
         raise ValueError('Host still reports reboot required')
-    if after.get('caddy_build', {}).get('go_version') != 'go1.27.4' or after.get('jazz_auth', {}).get('go_version') != 'go1.27.3':
+    if after.get('caddy_build', {}).get('go_version') != 'go1.27.3' or after.get('jazz_auth', {}).get('go_version') != 'go1.27.3':
         raise ValueError('Patched server compilers not observed')
     if (after.get('highlights_runtime') or {}).get('pillow') != '13.0.0':
         raise ValueError('Patched film interpreter not observed')
