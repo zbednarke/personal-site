@@ -1,0 +1,2 @@
+# Python and Node Playwright patch releases differ; this is a published version.
+playwright==1.58.0

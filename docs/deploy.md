@@ -9,7 +9,8 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    changed since the serving API revision. Also take the backup if the workflow
    cannot establish a single serving revision and verify its commit, or if the
    out-of-band overwrite option is enabled.
-2. `gcloud run deploy jazz-api --source jazz-api` in `parabolio-prod`. Startup
+2. When backend or deployment inputs changed since the actual serving revision,
+   `gcloud run deploy jazz-api --source jazz-api` in `parabolio-prod`. Startup
    applies the replay-safe migrations. Existing environment, secrets and settings
    are kept. The revision is labelled `commit-sha=<commit>`. The API's
    `/health` must answer before the site is published.
@@ -47,6 +48,22 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    previous release and a one-line rollback.
 
 Run it by hand from the Actions tab (Deploy, Run workflow) to redeploy `main`.
+Select `force_api_rebuild` to rebuild unchanged backend source (for example,
+a fresh base image). Unknown or split serving baselines always rebuild.
+Workbench is compared independently, so a partial previous deployment cannot
+leave it behind. Reused images come from the verified serving revision, not
+an unrelated latest-ready revision. Production provenance checks still run.
+
+Verification runs unit/security checks and five browser suites in parallel.
+A merge may reuse a successful same-repository PR run less than one hour old
+only when the PR head, actual tested merge, and deployed Git trees are identical.
+The successful aggregate job uploads a receipt tied to its run and attempt;
+missing, stale, ambiguous or inaccessible proof causes fresh checks. Manual
+verification always runs the complete suite. Superseded PR runs are cancelled;
+production deployments are serialized.
+
+See [the deployment latency audit](deploy-latency.md) for measurements,
+remaining bottlenecks, and the release procedure.
 
 ## Out-of-band deploys
 
