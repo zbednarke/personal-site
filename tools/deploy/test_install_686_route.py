@@ -16,6 +16,9 @@ LIVE_LIKE = """zachbednarke.com {
         path /jazz /jazz/* /commonplace /commonplace/*
     }
     route {
+        route @jazz_private {
+            reverse_proxy 127.0.0.1:8768
+        }
         handle_path /jazz/api/* {
             reverse_proxy {$JAZZ_API_URL}
         }
@@ -30,6 +33,8 @@ class Install686RouteTest(unittest.TestCase):
         once = installer.updated_caddyfile(LIVE_LIKE)
         self.assertIn('handle_path /686/api/*', once)
         self.assertIn('/686 /686/* /assets/686/*', once)
+        self.assertLess(once.index('handle @ember_device_turn'), once.index('route @jazz_private'))
+        self.assertIn('path /686/device/v1/turn\n', once)
         self.assertEqual(installer.updated_caddyfile(once), once)
         self.assertEqual(once.count('{'), once.count('}'))
 

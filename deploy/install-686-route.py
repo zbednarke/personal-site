@@ -23,6 +23,26 @@ handle_path /686/api/* {
 }
 
 """
+DEVICE_MATCHER = """@ember_device_turn {
+    method POST
+    path /686/device/v1/turn
+}
+
+"""
+DEVICE_ROUTE = """# The physical 686 device authenticates in the API using its own token.
+handle @ember_device_turn {
+    rewrite * /v1/686/device/turn
+    reverse_proxy {$JAZZ_API_URL} {
+        flush_interval -1
+        header_up Host {upstream_hostport}
+        header_up -X-Jazz-User
+        header_up -Cookie
+        header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+    }
+}
+
+"""
+PRIVATE_GATE = re.compile(r'(?m)^([ \t]*)route @jazz_private \{')
 ANCHORS = [
     re.compile(r'(?m)^([ \t]*)handle_path /commonplace/api/\* \{'),
     re.compile(r'(?m)^([ \t]*)handle_path /trumpets/api/\* \{'),
@@ -55,6 +75,19 @@ def updated_caddyfile(text):
         raise InstallError('The @jazz_private matcher was not found; install Google sign-in first')
     # A site-wide microphone=() header must not match the 686 page.
     text, _ = add_paths(text, NOT_PRIVATE, RESERVED)
+    if '@ember_device_turn {' not in text:
+        private_matcher = MATCHER.search(text)
+        indent = re.match(r'[ \t]*', private_matcher.group(0)).group(0)
+        at = private_matcher.start()
+        block = ''.join(indent + line if line.strip() else line for line in DEVICE_MATCHER.splitlines(keepends=True))
+        text = text[:at] + block + text[at:]
+    if 'handle @ember_device_turn {' not in text:
+        private_gate = PRIVATE_GATE.search(text)
+        if not private_gate:
+            raise InstallError('The private route gate was not found')
+        indent = private_gate.group(1)
+        block = ''.join(indent + line if line.strip() else line for line in DEVICE_ROUTE.splitlines(keepends=True))
+        text = text[:private_gate.start()] + block + text[private_gate.start():]
     installed = INSTALLED.search(text)
     if installed:
         # Upgrade the existing route as well as fresh installs. Only inspect

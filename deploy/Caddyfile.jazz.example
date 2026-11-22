@@ -16,6 +16,11 @@
 
 header @not_jazz Permissions-Policy "camera=(), microphone=(), geolocation=()"
 
+@ember_device_turn {
+    method POST
+    path /686/device/v1/turn
+}
+
 # Private paths. To protect another app, add its page and asset paths here;
 # nothing else needs to change. /commonplace (the private archive) and
 # /workbench (the owner-only agent's API) are here too. /assets/workbench/*
@@ -31,6 +36,18 @@ route {
     # loopback jazz-auth service. Keep this outside @jazz_private.
     route /auth/* {
         reverse_proxy 127.0.0.1:8768
+    }
+
+    # The physical 686 device authenticates in the API using its own token.
+    handle @ember_device_turn {
+        rewrite * /v1/686/device/turn
+        reverse_proxy {$JAZZ_API_URL} {
+            flush_interval -1
+            header_up Host {upstream_hostport}
+            header_up -X-Jazz-User
+            header_up -Cookie
+            header_up X-Jazz-Gateway-Key {$JAZZ_GATEWAY_KEY}
+        }
     }
 
     # Every private request is checked first. A valid session cookie returns
