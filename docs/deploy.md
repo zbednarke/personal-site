@@ -17,6 +17,11 @@ the "Trumpet and Jazz tests" workflow passes on a push to `main`:
    The 686 voice endpoints read `ELEVENLABS_API_KEY` and `GEMINI_API_KEY` from
    the `ember-elevenlabs-api-key` and `ember-gemini-api-key` Secret Manager
    secrets; provider credentials are never shipped with the static site.
+   The optional repository Actions variable `EMBER_DEVICE_TOKEN_SHA256`
+   supplies the digest for the standalone Ember endpoint. Keep the random
+   device token in private provisioning storage and on the device. Update the
+   digest and force an API rebuild to rotate it, or clear the variable and
+   force a rebuild to disable the device endpoint.
 3. A new static release on `actual-server` (`actual-budget-zb`, `us-west1-a`, over
    IAP) made by `deploy/publish-static-release.sh`: it copies the live release,
    overlays `index.html`, `.nojekyll`, `assets/`, `jazz/`, `trumpets/`, `commonplace/`, `686/` and `privacy/` from the

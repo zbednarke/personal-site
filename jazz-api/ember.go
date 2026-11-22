@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,23 @@ func (app *application) emberRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /v1/686/transcribe", app.authenticate(http.HandlerFunc(app.emberTranscribe)))
 	mux.Handle("POST /v1/686/respond", app.authenticate(http.HandlerFunc(app.emberRespond)))
 	mux.Handle("POST /v1/686/speak", app.authenticate(http.HandlerFunc(app.emberSpeak)))
+	mux.Handle("POST /v1/686/device/turn", app.newEmberDeviceHandler())
+}
+
+type emberProviderError struct {
+	status  int
+	message string
+}
+
+func (e *emberProviderError) Error() string { return e.message }
+
+func (app *application) writeEmberError(w http.ResponseWriter, err error) {
+	var provider *emberProviderError
+	if errors.As(err, &provider) {
+		writeError(w, provider.status, provider.message)
+	} else {
+		app.serverError(w, err)
+	}
 }
 
 func isEmberVoiceRequest(r *http.Request) bool {
@@ -62,6 +80,18 @@ func runEmberDevOnly() error {
 		httpClient: &http.Client{Timeout: 35 * time.Second},
 	}
 	mux := http.NewServeMux()
+	if address := os.Getenv("EMBER_DEVICE_LAN_ADDR"); address != "" {
+		cert, key := os.Getenv("EMBER_DEVICE_LAN_CERT"), os.Getenv("EMBER_DEVICE_LAN_KEY")
+		if cert == "" || key == "" || len(strings.TrimSpace(os.Getenv("EMBER_DEVICE_TOKEN_SHA256"))) != 64 {
+			return errors.New("LAN device mode requires TLS files and a device token digest")
+		}
+		mux.Handle("POST /686/device/v1/turn", app.newEmberDeviceHandler())
+		server := &http.Server{
+			Addr: address, Handler: mux, ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout: 22 * time.Second, IdleTimeout: 25 * time.Second,
+		}
+		return server.ListenAndServeTLS(cert, key)
+	}
 	app.emberRoutes(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "686-dev"})
@@ -84,8 +114,7 @@ func (app *application) emberHTTPClient() *http.Client {
 }
 
 func (app *application) emberTranscribe(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY"))
-	if key == "" {
+	if strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")) == "" {
 		writeError(w, http.StatusServiceUnavailable, "voice transcription is not configured")
 		return
 	}
@@ -110,10 +139,22 @@ func (app *application) emberTranscribe(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusUnsupportedMediaType, "an audio recording is required")
 		return
 	}
+	transcript, err := app.transcribeEmber(r.Context(), audio, safeEmberAudioName(header.Filename, contentType))
+	if err != nil {
+		app.writeEmberError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"transcript": transcript})
+}
 
+func (app *application) transcribeEmber(ctx context.Context, audio []byte, filename string) (string, error) {
+	key := strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY"))
+	if key == "" {
+		return "", &emberProviderError{http.StatusServiceUnavailable, "voice transcription is not configured"}
+	}
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
-	part, err := form.CreateFormFile("file", safeEmberAudioName(header.Filename, contentType))
+	part, err := form.CreateFormFile("file", filename)
 	if err == nil {
 		_, err = part.Write(audio)
 	}
@@ -130,37 +171,32 @@ func (app *application) emberTranscribe(w http.ResponseWriter, r *http.Request) 
 		err = closeErr
 	}
 	if err != nil {
-		app.serverError(w, err)
-		return
+		return "", err
 	}
 
 	endpoint := strings.TrimRight(envOr("EMBER_ELEVENLABS_API_BASE", "https://api.elevenlabs.io/v1"), "/") + "/speech-to-text"
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, &body)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
 	if err != nil {
-		app.serverError(w, err)
-		return
+		return "", err
 	}
 	request.Header.Set("Content-Type", form.FormDataContentType())
 	request.Header.Set("xi-api-key", key)
 	response, err := app.emberHTTPClient().Do(request)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "voice transcription provider is unavailable")
-		return
+		return "", &emberProviderError{http.StatusBadGateway, "voice transcription provider is unavailable"}
 	}
 	defer response.Body.Close()
 	providerBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
-		writeError(w, http.StatusBadGateway, "voice transcription failed")
-		return
+		return "", &emberProviderError{http.StatusBadGateway, "voice transcription failed"}
 	}
 	var decoded struct {
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(providerBody, &decoded) != nil || strings.TrimSpace(decoded.Text) == "" {
-		writeError(w, http.StatusBadGateway, "voice transcription returned no speech")
-		return
+		return "", &emberProviderError{http.StatusBadGateway, "voice transcription returned no speech"}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"transcript": strings.TrimSpace(decoded.Text)})
+	return strings.TrimSpace(decoded.Text), nil
 }
 
 func safeEmberAudioName(name, contentType string) string {
@@ -184,8 +220,7 @@ func safeEmberAudioName(name, contentType string) string {
 }
 
 func (app *application) emberRespond(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	if key == "" {
+	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" {
 		writeError(w, http.StatusServiceUnavailable, "conversation model is not configured")
 		return
 	}
@@ -194,10 +229,38 @@ func (app *application) emberRespond(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	contents, err := validateEmberMessages(input.Messages)
+	streaming := r.URL.Query().Get("stream") == "1"
+	response, err := app.requestEmberResponse(r.Context(), input.Messages, streaming)
 	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		app.writeEmberError(w, err)
 		return
+	}
+	defer response.Body.Close()
+	if streaming {
+		streamEmberResponse(w, response.Body)
+		return
+	}
+	providerBody, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "conversation generation failed")
+		return
+	}
+	line := geminiEmberText(providerBody)
+	if line == "" {
+		writeError(w, http.StatusBadGateway, "conversation generation returned no speech")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"response": line})
+}
+
+func (app *application) requestEmberResponse(ctx context.Context, messages []emberMessage, streaming bool) (*http.Response, error) {
+	key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	if key == "" {
+		return nil, &emberProviderError{http.StatusServiceUnavailable, "conversation model is not configured"}
+	}
+	contents, err := validateEmberMessages(messages)
+	if err != nil {
+		return nil, &emberProviderError{http.StatusUnprocessableEntity, err.Error()}
 	}
 	body := map[string]any{
 		"systemInstruction": map[string]any{"parts": []map[string]string{{"text": emberSystemPrompt}}},
@@ -212,7 +275,6 @@ func (app *application) emberRespond(w http.ResponseWriter, r *http.Request) {
 	model := envOr("EMBER_GEMINI_MODEL", "gemini-3.6-flash")
 	base := strings.TrimRight(envOr("EMBER_GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"), "/")
 	method := "generateContent"
-	streaming := r.URL.Query().Get("stream") == "1"
 	if streaming {
 		method = "streamGenerateContent"
 	}
@@ -220,37 +282,20 @@ func (app *application) emberRespond(w http.ResponseWriter, r *http.Request) {
 	if !streaming {
 		endpoint = strings.Replace(endpoint, "alt=sse&", "", 1)
 	}
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
 	if err != nil {
-		app.serverError(w, err)
-		return
+		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := app.emberHTTPClient().Do(request)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "conversation provider is unavailable")
-		return
+		return nil, &emberProviderError{http.StatusBadGateway, "conversation provider is unavailable"}
 	}
-	defer response.Body.Close()
-	if streaming {
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			writeError(w, http.StatusBadGateway, "conversation generation failed")
-			return
-		}
-		streamEmberResponse(w, response.Body)
-		return
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		response.Body.Close()
+		return nil, &emberProviderError{http.StatusBadGateway, "conversation generation failed"}
 	}
-	providerBody, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-	if err != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
-		writeError(w, http.StatusBadGateway, "conversation generation failed")
-		return
-	}
-	line := geminiEmberText(providerBody)
-	if line == "" {
-		writeError(w, http.StatusBadGateway, "conversation generation returned no speech")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"response": line})
+	return response, nil
 }
 
 func validateEmberMessages(messages []emberMessage) ([]map[string]any, error) {
@@ -313,8 +358,7 @@ func geminiEmberText(body []byte) string {
 }
 
 func (app *application) emberSpeak(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY"))
-	if key == "" {
+	if strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")) == "" {
 		writeError(w, http.StatusServiceUnavailable, "speech synthesis is not configured")
 		return
 	}
@@ -328,37 +372,16 @@ func (app *application) emberSpeak(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "speech text is empty or too long")
 		return
 	}
-	voiceID := envOr("EMBER_ELEVENLABS_VOICE_ID", emberVoiceID)
-	body, _ := json.Marshal(map[string]any{
-		"text":     text,
-		"model_id": "eleven_v4",
-		"voice_settings": map[string]any{
-			"stability": 0.50, "similarity_boost": 0.95,
-		},
-	})
-	base := strings.TrimRight(envOr("EMBER_ELEVENLABS_API_BASE", "https://api.elevenlabs.io/v1"), "/")
 	format, contentType := "mp3_44100_128", "audio/mpeg"
 	if r.URL.Query().Get("format") == "pcm" {
 		format, contentType = "pcm_24000", "application/octet-stream"
 	}
-	endpoint := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", base, url.PathEscape(voiceID), format)
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, endpoint, bytes.NewReader(body))
+	response, err := app.requestEmberSpeech(r.Context(), text, format)
 	if err != nil {
-		app.serverError(w, err)
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("xi-api-key", key)
-	response, err := app.emberHTTPClient().Do(request)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "speech provider is unavailable")
+		app.writeEmberError(w, err)
 		return
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		writeError(w, http.StatusBadGateway, "speech synthesis failed")
-		return
-	}
 	// Read only the first chunk before committing headers, then flush each chunk.
 	reader := io.LimitReader(response.Body, emberMaxSpeechBytes+1)
 	buffer := make([]byte, 8192)
@@ -395,22 +418,62 @@ func (app *application) emberSpeak(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (app *application) requestEmberSpeech(ctx context.Context, text, format string) (*http.Response, error) {
+	key := strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY"))
+	if key == "" {
+		return nil, &emberProviderError{http.StatusServiceUnavailable, "speech synthesis is not configured"}
+	}
+	voiceID := envOr("EMBER_ELEVENLABS_VOICE_ID", emberVoiceID)
+	body, _ := json.Marshal(map[string]any{
+		"text":           text,
+		"model_id":       "eleven_v4",
+		"voice_settings": map[string]any{"stability": 0.50, "similarity_boost": 0.95},
+	})
+	base := strings.TrimRight(envOr("EMBER_ELEVENLABS_API_BASE", "https://api.elevenlabs.io/v1"), "/")
+	endpoint := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", base, url.PathEscape(voiceID), format)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("xi-api-key", key)
+	response, err := app.emberHTTPClient().Do(request)
+	if err != nil {
+		return nil, &emberProviderError{http.StatusBadGateway, "speech provider is unavailable"}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		response.Body.Close()
+		return nil, &emberProviderError{http.StatusBadGateway, "speech synthesis failed"}
+	}
+	return response, nil
+}
+
 // Translate provider SSE to a small, bounded NDJSON protocol. A terminal event
 // lets clients distinguish a complete answer from a dropped connection.
 func streamEmberResponse(w http.ResponseWriter, body io.Reader) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
-	send := func(event map[string]any) bool {
-		if json.NewEncoder(w).Encode(event) != nil {
-			return false
+	send := func(event map[string]any) error {
+		if err := json.NewEncoder(w).Encode(event); err != nil {
+			return err
 		}
-		return http.NewResponseController(w).Flush() == nil
+		return http.NewResponseController(w).Flush()
 	}
+	err := readEmberTokens(body, func(text string) error { return send(map[string]any{"text": text}) })
+	if err != nil {
+		_ = send(map[string]any{"error": "conversation stream interrupted"})
+		return
+	}
+	_ = send(map[string]any{"done": true})
+}
+
+func readEmberTokens(body io.Reader, emit func(string) error) error {
 	scanner := bufio.NewScanner(io.LimitReader(body, 2<<20))
 	scanner.Buffer(make([]byte, 4096), 256<<10)
 	var data []string
-	finished, hasText, invalid := false, false, false
+	finished, hasText := false, false
+	var streamErr error
 	consume := func() bool {
 		if len(data) == 0 {
 			return true
@@ -429,7 +492,7 @@ func streamEmberResponse(w http.ResponseWriter, body io.Reader) {
 			}
 		}
 		if json.Unmarshal([]byte(payload), &event) != nil {
-			invalid = true
+			streamErr = errors.New("invalid conversation event")
 			return false
 		}
 		if len(event.Candidates) == 0 {
@@ -439,7 +502,7 @@ func streamEmberResponse(w http.ResponseWriter, body io.Reader) {
 		for _, part := range candidate.Content.Parts {
 			if !part.Thought && part.Text != "" {
 				hasText = true
-				if !send(map[string]any{"text": part.Text}) {
+				if streamErr = emit(part.Text); streamErr != nil {
 					return false
 				}
 			}
@@ -447,7 +510,7 @@ func streamEmberResponse(w http.ResponseWriter, body io.Reader) {
 		if candidate.FinishReason != "" {
 			finished = candidate.FinishReason == "STOP" || candidate.FinishReason == "MAX_TOKENS"
 			if !finished {
-				invalid = true
+				streamErr = errors.New("unexpected conversation finish reason")
 				return false
 			}
 		}
@@ -463,12 +526,14 @@ func streamEmberResponse(w http.ResponseWriter, body io.Reader) {
 			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 		}
 	}
-	if !invalid && len(data) > 0 {
+	if streamErr == nil && len(data) > 0 {
 		consume()
 	}
-	if scanner.Err() != nil || invalid || !finished || !hasText {
-		send(map[string]any{"error": "conversation stream interrupted"})
-		return
+	if streamErr != nil {
+		return streamErr
 	}
-	send(map[string]any{"done": true})
+	if scanner.Err() != nil || !finished || !hasText {
+		return errors.New("conversation stream interrupted")
+	}
+	return nil
 }
