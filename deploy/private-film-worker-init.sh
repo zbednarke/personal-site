@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+# The disk persists when the VM is stopped. Bootstrap this version once, so
+# ordinary film wake-ups do not run apt/npm or rebuild the host configuration.
+if [ -f /var/lib/magic-film/bootstrap-v2-ready ] && [ -x /opt/magic-codex/bin/codex ] && [ -f /etc/systemd/system/magic-film-worker.service ]; then
+  exit 0
+fi
 apt-get update -qq
 apt-get install -y --no-install-recommends ffmpeg sudo nftables ca-certificates nodejs npm
 getent group magic-evidence >/dev/null || groupadd --system magic-evidence
@@ -59,7 +64,7 @@ After=network-online.target nftables.service
 Wants=network-online.target
 Requires=nftables.service
 ConditionPathExists=/etc/magic-film/worker.env
-ConditionPathIsExecutable=/opt/magic-film/jazz-api
+ConditionFileIsExecutable=/opt/magic-film/jazz-api
 
 [Service]
 Type=simple
@@ -86,3 +91,4 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 touch /var/lib/magic-film/bootstrap-ready
+touch /var/lib/magic-film/bootstrap-v2-ready
