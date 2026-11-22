@@ -135,17 +135,23 @@ jobs:
           --description "Before deploy ${{ steps.commit.outputs.sha }}"
       - name: Deploy the API
         if: steps.plan.outputs.api == 'true'
+        env:
+          EMBER_DEVICE_TOKEN_SHA256: ${{ vars.EMBER_DEVICE_TOKEN_SHA256 }}
         # Keeps the service's existing environment, secrets and settings. The
         # commit-sha label (on the service and the revision) is what the
         # guard above checks on the next deploy.
         run: |
           # Film planning uses the owner's private subscription worker.
           # Switching back to API billing requires an explicit release change.
+          if [[ -n "$EMBER_DEVICE_TOKEN_SHA256" && ! "$EMBER_DEVICE_TOKEN_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Invalid Ember device token digest"
+            exit 1
+          fi
           gcloud run deploy jazz-api --source jazz-api --quiet \
             --project "$RUN_PROJECT" --region "$RUN_REGION" \
             --update-labels "commit-sha=${{ steps.commit.outputs.sha }}" \
             --timeout 3600 --cpu 2 --memory 2Gi --concurrency 1 --max-instances 3 \
-            --update-env-vars MAGIC_FILM_PROVIDER=codex \
+            --update-env-vars "MAGIC_FILM_PROVIDER=codex,EMBER_DEVICE_TOKEN_SHA256=$EMBER_DEVICE_TOKEN_SHA256" \
             --update-secrets ELEVENLABS_API_KEY=ember-elevenlabs-api-key:latest,GEMINI_API_KEY=ember-gemini-api-key:latest
       - name: Point traffic at the new revision
         if: steps.plan.outputs.api == 'true'
@@ -196,6 +202,8 @@ jobs:
           gcloud run jobs update jazz-magic-film --image "$image" --quiet "${flags[@]}" \
             --tasks 1 --parallelism 1 --max-retries 0 --task-timeout 45m --cpu 2 --memory 4Gi
       - name: Apply and verify the 686 streaming proxy configuration
+        env:
+          EMBER_DEVICE_CONFIGURED: ${{ vars.EMBER_DEVICE_TOKEN_SHA256 != '' }}
         run: |
           sha=${{ steps.commit.outputs.sha }}
           remote=/tmp/686-config-$sha
@@ -203,6 +211,11 @@ jobs:
           ssh=(gcloud compute ssh "$SITE_VM" --project "$SITE_PROJECT" --zone "$SITE_ZONE" --tunnel-through-iap --quiet --ssh-flag=-oServerAliveInterval=15 --ssh-flag=-oServerAliveCountMax=4)
           bash deploy/upload-static-release.sh upload "$remote" "$RUNNER_TEMP/686-config.tar.gz" deploy/publish-686-config.sh -- "${ssh[@]}"
           bash deploy/upload-static-release.sh publish "$remote" "$RUNNER_TEMP/686-config.tar.gz" deploy/publish-686-config.sh "$sha" -- "${ssh[@]}"
+          if [[ "$EMBER_DEVICE_CONFIGURED" == true ]]; then
+            status=$(curl --silent --show-error --max-time 15 --output /dev/null --write-out '%{http_code}' \
+              --request POST https://zachbednarke.com/686/device/v1/turn)
+            [[ "$status" == 401 ]]
+          fi
       - name: Publish the static release
         # The upload goes through the IAP tunnel, so only files whose bytes
         # differ from the live release are packaged; publish-static-release.sh
